@@ -147,6 +147,30 @@ const Screens = (() => {
     return `<div class="rbadges">${row(w.ratings.pos, 'pos')}${row(w.ratings.neg, 'neg')}</div>`;
   }
 
+  /* "3× Frag (max 6)" */
+  function consumableChip(c) {
+    const it = Items.CONSUMABLES[c.consumable];
+    return `${it ? it.icon : '🎒'} ${c.startCount}× ${it ? it.name : c.consumable} <b>(max ${c.limit})</b>`;
+  }
+  /* melee / structure line + effect badges for a tool */
+  function toolLine(t) {
+    const breaches = Object.keys(Structures.WALL_TYPES)
+      .filter(k => Structures.WALL_TYPES[k].toughness !== undefined && minToughness(k) <= t.pierce)
+      .map(k => Structures.WALL_TYPES[k].name);
+    const nums = t.melee > 0
+      ? `<span>🗡 ${t.melee} dmg</span><span>📏 ${Math.round(t.range / Classes.RANGE_UNIT)} range</span>
+         <span>🧱 ${t.structure} structure</span><span>⏱ ${t.cooldown}s</span>
+         <span title="Structure Pierce beats a wall's Toughness">⇢ pierce ${t.pierce} — breaches ${breaches.join(', ') || 'nothing'}</span>`
+      : (t.revive ? `<span>⚡ instant revive</span><span>⏱ ${t.cooldown}s</span>` : `<span>gadget — press <b>V</b> in match</span>`);
+    return `<div class="tool-nums">${nums}</div>
+      <div class="tool-fx">${t.effects.map(e => `<span class="tool-badge">${e}</span>`).join('')}</div>`;
+  }
+  /* the easiest version of a wall type — wood gets tougher as it gets thicker */
+  function minToughness(type) {
+    const t = Structures.WALL_TYPES[type].toughness;
+    return typeof t === 'function' ? t(0.1) : t;
+  }
+
   function renderLoadout() {
     const p = DB.getProfile();
     const host = document.getElementById('loadout-grid');
@@ -154,9 +178,20 @@ const Screens = (() => {
     const groups = Weapons.byClass();
     Object.entries(groups).forEach(([cls, weapons]) => {
       const meta = Weapons.CLASS_META[cls] || {};
+      const c = Classes.byName(cls);
+      const active = weapons.some(w => w.id === p.weapon);
       const section = document.createElement('div');
-      section.className = 'wclass';
-      section.innerHTML = `<h3 class="wclass__title"><span style="color:${meta.color}">${meta.icon}</span> ${cls}</h3>`;
+      section.className = 'wclass' + (active ? ' is-active' : '');
+      section.innerHTML = `
+        <h3 class="wclass__title"><span style="color:${meta.color}">${meta.icon}</span> ${cls}
+          ${active ? '<span class="wclass__tag">DEPLOYED</span>' : ''}</h3>
+        <p class="wclass__desc">${c.desc}</p>
+        <div class="wclass__kit">
+          <span class="kit-chip" title="Base movement speed">🏃 ${c.speed}× speed</span>
+          <span class="kit-chip" title="${c.tool.effects.join(' · ')}">${c.tool.icon} ${c.tool.name}</span>
+          <span class="kit-chip">${consumableChip(c)}</span>
+        </div>
+        <div class="wclass__tool">${toolLine(c.tool)}</div>`;
       const row = document.createElement('div');
       row.className = 'wclass__row';
       weapons.forEach(w => {

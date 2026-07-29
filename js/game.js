@@ -6,11 +6,16 @@
    Single-player vs bots (real multiplayer needs a server — see README).
    ============================================================ */
 const Game = (() => {
-  const MAP_W = 2400, MAP_H = 1600;
-  const SCORE_CAP = 100;             // domination win score
+  // domination is fought over a much bigger board than the elimination arena
+  const MAP_SIZES = { domination: { w: 3400, h: 2300 }, elimination: { w: 2400, h: 1600 } };
+  let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
+  const SCORE_CAP = 5000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
-  const TEAM_COLORS = ['#3d7bff', '#ff4b5c', '#4be08a', '#c46bff'];
-  const TEAM_NAMES  = ['Blue', 'Red', 'Green', 'Violet'];
+  const TEAM_COLORS = ['#3d7bff', '#ff4b5c', '#4be08a', '#c46bff', '#ffa726', '#35e0ff'];
+  const TEAM_NAMES  = ['Blue', 'Red', 'Green', 'Violet', 'Amber', 'Cyan'];
+  // squad setup per mode
+  const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
+  let nTeams = 4;
 
   let canvas, ctx, W, H;
   let mode = 'domination';
@@ -21,11 +26,18 @@ const Game = (() => {
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
   let grenades = [], deployables = [], smokes = [], crates = [];   // tactical layer
+  let grass = [], trenches = [];                                   // terrain the tools care about
   let flashOverlay = 0;                                            // player blind timer (s)
+  let zoom = 1, zoomTarget = 1;                                    // binoculars pull the camera back
   let teamScores = [];
   let player = null;
   let matchStats = { kills: 0, captures: 0 };
   const TILE = 50;
+
+  /* Every wall on the map is a Structures.seg — see js/structures.js for the
+     wall-type table (height, HP, toughness, ballistics). */
+  const kindOf = (s) => Structures.def(s.type);
+  const isSolid = (s) => Structures.blocksMove(s);
 
   const input = { up: false, down: false, left: false, right: false, shooting: false, fireEdge: false, ads: false, mx: 0, my: 0, dashCd: 0 };
 
@@ -40,36 +52,94 @@ const Game = (() => {
   }
 
   function buildMap() {
-    obstacles = [];
-    // border-ish scattered cover; deterministic-ish layout with some randomness
-    const layout = [
-      [300, 300, 180, 60], [1900, 300, 180, 60], [300, 1240, 180, 60], [1900, 1240, 180, 60],
-      [1100, 200, 200, 60], [1100, 1340, 200, 60],
-      [600, 700, 60, 220], [1740, 700, 60, 220],
-      [1120, 760, 160, 80], [1000, 600, 80, 80], [1300, 900, 80, 80],
-      [700, 1050, 220, 60], [1480, 500, 220, 60],
-      [450, 900, 120, 120], [1830, 550, 120, 120],
-    ];
-    layout.forEach(([x, y, w, h]) => obstacles.push({ x, y, w, h }));
+    obstacles = []; trenches = [];
+    invalidateRects();
+    const S = Structures;
+    // Each mode gets its own board. Objectives/spawns live in the open ground
+    // between the buildings — see OBJECTIVE_SPOTS and spawnPoint().
+    if (mode === 'domination') {
+      obstacles.push(
+        ...S.place('camp',     220, 280),
+        ...S.place('mansion', 1320, 200),
+        ...S.place('house',   2740, 320),
+        ...S.place('house',    260, 1320),
+        ...S.place('house',   1780, 720),
+        ...S.place('camp',    2840, 1060),
+        ...S.place('mansion', 1160, 1480),
+        ...S.place('base',    2400, 1560),
+        ...S.place('house',    720, 1920),
+      );
+      obstacles.push(
+        S.seg('sandbag',   900, 900,  4, 'h', 0.5),
+        S.seg('sandbag',  2200, 480,  4, 'v', 0.5),
+        S.seg('sandbag',  1000, 1900, 4, 'h', 0.5),
+        S.seg('sandbag',  2350, 1150, 3, 'h', 0.5),
+        S.seg('barricade', 780, 1080, 5, 'h', 0.3),
+        S.seg('barricade', 2140, 1300, 5, 'v', 0.3),
+        S.seg('barricade', 1500, 2080, 6, 'h', 0.3),
+        S.seg('wire',      940, 700, 10, 'h', 0.4),
+        S.seg('wire',     2280, 760,  8, 'v', 0.4),
+        S.seg('wire',      440, 2100, 11, 'h', 0.4),
+        S.seg('wood',     3080, 1500, 8, 'v', 0.3),
+        S.seg('wood',      560, 760,  6, 'v', 0.3),
+        S.seg('metal',    1720, 1300, 7, 'h', 0.6),
+        S.seg('metal',     300, 1800, 6, 'h', 0.6),
+      );
+      grass = [
+        { x: 240, y: 780, w: 300, h: 260 }, { x: 2900, y: 700, w: 320, h: 260 },
+        { x: 800, y: 1240, w: 340, h: 200 }, { x: 1400, y: 900, w: 320, h: 200 },
+        { x: 700, y: 320, w: 220, h: 200 }, { x: 1900, y: 1900, w: 380, h: 240 },
+        { x: 2500, y: 1000, w: 260, h: 220 }, { x: 2200, y: 2000, w: 300, h: 200 },
+      ];
+    } else {
+      obstacles.push(
+        ...S.place('camp',    140, 170),
+        ...S.place('mansion', 800, 130),
+        ...S.place('house',   1900, 200),
+        ...S.place('house',   180, 1090),
+        ...S.place('base',    1620, 1110),
+      );
+      obstacles.push(
+        S.seg('sandbag',   980, 900,  4, 'h', 0.5),
+        S.seg('sandbag',  1400, 780,  4, 'v', 0.5),
+        S.seg('sandbag',   640, 1010, 3, 'h', 0.5),
+        S.seg('barricade', 1180, 1260, 5, 'h', 0.3),
+        S.seg('barricade', 700, 560,  4, 'v', 0.3),
+        S.seg('wire',      880, 760,  9, 'h', 0.4),
+        S.seg('wire',      1520, 320, 8, 'v', 0.4),
+        S.seg('wire',      420, 1480, 10, 'h', 0.4),
+        S.seg('wood',      2180, 760, 7, 'v', 0.3),
+        S.seg('metal',     1180, 1480, 6, 'h', 0.6),
+      );
+      grass = [
+        { x: 180, y: 620, w: 320, h: 240 }, { x: 2000, y: 700, w: 300, h: 260 },
+        { x: 700, y: 1200, w: 380, h: 220 }, { x: 1300, y: 620, w: 300, h: 180 },
+        { x: 620, y: 240, w: 200, h: 180 }, { x: 1280, y: 1330, w: 280, h: 200 },
+      ];
+    }
   }
+  const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  const onGrass = (a) => grass.some(g => inRect(a.x, a.y, g));
+  const inTrench = (a) => trenches.some(t => dist2(a.x, a.y, t.x, t.y) < t.r * t.r);
 
-  function spawnPoint(team, nTeams) {
-    // spread team spawns around the map corners/edges
-    const spots = [
-      { x: 220, y: 220 }, { x: MAP_W - 220, y: MAP_H - 220 },
-      { x: MAP_W - 220, y: 220 }, { x: 220, y: MAP_H - 220 },
-    ];
-    const s = spots[team % spots.length];
-    return { x: s.x + rand(-70, 70), y: s.y + rand(-70, 70) };
+  /* Spread the squads evenly around the edge of the map, whatever the team count. */
+  function spawnPoint(team) {
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    const rx = MAP_W / 2 - 240, ry = MAP_H / 2 - 240;
+    const ang = -Math.PI / 2 + (team / Math.max(1, nTeams)) * Math.PI * 2;
+    return { x: cx + Math.cos(ang) * rx + rand(-70, 70), y: cy + Math.sin(ang) * ry + rand(-70, 70) };
   }
 
   function makeAgent(team, isPlayer, weaponId) {
     const w = Weapons.byId[weaponId] || Weapons.byId[Weapons.default];
+    const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
       team, isPlayer, alive: true,
       x: 0, y: 0, r: 16, angle: 0,
       hp: 100, maxHp: 100,
       weaponId: w.id, weapon: w,
+      cls, tool: cls.tool,                                  // class kit
+      toolCd: 0, toolActive: false, swingT: 0, builds: 0, stillT: 0,
       ammo: w.mag, reloadTimer: 0, fireCd: 0,
       bloom: 0, burstLeft: 0, burstCd: 0, postBurstCd: 0,   // firing state
       adrenaline: 0, blindTimer: 0, channel: null,          // status effects
@@ -86,11 +156,13 @@ const Game = (() => {
     const profile = DB.getProfile();
     const playerWeapon = (profile && Weapons.byId[profile.weapon]) ? profile.weapon : Weapons.default;
 
+    const setup = TEAM_SETUP[mode];
+    nTeams = setup.teams;
+
     if (mode === 'domination') {
-      const nTeams = 3, perTeam = 3;
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
-        for (let i = 0; i < perTeam; i++) {
+        for (let i = 0; i < setup.perTeam; i++) {
           const isPlayer = (t === 0 && i === 0);
           const a = makeAgent(t, isPlayer, isPlayer ? playerWeapon : pickBotWeapon());
           respawnAgent(a, true);
@@ -99,16 +171,16 @@ const Game = (() => {
         }
       }
       // objectives A/B/C
+      // placed in the open ground between the buildings so squads fight over the approaches
       objectives = [
-        { name: 'A', x: 600,  y: 500,  r: 120, owner: -1, progress: 0, capTeam: -1 },
-        { name: 'B', x: 1200, y: 800,  r: 130, owner: -1, progress: 0, capTeam: -1 },
-        { name: 'C', x: 1800, y: 1100, r: 120, owner: -1, progress: 0, capTeam: -1 },
+        { name: 'A', x: 760,  y: 1620, r: 130, owner: -1, progress: 0, capTeam: -1 },
+        { name: 'B', x: 1700, y: 1120, r: 140, owner: -1, progress: 0, capTeam: -1 },
+        { name: 'C', x: 2560, y: 780,  r: 130, owner: -1, progress: 0, capTeam: -1 },
       ];
     } else {
-      const nTeams = 4, perTeam = 2;
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
-        for (let i = 0; i < perTeam; i++) {
+        for (let i = 0; i < setup.perTeam; i++) {
           const isPlayer = (t === 0 && i === 0);
           const a = makeAgent(t, isPlayer, isPlayer ? playerWeapon : pickBotWeapon());
           a.lives = 1;
@@ -124,12 +196,16 @@ const Game = (() => {
   function pickBotWeapon() { return Weapons.randomBot(); }
 
   function respawnAgent(a, initial = false) {
-    const sp = spawnPoint(a.team);
+    // re-roll the drop point a few times rather than landing inside a building
+    let sp = spawnPoint(a.team);
+    for (let i = 0; i < 12 && pointInObstacle(sp.x, sp.y); i++) sp = spawnPoint(a.team);
     a.x = sp.x; a.y = sp.y;
     a.hp = a.maxHp; a.alive = true;
     a.ammo = a.weapon.mag; a.reloadTimer = 0; a.fireCd = 0;
     a.bloom = 0; a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
+    a.toolCd = 0; a.toolActive = false; a.swingT = 0;
     a.respawnTimer = 0;
+    resolveObstacles(a);        // never spawn stuck inside a building
   }
 
   /* ---------------- start / stop ---------------- */
@@ -144,19 +220,23 @@ const Game = (() => {
     resize();
     window.addEventListener('resize', resize);
 
+    MAP_W = MAP_SIZES[mode].w; MAP_H = MAP_SIZES[mode].h;
     buildMap();
     setupTeams();
     bullets = []; fx = []; dmgNums = [];
     grenades = []; deployables = []; smokes = []; flashOverlay = 0;
+    zoom = zoomTarget = 1;
     hudMessage = ''; hudMessageT = 0;
-    spawnCrates(mode === 'domination' ? 6 : 8);
-    // starting tactical kit
+    spawnCrates(mode === 'domination' ? 14 : 10);   // scaled to the board size
+    // starting tactical kit = whatever your class deploys with
     player.inv = {
-      grenade:  { id: 'frag',   n: 2 },
-      tactical: { id: 'smoke',  n: 1 },
-      heal:     { id: 'medkit', n: 1 },
+      grenade:  { id: null, n: 0 },
+      tactical: { id: null, n: 0 },
+      heal:     { id: null, n: 0 },
       tokens: [],
     };
+    const kit = Items.CONSUMABLES[player.cls.consumable];
+    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: player.cls.startCount };
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
     matchStats = { kills: 0, captures: 0 };
@@ -201,6 +281,7 @@ const Game = (() => {
         case 'KeyC': deployTactical(); break;
         case 'KeyB': useToken(); break;
         case 'KeyE': interact(); break;
+        case 'KeyV': useTool(); break;
         case 'Escape': togglePause(); break;
       }
     });
@@ -306,25 +387,182 @@ const Game = (() => {
         if (dmg > 1) applyDamage(a, dmg, owner);
       }
     }
+    // blasts tear up cover and sentries too — that's how you make an entry point
+    for (const s of structureRects().slice()) {
+      const cx = clamp(x, s.x, s.x + s.w), cy = clamp(y, s.y, s.y + s.h);
+      const d = Math.hypot(cx - x, cy - y);
+      if (d < radius) damageStructure(s, baseDmg * (1 - d / radius) * 1.5, cx, cy);
+    }
+    for (let i = deployables.length - 1; i >= 0; i--) {
+      const dp = deployables[i];
+      if (dp.type !== 'sentry') continue;
+      const d = Math.hypot(dp.x - x, dp.y - y);
+      if (d < radius) { dp.hp -= baseDmg * (1 - d / radius); if (dp.hp <= 0) { spawnFx(dp.x, dp.y, '#ff9d3b', 12); deployables.splice(i, 1); } }
+    }
   }
 
   /* ================= CONSUMABLES / TACTICAL LAYER ================= */
   let hudMessage = '', hudMessageT = 0;
   function hudMsg(t) { hudMessage = t; hudMessageT = 2; }
-  const worldMouse = () => ({ x: input.mx + camX, y: input.my + camY });
+  const worldMouse = () => ({ x: input.mx / zoom + camX, y: input.my / zoom + camY });
   const near2 = (a, b, r) => dist2(a.x, a.y, b.x, b.y) < r * r;
 
   function addItem(cat, id, n) {
     const slot = player.inv[cat];
     if (!slot) return;
-    if (!slot.id || slot.id === id) { slot.id = id; slot.n = (slot.n || 0) + n; }
-    else { slot.id = id; slot.n = n; }        // replace whatever was there
+    const cap = Classes.limitFor(player.cls, id);            // your class kit has its own cap
+    const have = (slot.id === id) ? (slot.n || 0) : 0;        // anything else gets replaced
+    slot.id = id;
+    slot.n = Math.min(cap, have + n);
   }
   function equipWeapon(a, w) {
     a.weapon = w; a.weaponId = w.id; a.ammo = w.mag;
     a.reloadTimer = 0; a.burstLeft = 0; a.postBurstCd = 0;
     if (a.isPlayer) updateWeaponHud();
   }
+
+  /* ================= CLASS TOOLS ([V]) ================= */
+  /* Gadget tools (binoculars, goggles, ghillie) toggle; the rest swing. */
+  function useTool() {
+    if (!canAct()) return;
+    const t = player.tool;
+    if (t.passive) {
+      player.toolActive = !player.toolActive;
+      hudMsg(t.name + (player.toolActive ? ' — ON' : ' — off'));
+      SFX.click();
+      return;
+    }
+    if (player.toolCd > 0) return;
+    swingTool(player);
+  }
+
+  /* One swing: hits enemies in a forward arc, then chews structures. */
+  function swingTool(a) {
+    const t = a.tool;
+    const reach = t.range + a.r;
+    a.swingT = 0.18;
+
+    // defibrillator — instant revive instead of a melee hit
+    if (t.revive) {
+      const mate = agents.find(o => !o.alive && !o.isVehicle && o.team === a.team && near2(o, a, reach + o.r));
+      if (!mate) { a.toolCd = 1.5; if (a.isPlayer) hudMsg('No downed teammate in reach'); return; }
+      a.toolCd = t.cooldown;
+      mate.alive = true; mate.hp = mate.maxHp; mate.ammo = mate.weapon.mag; mate.respawnTimer = 0;
+      mate.x = a.x + rand(-26, 26); mate.y = a.y + rand(-26, 26);
+      spawnFx(mate.x, mate.y, '#4be08a', 16);
+      if (a.isPlayer) { hudMsg('Revived ' + mate.name); SFX.reward(); }
+      return;
+    }
+
+    a.toolCd = t.cooldown;
+    if (a.isPlayer) SFX.click();
+
+    // enemies in a ~100° arc in front
+    let hitSomething = false;
+    for (const o of agents) {
+      if (!o.alive || o.team === a.team) continue;
+      const d = Math.hypot(o.x - a.x, o.y - a.y);
+      if (d > reach + o.r) continue;
+      if (Math.abs(angleDiff(Math.atan2(o.y - a.y, o.x - a.x), a.angle)) > 0.9) continue;
+      applyDamage(o, t.melee, a);
+      spawnFx(o.x, o.y, '#ffffff', 6);
+      hitSomething = true;
+    }
+    // walls straight ahead (pierce = the toughest wall this tool can work)
+    if (t.structure > 0) {
+      const r = hitStructures(a, t, reach);
+      if (r.hit > 0 || r.blocked) hitSomething = true;
+    }
+
+    // hammer builds and spade digs only when the swing hit nothing
+    if (!hitSomething && t.builds) buildWall(a);
+    else if (!hitSomething && t.digs) digTrench(a);
+  }
+
+  const angleDiff = (x, y) => Math.atan2(Math.sin(x - y), Math.cos(x - y));
+
+  /* Every damageable rect on the map: map cover + deployed/built walls.
+     A map full of buildings is a few hundred segments and these lists are hit
+     per bullet and per bot, so they're rebuilt once per frame, not per call. */
+  let rectCache = null, solidCache = null, sightCache = null;
+  const invalidateRects = () => { rectCache = solidCache = sightCache = null; };
+  function structureRects() {
+    if (!rectCache) {
+      rectCache = obstacles.slice();
+      for (const dp of deployables) if (dp.type === 'wall') rectCache.push(dp.rect);
+    }
+    return rectCache;
+  }
+  /* A tool can only work a wall its Structure Pierce out-rates, unless it has
+     an explicit clearing effect for that type (bayonet→wire, spade→sandbags). */
+  const canBreach = (t, s) => t.clears === s.type || t.pierce >= s.toughness;
+  function toolStructureDamage(t, s) {
+    if (t.clears === s.type) return s.maxHp;             // clearing tools cut straight through
+    return t.structure * ((t.vs && t.vs[s.type]) || 1);
+  }
+  function hitStructures(a, t, reach) {
+    const rects = structureRects();
+    const seen = [];
+    let tooTough = null;
+    for (let d = a.r; d <= reach; d += 8) {
+      const x = a.x + Math.cos(a.angle) * d, y = a.y + Math.sin(a.angle) * d;
+      const s = rects.find(r => inRect(x, y, r));
+      if (!s || seen.includes(s) || s === tooTough) continue;
+      if (!canBreach(t, s)) { tooTough = s; continue; }
+      seen.push(s);
+      damageStructure(s, toolStructureDamage(t, s), x, y);
+    }
+    if (!seen.length && tooTough && a.isPlayer) {
+      hudMsg(`${t.name} can't breach ${kindOf(tooTough).name} (toughness ${tooTough.toughness})`);
+    }
+    return { hit: seen.length, blocked: !!tooTough };
+  }
+  function damageStructure(s, dmg, hx, hy) {
+    s.hp -= dmg;
+    spawnFx(hx === undefined ? s.x + s.w / 2 : hx, hy === undefined ? s.y + s.h / 2 : hy, '#cfd8ee', 5);
+    if (s.hp <= 0) destroyStructure(s);
+  }
+  function destroyStructure(s) {
+    spawnFx(s.x + s.w / 2, s.y + s.h / 2, '#8ea0c9', 14);
+    invalidateRects();
+    if (s.dp) { const i = deployables.indexOf(s.dp); if (i >= 0) deployables.splice(i, 1); return; }
+    const i = obstacles.indexOf(s); if (i >= 0) obstacles.splice(i, 1);
+  }
+
+  /* Engineer: hammer up a wall section where you're facing. */
+  function buildWall(a) {
+    const b = a.tool.builds;
+    if (a.builds >= b.max) { if (a.isPlayer) hudMsg('Wall limit reached'); return; }
+    const ang = a.angle;
+    const cx = a.x + Math.cos(ang) * (a.r + 46), cy = a.y + Math.sin(ang) * (a.r + 46);
+    // lay the wall across your facing
+    const horizontal = Math.abs(Math.cos(ang)) < 0.707;
+    const lenM = b.length, rect = horizontal
+      ? Structures.seg(b.type, cx - lenM * Structures.PX_PER_M / 2, cy, lenM, 'h', b.thickness)
+      : Structures.seg(b.type, cx, cy - lenM * Structures.PX_PER_M / 2, lenM, 'v', b.thickness);
+    if (rect.x < 0 || rect.y < 0 || rect.x + rect.w > MAP_W || rect.y + rect.h > MAP_H) return;
+    for (const s of structureRects()) if (rectsOverlap(rect, s)) { if (a.isPlayer) hudMsg('No room to build'); return; }
+    const dp = { type: 'wall', built: true, x: cx, y: cy, item: { name: kindOf(rect).name }, life: 9999, rect, owner: a };
+    rect.dp = dp;
+    deployables.push(dp);
+    invalidateRects();
+    a.builds++;
+    if (a.isPlayer) { hudMsg(kindOf(rect).name + ' wall built'); SFX.capture(); }
+  }
+  const rectsOverlap = (a, b) =>
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  /* Gunner: dig in — a trench halves incoming damage while you're in it. */
+  function digTrench(a) {
+    if (trenches.length > 14) trenches.shift();
+    if (trenches.some(t => dist2(t.x, t.y, a.x, a.y) < 40 * 40)) return;
+    trenches.push({ x: a.x, y: a.y, r: 48 });
+    spawnFx(a.x, a.y, '#b08a5a', 8);
+    if (a.isPlayer) hudMsg('Trench dug — take cover');
+  }
+
+  /* is this agent hidden by their ghillie suit right now? */
+  const camouflaged = (a) => !!(a.toolActive && a.tool.camo && a.stillT > 0.4 && onGrass(a));
 
   /* --- throw the equipped grenade toward the cursor --- */
   function throwGrenade() {
@@ -381,10 +619,20 @@ const Game = (() => {
     if (it.mode === 'mine') deployables.push({ type: 'mine', x: player.x, y: player.y, team: player.team, owner: player, item: it, arm: it.arm, life: 60 });
     else if (it.mode === 'wall') {
       const wx = player.x + Math.cos(player.angle) * 42, wy = player.y + Math.sin(player.angle) * 42;
-      deployables.push({ type: 'wall', x: wx, y: wy, item: it, life: it.life, rect: { x: wx - it.w / 2, y: wy - it.h / 2, w: it.w, h: it.h } });
+      const horizontal = Math.abs(Math.cos(player.angle)) < 0.707;
+      const lenM = it.w / Structures.PX_PER_M;
+      const rect = horizontal
+        ? Structures.seg('barricade', wx - it.w / 2, wy, lenM, 'h', 0.3)
+        : Structures.seg('barricade', wx, wy - it.w / 2, lenM, 'v', 0.3);
+      const dp = { type: 'wall', x: wx, y: wy, item: it, life: it.life, rect };
+      rect.dp = dp; deployables.push(dp); invalidateRects();
     }
     else if (it.mode === 'ammo') deployables.push({ type: 'ammo', x: player.x, y: player.y, team: player.team, item: it, supply: it.supply, life: it.life });
     else if (it.mode === 'flag') deployables.push({ type: 'flag', x: player.x, y: player.y, team: player.team, item: it, life: it.life });
+    else if (it.mode === 'sentry') deployables.push({
+      type: 'sentry', x: player.x, y: player.y, team: player.team, owner: player, item: it,
+      hp: it.hp, maxHp: it.hp, life: it.life, angle: player.angle, cd: 0,
+    });
     slot.n--; if (slot.n <= 0) slot.id = null;
     hudMsg('Deployed ' + it.name); SFX.capture();
   }
@@ -409,9 +657,31 @@ const Game = (() => {
     agents.push(v);
   }
 
-  /* --- interact (E): open a crate or grab from an ammo box --- */
+  /* --- doors --- */
+  const doorCentre = (d) => ({ x: d.x + d.w / 2, y: d.y + d.h / 2 });
+  function nearestDoor(x, y, range) {
+    let best = null, bd = range * range;
+    for (const s of structureRects()) {
+      if (!Structures.isDoor(s)) continue;
+      const c = doorCentre(s);
+      const d = dist2(x, y, c.x, c.y);
+      if (d < bd) { bd = d; best = s; }
+    }
+    return best;
+  }
+  function toggleDoor(d, who) {
+    d.open = !d.open;
+    invalidateRects();
+    const c = doorCentre(d);
+    spawnFx(c.x, c.y, '#e2b46e', 5);
+    if (who && who.isPlayer) { hudMsg((d.open ? 'Opened ' : 'Closed ') + kindOf(d).name); SFX.click(); }
+  }
+
+  /* --- interact (E): doors, crates, ammo boxes --- */
   function interact() {
     if (!canAct()) return;
+    const door = nearestDoor(player.x, player.y, 70);
+    if (door) { toggleDoor(door, player); return; }
     let best = null, bd = 95 * 95;
     for (const c of crates) if (!c.opened) { const d = dist2(player.x, player.y, c.x, c.y); if (d < bd) { bd = d; best = c; } }
     if (best) { openCrate(best); return; }
@@ -442,7 +712,12 @@ const Game = (() => {
   function grantLoot(entry) {
     switch (entry.id) {
       case 'ammo': { player.ammo = player.weapon.mag; addItem('grenade', player.inv.grenade.id || 'frag', 1); hudMsg('Ammo + spare mag'); break; }
-      case 'classConsumable': { const cid = Items.randomClassConsumable(); const it = Items.CONSUMABLES[cid]; addItem(it.cat, cid, 2); hudMsg('Class drop: ' + it.name + ' ×2'); break; }
+      case 'classConsumable': {
+        const cid = Items.classConsumableFor(player.cls.name);   // your own kit, topped up
+        const it = Items.CONSUMABLES[cid];
+        addItem(it.cat, cid, 2);
+        hudMsg('Class drop: ' + it.name + ' ×2'); break;
+      }
       case 'legendary': {
         const cls = (Weapons.byId[player.baseWeapon.id] || player.weapon).className;
         const gold = Items.makeLegendary(Items.bestOfClass(cls));
@@ -515,13 +790,56 @@ const Game = (() => {
         }
       } else if (dp.type === 'flag') {
         for (const a of agents) if (a.alive && a.team === dp.team && near2(a, dp, dp.item.radius)) a.adrenaline = Math.max(a.adrenaline, 25);
+      } else if (dp.type === 'sentry') {
+        updateSentry(dp, dt);
       }
     }
+  }
+
+  /* Engineer sentry: auto-tracks and fires at the nearest visible enemy. */
+  function updateSentry(s, dt) {
+    s.cd -= dt;
+    let best = null, bd = s.item.range * s.item.range;
+    for (const a of agents) {
+      if (!a.alive || a.team === s.team || camouflaged(a)) continue;
+      const d = dist2(a.x, a.y, s.x, s.y);
+      if (d < bd && hasLOS(s.x, s.y, a.x, a.y) && !smokeBlocks(s.x, s.y, a.x, a.y)) { bd = d; best = a; }
+    }
+    if (!best) return;
+    const target = Math.atan2(best.y - s.y, best.x - s.x);
+    s.angle += angleDiff(target, s.angle) * Math.min(1, 7 * dt);   // turret traverse
+    if (s.cd > 0 || Math.abs(angleDiff(target, s.angle)) > 0.12) return;
+    s.cd = 1 / s.item.rof;
+    const ang = s.angle + (Math.random() - 0.5) * 0.05;
+    bullets.push({
+      x: s.x + Math.cos(ang) * 20, y: s.y + Math.sin(ang) * 20,
+      vx: Math.cos(ang) * 900, vy: Math.sin(ang) * 900, sx: s.x, sy: s.y,
+      team: s.team, dmg: s.item.damage, falloff: 0.04,
+      splash: 0, splashR: 0, life: 1.2, owner: s.owner, color: '#35e0ff',
+    });
+    spawnFx(s.x + Math.cos(ang) * 20, s.y + Math.sin(ang) * 20, '#ffd36a', 2);
+  }
+
+  /* barbed wire: slows and cuts anyone standing in it (damage applied in chunks) */
+  function wireAt(a, dt) {
+    let slow = 1, dps = 0;
+    for (const o of obstacles) {
+      if (isSolid(o) || !inRect(a.x, a.y, o)) continue;
+      const k = kindOf(o);
+      slow = Math.min(slow, k.slow); dps += k.dps;
+    }
+    if (dps > 0) {
+      a.wireAcc = (a.wireAcc || 0) + dps * dt;
+      if (a.wireAcc >= 4) { applyDamage(a, a.wireAcc, null); a.wireAcc = 0; }
+    }
+    return slow;
   }
   function updateSmokes(dt) {
     for (let i = smokes.length - 1; i >= 0; i--) { smokes[i].life -= dt; if (smokes[i].life <= 0) smokes.splice(i, 1); }
   }
   const activeWalls = () => deployables.filter(d => d.type === 'wall').map(d => d.rect);
+  const solidRects = () => (solidCache || (solidCache = structureRects().filter(Structures.blocksMove)));
+  const sightRects = () => (sightCache || (sightCache = structureRects().filter(Structures.blocksSight)));
   function smokeBlocks(x1, y1, x2, y2) {
     if (!smokes.length) return false;
     for (let t = 0.15; t < 1; t += 0.12) {
@@ -530,14 +848,15 @@ const Game = (() => {
     }
     return false;
   }
-  const botCanSee = (a, b) => hasLOS(a.x, a.y, b.x, b.y) && !smokeBlocks(a.x, a.y, b.x, b.y);
+  // a ghillied target sitting still in grass simply isn't there as far as bots are concerned
+  const botCanSee = (a, b) =>
+    !camouflaged(b) && hasLOS(a.x, a.y, b.x, b.y) && !smokeBlocks(a.x, a.y, b.x, b.y);
 
   /* ---------------- collision helpers ---------------- */
   function resolveObstacles(a) {
     a.x = clamp(a.x, a.r, MAP_W - a.r);
     a.y = clamp(a.y, a.r, MAP_H - a.r);
-    const rects = obstacles.concat(activeWalls());
-    for (const o of rects) {
+    for (const o of solidRects()) {
       const cx = clamp(a.x, o.x, o.x + o.w);
       const cy = clamp(a.y, o.y, o.y + o.h);
       const dx = a.x - cx, dy = a.y - cy;
@@ -546,22 +865,33 @@ const Game = (() => {
         a.x = cx + (dx / d) * a.r;
         a.y = cy + (dy / d) * a.r;
       } else if (d === 0) {
-        a.x += a.r; // dead center — nudge out
+        // fully inside the wall (spawned there, or it was built on top of us):
+        // shove out through whichever face is closest
+        const left = a.x - o.x, right = o.x + o.w - a.x;
+        const top = a.y - o.y, bottom = o.y + o.h - a.y;
+        const min = Math.min(left, right, top, bottom);
+        if (min === left) a.x = o.x - a.r;
+        else if (min === right) a.x = o.x + o.w + a.r;
+        else if (min === top) a.y = o.y - a.r;
+        else a.y = o.y + o.h + a.r;
       }
     }
   }
 
   function pointInObstacle(x, y) {
-    for (const o of obstacles) if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) return true;
-    for (const o of activeWalls()) if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) return true;
+    for (const o of solidRects()) if (inRect(x, y, o)) return true;
     return false;
   }
 
+  /* only "high" walls block sight — you can see (and shoot) over sandbags and wire */
   function hasLOS(ax, ay, bx, by) {
-    const steps = 12;
+    const rects = sightRects();
+    if (!rects.length) return true;
+    const steps = 16;
     for (let i = 1; i < steps; i++) {
       const t = i / steps;
-      if (pointInObstacle(ax + (bx - ax) * t, ay + (by - ay) * t)) return false;
+      const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+      for (const o of rects) if (inRect(x, y, o)) return false;
     }
     return true;
   }
@@ -605,6 +935,13 @@ const Game = (() => {
       }
     }
 
+    // point blank? use the tool — melee beats reloading
+    const reach = a.tool.melee > 0 ? a.tool.range + a.r : 0;
+    if (enemy && reach > 0 && d < reach + enemy.r && a.toolCd <= 0 && !a.isVehicle) {
+      a.angle = Math.atan2(enemy.y - a.y, enemy.x - a.x);
+      swingTool(a);
+    }
+
     const range = botRange(a.weapon);
     if (enemy && d < range && botCanSee(a, enemy)) {
       // combat: face + shoot, keep preferred distance, strafe
@@ -629,13 +966,34 @@ const Game = (() => {
       a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
     }
 
+    // shove open any door in the way, and sidestep if a wall has us pinned
+    if (!a.isVehicle) {
+      const d = nearestDoor(a.x, a.y, 56);
+      if (d && !d.open) toggleDoor(d, a);
+      if (a.stuckDir) { moveX += Math.cos(a.stuckDir); moveY += Math.sin(a.stuckDir); }
+    }
+
     const m = Math.hypot(moveX, moveY);
     if (m > 0) {
-      const spd = (a.isVehicle ? a.vspeed : a.weapon.moveSpeed * 0.72) * dt;
+      const base = a.isVehicle ? a.vspeed : a.weapon.moveSpeed * 0.72 * a.cls.speed;
+      const spd = base * (a.wireSlow || 1) * dt;
+      const px = a.x, py = a.y;
       a.x += (moveX / m) * spd; a.y += (moveY / m) * spd;
       resolveObstacles(a);
+      trackStuck(a, px, py, spd, dt);
     }
     if (a.ammo <= 0) startReload(a);
+  }
+  /* Bots walk in straight lines, so a building corner can pin them. If a bot
+     barely moves while trying to, give it a sidestep heading for a moment. */
+  function trackStuck(a, px, py, spd, dt) {
+    const moved = Math.hypot(a.x - px, a.y - py);
+    if (a.stuckDir) { a.stuckT -= dt; if (a.stuckT <= 0) a.stuckDir = 0; return; }
+    a.stuckAcc = moved < spd * 0.35 ? (a.stuckAcc || 0) + dt : 0;
+    if (a.stuckAcc > 0.45) {
+      a.stuckDir = a.angle + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+      a.stuckT = 0.9; a.stuckAcc = 0;
+    }
   }
   const obj_jitter = (o) => o.x + rand(-o.r * 0.5, o.r * 0.5);
   const obj_jitterY = (o) => o.y + rand(-o.r * 0.5, o.r * 0.5);
@@ -647,6 +1005,7 @@ const Game = (() => {
 
   /* ---------------- update ---------------- */
   function update(dt) {
+    invalidateRects();          // walls can be built, blown up or opened any frame
     timeLeft -= dt;
     if (input.dashCd > 0) input.dashCd -= dt;
 
@@ -658,29 +1017,42 @@ const Game = (() => {
 
     // player control
     if (player.alive) {
+      const tool = player.tool, gadget = player.toolActive;
       let dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
       let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
       const m = Math.hypot(dx, dy);
+      // "standing still" powers the ghillie suit
+      player.stillT = m > 0 ? 0 : player.stillT + dt;
       if (m > 0) {
-        let base = player.weapon.moveSpeed;
+        let base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
         if (input.ads) base *= 0.55;                 // aiming slows you
         if (player.adrenaline > 0) base *= 1.25;     // adrenaline speed boost
         if (player.channel) base *= 0.4;             // channeling a heal
-        const spd = base * dt;
+        if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
+        if (tool.shield && input.ads) base *= tool.slow;
+        const spd = base * (player.wireSlow || 1) * dt;
         player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
       }
-      // aim toward cursor
-      const psx = player.x - camX, psy = player.y - camY;
+      // aim toward cursor (world space, so it survives the binocular zoom)
+      const psx = (player.x - camX) * zoom, psy = (player.y - camY) * zoom;
       player.angle = Math.atan2(input.my - psy, input.mx - psx);
-      // fire: automatics fire while held; everything else one shot per click. Can't shoot mid-heal.
-      if (!player.channel) {
+      // fire: automatics fire while held; everything else one shot per click.
+      // Can't shoot mid-heal, with binoculars up, or off-scope behind a riot shield.
+      const blocked = player.channel || (gadget && tool.noFire) || (tool.adsOnlyFire && !input.ads);
+      if (!blocked) {
         if (player.weapon.action === 'auto') { if (input.shooting) triggerFire(player); }
         else if (input.fireEdge) { triggerFire(player); }
+      } else if (input.fireEdge && tool.adsOnlyFire && !input.ads) {
+        hudMsg('Raise the shield (right-click) to shoot');
       }
       input.fireEdge = false;
     } else {
       input.fireEdge = false;
     }
+
+    // camera zoom (binoculars)
+    zoomTarget = (player.alive && player.toolActive && player.tool.zoom) ? 1 / player.tool.zoom : 1;
+    zoom += (zoomTarget - zoom) * Math.min(1, 9 * dt);
 
     // agents timers + AI
     for (const a of agents) {
@@ -688,7 +1060,10 @@ const Game = (() => {
       if (a.fireCd > 0) a.fireCd -= ms;
       if (a.postBurstCd > 0) a.postBurstCd -= ms;
       if (a.blindTimer > 0) a.blindTimer -= dt;
+      if (a.toolCd > 0) a.toolCd -= dt;
+      if (a.swingT > 0) a.swingT -= dt;
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
+      a.wireSlow = (a.alive && !a.isVehicle) ? wireAt(a, dt) : 1;
       if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { a.ammo = a.weapon.mag; if (a.isPlayer) updateWeaponHud(); } }
       // drive an in-progress burst
       if (a.burstLeft > 0) {
@@ -708,10 +1083,10 @@ const Game = (() => {
     // bullets
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
+      b.px = b.x; b.py = b.y;                  // remembered so ricochets know which face was hit
       b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
       let dead = b.life <= 0 || b.x < 0 || b.y < 0 || b.x > MAP_W || b.y > MAP_H;
-      let hitObstacle = false;
-      if (!dead && pointInObstacle(b.x, b.y)) { dead = true; hitObstacle = true; if (!b.splash) spawnFx(b.x, b.y, '#8ea0c9', 3); }
+      if (!dead && bulletVsWall(b)) dead = true;
       if (!dead) {
         for (const a of agents) {
           if (!a.alive || a.team === b.team) continue;
@@ -723,6 +1098,17 @@ const Game = (() => {
               applyDamage(a, b.dmg * mult, b.owner);
               spawnFx(b.x, b.y, TEAM_COLORS[a.team], 4);
             }
+            dead = true; break;
+          }
+        }
+      }
+      if (!dead) {
+        for (let k = deployables.length - 1; k >= 0; k--) {
+          const dp = deployables[k];
+          if (dp.type !== 'sentry' || dp.team === b.team) continue;
+          if (dist2(dp.x, dp.y, b.x, b.y) < 18 * 18) {
+            if (!b.splash) { dp.hp -= b.dmg; spawnFx(b.x, b.y, '#35e0ff', 4); }
+            if (dp.hp <= 0) { spawnFx(dp.x, dp.y, '#ff9d3b', 12); deployables.splice(k, 1); }
             dead = true; break;
           }
         }
@@ -747,14 +1133,77 @@ const Game = (() => {
 
     // camera follow (player, or a living teammate if player is down in elimination)
     const focus = player.alive ? player : (agents.find(a => a.alive && a.team === 0) || player);
-    camX = clamp(focus.x - W / 2, 0, Math.max(0, MAP_W - W));
-    camY = clamp(focus.y - H / 2, 0, Math.max(0, MAP_H - H));
+    const vw = W / zoom, vh = H / zoom;
+    camX = clamp(focus.x - vw / 2, 0, Math.max(0, MAP_W - vw));
+    camY = clamp(focus.y - vh / 2, 0, Math.max(0, MAP_H - vh));
 
     checkWinConditions();
     updateHud();
   }
 
+  /* ---------------- bullets vs walls ----------------
+     Wall type decides what happens: absorbed, punched through for a slice of
+     the damage, or bounced back off at 50%. Returns true if the round dies. */
+  function bulletVsWall(b) {
+    const rects = structureRects();
+    let wall = null;
+    for (const s of rects) {
+      if (kindOf(s).height === 'under' || s.open) continue;
+      if (inRect(b.x, b.y, s)) { wall = s; break; }
+    }
+    if (!wall) { b.inWall = null; return false; }
+    if (b.inWall === wall) return false;        // already resolved on the way in
+    b.inWall = wall;
+
+    const bal = Structures.ballistics(wall);
+    if (bal.mode === 'through') return false;
+
+    if (!b.splash) damageStructure(wall, b.dmg, b.x, b.y);
+
+    if (bal.mode === 'stop') { if (!b.splash) spawnFx(b.x, b.y, '#8ea0c9', 3); return true; }
+
+    if (bal.mode === 'pen') {
+      b.dmg *= bal.keep;
+      spawnFx(b.x, b.y, '#cfd8ee', 2);
+      return b.dmg < 1;                          // spent rounds stop in the wall
+    }
+
+    // ricochet — bounce off whichever face the round actually crossed
+    const cameFromSide = b.px === undefined
+      ? wall.w < wall.h                                  // no history: use the wall's long axis
+      : (b.px < wall.x || b.px > wall.x + wall.w);
+    if (cameFromSide) b.vx = -b.vx; else b.vy = -b.vy;
+    b.dmg *= bal.keep;
+    b.x += b.vx * 0.02; b.y += b.vy * 0.02;      // clear the surface
+    b.sx = b.x; b.sy = b.y;                      // falloff restarts from the bounce
+    b.inWall = null;
+    b.ricochet = true;
+    spawnFx(b.x, b.y, '#ffd36a', 5);
+    return b.dmg < 1;
+  }
+
+  /* Riot shield: while scoping, shots from the front are stopped cold.
+     Bots don't get the full 100% — half, or they'd be unkillable head-on. */
+  function shieldFactor(a, owner) {
+    if (!a.tool || !a.tool.shield || !owner) return 1;
+    const scoping = a.isPlayer ? input.ads : true;
+    if (!scoping) return 1;
+    const fromAng = Math.atan2(owner.y - a.y, owner.x - a.x);
+    if (Math.abs(angleDiff(fromAng, a.angle)) > Math.PI / 2) return 1;   // hit from behind
+    return a.isPlayer ? 0 : 0.5;
+  }
+
   function applyDamage(a, dmg, owner) {
+    dmg *= shieldFactor(a, owner);
+    // dug in: infantry in a trench dodge half of what comes at them
+    if (!a.isVehicle && inTrench(a) && Math.random() < Structures.WALL_TYPES.trench.dodge) {
+      spawnFx(a.x, a.y, '#b08a5a', 4);
+      return;
+    }
+    if (dmg <= 0) {
+      if (a.isPlayer) spawnFx(a.x + Math.cos(a.angle) * a.r, a.y + Math.sin(a.angle) * a.r, '#cfd8ee', 4);
+      return;
+    }
     a.hp -= dmg;
     if (DB.getSettings().dmgNumbers) dmgNums.push({ x: a.x, y: a.y - a.r, val: Math.round(dmg), life: 0.7, crit: dmg >= 40 });
     if (a.isPlayer) SFX.hurt();
@@ -914,6 +1363,7 @@ const Game = (() => {
   function render() {
     ctx.clearRect(0, 0, W, H);
     ctx.save();
+    ctx.scale(zoom, zoom);          // binoculars pull the whole world back
     ctx.translate(-camX, -camY);
 
     // ground
@@ -928,6 +1378,8 @@ const Game = (() => {
     // border
     ctx.strokeStyle = 'rgba(120,160,255,0.25)'; ctx.lineWidth = 4;
     ctx.strokeRect(0, 0, MAP_W, MAP_H);
+
+    drawTerrain();
 
     // objectives
     for (const obj of objectives) {
@@ -946,11 +1398,7 @@ const Game = (() => {
     }
 
     // obstacles
-    for (const o of obstacles) {
-      roundRect(o.x, o.y, o.w, o.h, 6);
-      ctx.fillStyle = '#1a2542'; ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(120,160,255,0.25)'; ctx.stroke();
-    }
+    for (const o of obstacles) drawStructure(o);
 
     drawCratesAndDeployables();
 
@@ -960,7 +1408,8 @@ const Game = (() => {
 
     // bullets
     for (const b of bullets) {
-      ctx.strokeStyle = hexA(TEAM_COLORS[b.team], 0.9); ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.strokeStyle = b.ricochet ? 'rgba(255,207,74,0.95)' : hexA(TEAM_COLORS[b.team], 0.9);
+      ctx.lineWidth = 3; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02); ctx.stroke();
     }
     drawGrenades();
@@ -975,6 +1424,20 @@ const Game = (() => {
         continue;
       }
       if (a.isVehicle) { drawVehicle(a); continue; }
+      const hidden = camouflaged(a);
+      if (hidden) ctx.globalAlpha = a.isPlayer ? 0.45 : 0.12;   // ghillied: barely there
+      // tool swing arc
+      if (a.swingT > 0) {
+        const reach = a.tool.range + a.r;
+        ctx.beginPath(); ctx.arc(a.x, a.y, reach, a.angle - 0.9, a.angle + 0.9);
+        ctx.strokeStyle = `rgba(255,255,255,${clamp(a.swingT * 4, 0, 0.7)})`; ctx.lineWidth = 4; ctx.stroke();
+      }
+      // riot shield plate
+      if (a.tool.shield && (a.isPlayer ? input.ads : true)) {
+        ctx.save(); ctx.translate(a.x, a.y); ctx.rotate(a.angle);
+        ctx.fillStyle = 'rgba(207,216,238,0.75)'; roundRect(a.r - 2, -16, 7, 32, 3); ctx.fill();
+        ctx.restore();
+      }
       // barrel
       ctx.strokeStyle = '#e9f0ff'; ctx.lineWidth = 5; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x + Math.cos(a.angle) * (a.r + 12), a.y + Math.sin(a.angle) * (a.r + 12)); ctx.stroke();
@@ -990,7 +1453,10 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 12, hpw, 5);
       ctx.fillStyle = a.hp > 50 ? '#4be08a' : a.hp > 25 ? '#ffcf4a' : '#ff4b5c';
       ctx.fillRect(a.x - hpw / 2, a.y - a.r - 12, hpw * (a.hp / a.maxHp), 5);
+      ctx.globalAlpha = 1;
     }
+
+    drawVisionTools();   // heat / night vision markers sit over the units
 
     // damage numbers
     for (const d of dmgNums) {
@@ -1012,11 +1478,86 @@ const Game = (() => {
       ctx.fillText(mode === 'domination' ? 'RESPAWNING…' : 'ELIMINATED — spectating', W / 2, H / 2);
     }
 
+    // night-vision tint is a screen-space wash
+    if (player.alive && player.toolActive && player.tool.nightFov) {
+      ctx.fillStyle = 'rgba(75,224,138,0.12)'; ctx.fillRect(0, 0, W, H);
+    }
+
     drawTacticalHud();
     drawMinimap();
 
     // flashbang whiteout (screen space, over everything)
     if (flashOverlay > 0) { ctx.fillStyle = `rgba(255,255,255,${clamp(flashOverlay / 1.5, 0, 0.96)})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  /* ---------------- terrain & structures ---------------- */
+  function drawTerrain() {
+    // grass (ghillie cover)
+    for (const g of grass) {
+      roundRect(g.x, g.y, g.w, g.h, 18);
+      ctx.fillStyle = 'rgba(75,224,138,0.07)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(75,224,138,0.16)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    // dug trenches
+    for (const t of trenches) {
+      ctx.beginPath(); ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(90,66,40,0.45)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(176,138,90,0.5)'; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+
+  function drawStructure(s) {
+    const k = kindOf(s);
+    const dmg = s.maxHp ? clamp(1 - s.hp / s.maxHp, 0, 1) : 0;
+    const along = s.w >= s.h;
+
+    if (s.type === 'wire') {          // hatched strip you can walk (slowly) through
+      ctx.strokeStyle = k.stroke; ctx.lineWidth = 2;
+      ctx.beginPath();
+      const len = along ? s.w : s.h;
+      for (let i = 0; i <= len; i += 14) {
+        if (along) { ctx.moveTo(s.x + i, s.y); ctx.lineTo(s.x + i + 8, s.y + s.h); ctx.moveTo(s.x + i + 8, s.y); ctx.lineTo(s.x + i, s.y + s.h); }
+        else { ctx.moveTo(s.x, s.y + i); ctx.lineTo(s.x + s.w, s.y + i + 8); ctx.moveTo(s.x, s.y + i + 8); ctx.lineTo(s.x + s.w, s.y + i); }
+      }
+      ctx.stroke();
+      return;
+    }
+
+    if (Structures.isDoor(s)) {       // open doors swing out of the frame
+      const c = doorCentre(s);
+      ctx.save(); ctx.translate(c.x, c.y);
+      if (s.open) ctx.rotate((along ? 1 : -1) * Math.PI / 2 * 0.75);
+      const w = along ? s.w : s.h, h = along ? s.h : s.w;
+      ctx.globalAlpha = s.open ? 0.55 : 1;
+      if (along) { roundRect(-w / 2, -h / 2, w, h, 3); } else { roundRect(-h / 2, -w / 2, h, w, 3); }
+      ctx.fillStyle = k.fill; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = k.stroke; ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      // handle dot so a door reads as a door at a glance
+      ctx.beginPath(); ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = k.stroke; ctx.fill();
+      if (player && player.alive && near2({ x: c.x, y: c.y }, player, 70)) {
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center';
+        ctx.fillText(s.open ? '[E] Close' : '[E] Open', c.x, c.y - 18);
+      }
+      return;
+    }
+
+    roundRect(s.x, s.y, s.w, s.h, k.height === 'low' ? 3 : 5);
+    ctx.fillStyle = k.fill; ctx.fill();
+    ctx.lineWidth = k.height === 'low' ? 1.5 : 2;
+    ctx.strokeStyle = k.stroke; ctx.stroke();
+    // reinforced/metal get a bright inner line so ricochet walls are readable
+    if (s.type === 'rwall' || s.type === 'metal') {
+      ctx.strokeStyle = 'rgba(220,235,255,0.22)'; ctx.lineWidth = 1;
+      ctx.strokeRect(s.x + 3, s.y + 3, Math.max(0, s.w - 6), Math.max(0, s.h - 6));
+    }
+    if (dmg > 0.02) {   // damage bleeds along the length of the piece
+      ctx.fillStyle = `rgba(255,75,92,${0.12 + dmg * 0.3})`;
+      if (along) ctx.fillRect(s.x + 1, s.y + 1, (s.w - 2) * dmg, Math.max(2, s.h - 2));
+      else ctx.fillRect(s.x + 1, s.y + 1, Math.max(2, s.w - 2), (s.h - 2) * dmg);
+    }
   }
 
   /* ---------------- tactical rendering helpers ---------------- */
@@ -1039,8 +1580,20 @@ const Game = (() => {
     // deployables
     for (const dp of deployables) {
       if (dp.type === 'wall') {
-        const r = dp.rect; roundRect(r.x, r.y, r.w, r.h, 4);
-        ctx.fillStyle = '#3a4a6a'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#6f86b8'; ctx.stroke();
+        drawStructure(dp.rect);
+      } else if (dp.type === 'sentry') {
+        ctx.save();
+        ctx.translate(dp.x, dp.y); ctx.rotate(dp.angle);
+        ctx.fillStyle = '#e9f0ff'; ctx.fillRect(0, -3, 26, 6);          // barrel
+        ctx.restore();
+        ctx.beginPath(); ctx.arc(dp.x, dp.y, 13, 0, Math.PI * 2);
+        ctx.fillStyle = '#243044'; ctx.fill();
+        ctx.lineWidth = 2.5; ctx.strokeStyle = TEAM_COLORS[dp.team]; ctx.stroke();
+        ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.range, 0, Math.PI * 2);
+        ctx.strokeStyle = hexA(TEAM_COLORS[dp.team], 0.08); ctx.lineWidth = 1; ctx.stroke();
+        const hw = 30;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw, 4);
+        ctx.fillStyle = '#35e0ff'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw * clamp(dp.hp / dp.maxHp, 0, 1), 4);
       } else if (dp.type === 'mine') {
         ctx.beginPath(); ctx.arc(dp.x, dp.y, 8, 0, Math.PI * 2);
         ctx.fillStyle = dp.arm > 0 ? '#7a8699' : '#ff4b5c'; ctx.fill();
@@ -1056,6 +1609,33 @@ const Game = (() => {
       }
     }
   }
+  /* Marksman NVG / Demolitionist heat goggles — both mark enemies, drawn in world space. */
+  function drawVisionTools() {
+    const p = player;
+    if (!p || !p.alive || !p.toolActive) return;
+    const t = p.tool;
+    if (t.heat) {                     // heat signatures bleed through walls
+      for (const a of agents) {
+        if (!a.alive || a.team === p.team) continue;
+        if (dist2(a.x, a.y, p.x, p.y) > t.heat * t.heat) continue;
+        const g = ctx.createRadialGradient(a.x, a.y, 2, a.x, a.y, a.r + 16);
+        g.addColorStop(0, 'rgba(255,120,60,0.85)');
+        g.addColorStop(1, 'rgba(255,80,40,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 16, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    if (t.nightFov) {                 // 25% further spotting, and smoke doesn't hide them
+      const range = 620 * (1 + t.nightFov);
+      for (const a of agents) {
+        if (!a.alive || a.team === p.team) continue;
+        if (dist2(a.x, a.y, p.x, p.y) > range * range) continue;
+        if (!hasLOS(p.x, p.y, a.x, a.y)) continue;
+        ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 7, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(120,255,170,0.9)'; ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
+  }
+
   function drawGrenades() {
     for (const g of grenades) {
       ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2);
@@ -1100,13 +1680,24 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
       ctx.fillStyle = '#ffcf4a'; roundRect(bx, by, bw * (p.adrenaline / 100), 8, 4); ctx.fill();
     }
+    // class chip (top-left, under the health bar area)
+    const cls = p.cls;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = cls.color;
+    ctx.fillText(`${cls.icon} ${cls.name.toUpperCase()}`, 22, H - 106);
+    ctx.font = '11px Segoe UI'; ctx.fillStyle = '#8ea0c9';
+    ctx.fillText(`${cls.speed}× speed · ${p.tool.name}`, 22, H - 90);
+
     // inventory slots bottom-center
     const slots = [
       { key: 'Q', s: p.inv.grenade }, { key: 'C', s: p.inv.tactical }, { key: 'F', s: p.inv.heal },
     ];
-    const sw = 74, gap = 10, totalW = slots.length * sw + (slots.length - 1) * gap + (p.inv.tokens.length ? sw + gap : 0);
+    const sw = 74, gap = 10;
+    const totalW = (slots.length + 1) * sw + slots.length * gap + (p.inv.tokens.length ? sw + gap : 0);
     let x = W / 2 - totalW / 2; const y = H - 92;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    drawToolSlot(x, y, sw);
+    x += sw + gap;
     for (const sl of slots) {
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, sw, 70, 10); ctx.fill();
       ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(120,160,255,0.3)'; ctx.stroke();
@@ -1149,6 +1740,34 @@ const Game = (() => {
     }
   }
 
+  /* the [V] tool slot: cooldown sweep for melee tools, lit border when a gadget is on */
+  function drawToolSlot(x, y, sw) {
+    const p = player, t = p.tool;
+    const ready = p.toolCd <= 0;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, sw, 70, 10); ctx.fill();
+    ctx.lineWidth = p.toolActive ? 2 : 1;
+    ctx.strokeStyle = p.toolActive ? p.cls.color : 'rgba(120,160,255,0.3)';
+    ctx.stroke();
+    if (!ready && t.cooldown) {   // dim overlay that drains as it recharges
+      ctx.save(); ctx.beginPath(); roundRect(x, y, sw, 70, 10); ctx.clip();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(x, y, sw, 70 * clamp(p.toolCd / t.cooldown, 0, 1));
+      ctx.restore();
+    }
+    ctx.textAlign = 'center';
+    ctx.font = '24px Segoe UI'; ctx.fillStyle = ready ? '#fff' : '#6a789c';
+    ctx.fillText(t.icon, x + sw / 2, y + 28);
+    ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#8ea0c9';
+    ctx.fillText(t.name.length > 13 ? t.name.slice(0, 12) + '…' : t.name, x + sw / 2, y + 52);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#ffcf4a'; ctx.font = 'bold 11px Segoe UI';
+    ctx.fillText('[V]', x + 6, y + 12);
+    if (!ready && t.cooldown >= 5) {   // long cooldowns (defib) get a countdown
+      ctx.textAlign = 'right'; ctx.fillStyle = '#fff';
+      ctx.fillText(Math.ceil(p.toolCd) + 's', x + sw - 6, y + 12);
+    }
+    ctx.textAlign = 'center';
+  }
+
   function drawMinimap() {
     const mw = 180, mh = mw * (MAP_H / MAP_W), pad = 16;
     const ox = W - mw - pad, oy = pad + 40;
@@ -1156,6 +1775,12 @@ const Game = (() => {
     ctx.fillStyle = 'rgba(0,0,0,0.5)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
     ctx.strokeStyle = 'rgba(120,160,255,0.3)'; ctx.lineWidth = 1; ctx.stroke();
     const sx = mw / MAP_W, sy = mh / MAP_H;
+    // building footprints, so you can read the map at a glance
+    ctx.fillStyle = 'rgba(180,205,255,0.22)';
+    for (const s of structureRects()) {
+      if (kindOf(s).height !== 'high') continue;
+      ctx.fillRect(ox + s.x * sx, oy + s.y * sy, Math.max(1, s.w * sx), Math.max(1, s.h * sy));
+    }
     for (const obj of objectives) {
       ctx.beginPath(); ctx.arc(ox + obj.x * sx, oy + obj.y * sy, 4, 0, Math.PI * 2);
       ctx.fillStyle = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#8ea0c9'; ctx.fill();
@@ -1196,5 +1821,5 @@ const Game = (() => {
     requestAnimationFrame(loop);
   }
 
-  return { start };
+  return { start, setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination };
 })();

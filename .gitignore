@@ -1,3 +1,16 @@
+# local Claude Code settings (machine-specific paths)
+.claude/settings.local.json
+
+# OS cruft
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# in case tooling ever lands here — this is a zero-build static site
 node_modules/
+*.log

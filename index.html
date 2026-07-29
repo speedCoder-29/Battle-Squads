@@ -129,10 +129,10 @@
             <div class="mode-card__icon">🚩</div>
             <div class="mode-card__body">
               <h3>Domination</h3>
-              <p>Capture and hold objectives. First squad to the score cap wins.</p>
+              <p>Capture and hold objectives across a large map. First squad to the score cap wins.</p>
             </div>
             <div class="mode-card__meta">
-              <span>4v4v4</span><span>•</span><span>~8 min</span>
+              <span>3v3v3</span><span>•</span><span>large map</span><span>•</span><span>~8 min</span>
             </div>
             <div class="mode-card__check">✓</div>
           </button>
@@ -144,7 +144,7 @@
               <p>Last squad standing. Wipe every other team to win — no respawns.</p>
             </div>
             <div class="mode-card__meta">
-              <span>Squads</span><span>•</span><span>~6 min</span>
+              <span>6 squads of 4</span><span>•</span><span>~6 min</span>
             </div>
             <div class="mode-card__check">✓</div>
           </button>
@@ -206,7 +206,7 @@
       <div class="subpage" data-panelgroup="loadout">
         <div class="subpage__head">
           <h1>Loadout</h1>
-          <p>Pick the weapon your operator deploys with. More unlocks via the Battle Pass.</p>
+          <p>Pick the weapon your operator deploys with — it sets your class, tool and consumables. More unlocks via the Battle Pass.</p>
         </div>
         <div class="loadout-grid" id="loadout-grid"></div>
       </div>
@@ -290,7 +290,7 @@
         <div class="hud__weapon" id="hud-weapon">Rifle</div>
         <div class="hud__ammo"><b id="hud-ammo">30</b><span id="hud-ammomax">/30</span></div>
       </div>
-      <div class="hud__hint" id="hud-hint">WASD move · L-click shoot · R-click aim · Shift dash · R reload · Q grenade · C tactical · F heal · B call-in · E open crate · Esc pause</div>
+      <div class="hud__hint" id="hud-hint">WASD move · L-click shoot · R-click aim · Shift dash · R reload · Q grenade · C tactical · F heal · V class tool · B call-in · E open crate · Esc pause</div>
     </div>
 
     <!-- Pause menu -->
@@ -323,6 +323,8 @@
 
   <!-- Scripts (plain scripts, load order matters — no build step / no modules) -->
   <script src="js/weapons.js"></script>
+  <script src="js/classes.js"></script>
+  <script src="js/structures.js"></script>
   <script src="js/items.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/audio.js"></script>

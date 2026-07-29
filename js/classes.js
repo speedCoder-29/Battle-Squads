@@ -1,0 +1,129 @@
+/* ============================================================
+   classes.js — the 10 playable classes and their tools.
+
+   A player's class comes from the weapon they have equipped
+   (every gun in the roster belongs to exactly one class), so
+   picking a gun in the Loadout screen picks the class with it.
+
+   Engine mapping notes:
+     • Melee Range is in design "units" — RANGE_UNIT px each.
+     • Structure Damage / Pierce apply to walls, sandbags, barbed
+       wire and player-built cover (see game.js structures).
+     • Tools with no melee damage are passive gadgets: pressing
+       [V] toggles them instead of swinging.
+   ============================================================ */
+const Classes = (() => {
+  const RANGE_UNIT = 24;                 // 1 melee range unit ≈ 24px
+  const px = (units) => units * RANGE_UNIT;
+
+  /* ---------- TOOLS ---------- */
+  const TOOLS = {
+    bayonet: {
+      id: 'bayonet', name: 'Bayonet', icon: '🗡️',
+      melee: 40, range: px(5), structure: 5, pierce: 1, cooldown: 0.5,
+      clears: 'wire',                                   // shreds barbed wire in one swing
+      effects: ['Barbed Wire Clearing'],
+    },
+    binoculars: {
+      id: 'binoculars', name: 'Binoculars', icon: '🔭',
+      melee: 0, range: 0, structure: 0, pierce: 0, cooldown: 0,
+      passive: true, zoom: 2, slow: 0.65, noFire: true, // holding binos = can't shoot
+      effects: ['2x Zoom'],
+    },
+    'trench-spade': {
+      id: 'trench-spade', name: 'Trench Spade', icon: '🛠️',
+      melee: 30, range: px(3), structure: 10, pierce: 2, cooldown: 0.4,
+      clears: 'sandbag', digs: true,                    // can dig a covering trench
+      effects: ['Sandbag Clearing', 'Trench Digging'],
+    },
+    'fire-axe': {
+      id: 'fire-axe', name: 'Fire Axe', icon: '🪓',
+      melee: 50, range: px(3), structure: 25, pierce: 2, cooldown: 0.33,
+      vs: { wood: 3 },                                  // 3x damage to wooden structures
+      effects: ['3x Wood Damage'],
+    },
+    'riot-shield': {
+      id: 'riot-shield', name: 'Riot Shield', icon: '🛡️',
+      melee: 25, range: px(2), structure: 15, pierce: 2, cooldown: 0.5,
+      shield: true, slow: 0.5, adsOnlyFire: true,       // only shoot while scoping
+      effects: ['100% Damage Reduction (front, while scoping)', '-50% Speed', 'Can only shoot while scoping'],
+    },
+    nvg: {
+      id: 'nvg', name: 'Night Vision Goggles', icon: '🥽',
+      melee: 0, range: 0, structure: 0, pierce: 0, cooldown: 0,
+      passive: true, nightFov: 0.25,                    // +25% spotting range, green tint
+      effects: ['25% Night FOV'],
+    },
+    ghillie: {
+      id: 'ghillie', name: 'Ghillie Suit', icon: '🌿',
+      melee: 0, range: 0, structure: 0, pierce: 0, cooldown: 0,
+      passive: true, camo: true,                        // invisible to bots in grass while still
+      effects: ['Camouflage on grass'],
+    },
+    'stone-hammer': {
+      id: 'stone-hammer', name: 'Stone Hammer', icon: '🔨',
+      melee: 60, range: px(3), structure: 55, pierce: 3, cooldown: 1,
+      builds: { type: 'wood', thickness: 0.5, length: 3, max: 8 },   // 50 HP, toughness 3
+      effects: ['Building'],
+    },
+    defibrillator: {
+      id: 'defibrillator', name: 'Defibrillator', icon: '⚡',
+      melee: 0, range: px(2), structure: 0, pierce: 0, cooldown: 60,
+      revive: true,
+      effects: ['Instant Revive'],
+    },
+    'heat-goggles': {
+      id: 'heat-goggles', name: 'Heat Vision Goggles', icon: '🌡️',
+      melee: 0, range: 0, structure: 0, pierce: 0, cooldown: 0,
+      passive: true, heat: 700,                         // see bodies through walls within 700px
+      effects: ['Heat Detection'],
+    },
+  };
+
+  /* ---------- CLASSES ---------- */
+  // speed = multiplier on the equipped weapon's move speed
+  // consumable = what you deploy with; limit = most you can ever carry of it
+  const RAW = [
+    ['Rifleman',      1,    'bayonet',       'frag',      3, 6,
+      'The jack of all trades in battles: able to cover medium to long ranges with their assault rifle and are very versatile.'],
+    ['Scout',         1.25, 'binoculars',    'pills',     3, 4,
+      'Explore, observe and gather critical information about enemy positions and placements.'],
+    ['Gunner',        1,    'trench-spade',  'ammobox',   1, 3,
+      'Use your machine gun to help teammates pin down enemies with heavy and sustained fire.'],
+    ['Assault',       1.1,  'fire-axe',      'smoke',     3, 3,
+      'Enter close-quarter battles with your submachine gun to aggressively clear rooms and push enemy territory.'],
+    ['Breacher',      1,    'riot-shield',   'flashbang', 3, 6,
+      'Break into the battle with shotguns and melees to tear through enemy walls and defences.'],
+    ['Marksman',      1,    'nvg',           'impact',    2, 4,
+      'Help your squadmates with your designated marksman rifle and its long range fire capabilities.'],
+    ['Sniper',        1,    'ghillie',       'mine',      2, 2,
+      'Take out enemies before they ever see you with extreme accuracy and range, plus a specialized scope.'],
+    ['Engineer',      1,    'stone-hammer',  'sentry',    1, 1,
+      'Equipped with your stone hammer, build your walls and defences as the engineer and protect your teammates.'],
+    ['Medic',         1.1,  'defibrillator', 'medkit',    1, 2,
+      'With your medkit and defibrillator, heal and revive your teammates whenever needed.'],
+    ['Demolitionist', 1,    'heat-goggles',  'c4',        3, 9,
+      'Wreck enemy vehicles and create entry points throughout any building or defense.'],
+  ];
+
+  const CLASSES = {};
+  const list = RAW.map(([name, speed, toolId, item, start, limit, desc]) => {
+    const meta = (typeof Weapons !== 'undefined' && Weapons.CLASS_META[name]) || {};
+    const c = {
+      name, speed, toolId, tool: TOOLS[toolId],
+      consumable: item, startCount: start, limit,
+      desc, icon: meta.icon || '🎖️', color: meta.color || '#3d7bff',
+    };
+    CLASSES[name] = c;
+    return c;
+  });
+
+  const GENERIC_LIMIT = 3;   // cap on anything looted that isn't your class kit
+
+  const byName = (name) => CLASSES[name] || CLASSES.Rifleman;
+  const forWeapon = (w) => byName(w && w.className);
+  /* how many of `itemId` this class may carry (its own kit is capped by the table) */
+  const limitFor = (cls, itemId) => (cls.consumable === itemId ? cls.limit : GENERIC_LIMIT);
+
+  return { TOOLS, CLASSES, list, byName, forWeapon, limitFor, GENERIC_LIMIT, RANGE_UNIT };
+})();

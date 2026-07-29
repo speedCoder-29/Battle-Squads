@@ -50,17 +50,20 @@ const Matchmaking = (() => {
     // draw squad blips
     const squadsEl = document.getElementById('found-squads');
     squadsEl.innerHTML = '';
-    const colors = ['var(--blue)', 'var(--red)', 'var(--green)'];
-    const icons = ['🔵', '🔴', '🟢'];
-    const nSquads = mode === 'domination' ? 3 : 4;
-    for (let i = 0; i < nSquads; i++) {
+    // one blip per squad actually in the match (see TEAM_SETUP in game.js)
+    const colors = ['#3d7bff', '#ff4b5c', '#4be08a', '#c46bff', '#ffa726', '#35e0ff'];
+    const icons = ['🔵', '🔴', '🟢', '🟣', '🟠', '🔷'];
+    const squad = Game.setupFor(mode);
+    for (let i = 0; i < squad.teams; i++) {
       const blip = document.createElement('div');
       blip.className = 'squad-blip';
-      blip.style.borderColor = colors[i % 3];
+      blip.style.borderColor = colors[i % colors.length];
       blip.style.animationDelay = (i * 0.12) + 's';
-      blip.textContent = icons[i % 3];
+      blip.textContent = icons[i % icons.length];
       squadsEl.appendChild(blip);
     }
+    document.getElementById('found-mode').textContent +=
+      ` · ${squad.teams} squads of ${squad.perTeam}`;
     overlay.classList.add('is-open');
     SFX.capture();
 

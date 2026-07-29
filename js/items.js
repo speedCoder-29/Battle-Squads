@@ -24,6 +24,7 @@ const Items = (() => {
     barricade: { name: 'Barricade',  cat: 'tactical', mode: 'wall',  icon: '🧱', place: 5, life: 30, w: 120, h: 22 },
     ammobox:   { name: 'Ammo Box',   cat: 'tactical', mode: 'ammo',  icon: '📦', supply: 200, life: 45 },
     flag:      { name: 'Cool Flag',  cat: 'tactical', mode: 'flag',  icon: '🚩', radius: 250, adr: 10, speed: 0.25, life: 40 },
+    sentry:    { name: 'Sentry Gun', cat: 'tactical', mode: 'sentry',icon: '🔫', hp: 180, range: 430, damage: 11, rof: 7, life: 75 },
 
     // heals / boosts (self, channeled) -----------------------------------
     medkit:    { name: 'Medkit',     cat: 'heal', icon: '⛑️', hp: 100, time: 7.5 },
@@ -69,8 +70,13 @@ const Items = (() => {
     gold:    { color: '#ffcf4a', icon: '🏆', name: 'Gold Crate' },
   };
 
-  // "Class Consumable" pool — what a class-exclusive drop can give
+  // "Class Consumable" pool — fallback when we don't know the opener's class
   const CLASS_CONSUMABLES = ['frag', 'impact', 'smoke', 'flashbang', 'mine', 'barricade', 'ammobox', 'c4'];
+  // a class drop should really give *your* kit (see Classes.CLASSES)
+  const classConsumableFor = (className) => {
+    const c = (typeof Classes !== 'undefined') && Classes.CLASSES[className];
+    return c ? c.consumable : randomClassConsumable();
+  };
 
   function weightedPick(table) {
     const total = table.reduce((s, e) => s + e.w, 0);
@@ -113,7 +119,7 @@ const Items = (() => {
 
   return {
     CONSUMABLES, CRATE_TABLES, CRATE_RARITY, CRATE_STYLE, LEGENDARY_MODS,
-    weightedPick, rollCrateTier, rollLoot, randomClassConsumable,
+    weightedPick, rollCrateTier, rollLoot, randomClassConsumable, classConsumableFor,
     bestOfClass, makeLegendary,
   };
 })();

@@ -332,7 +332,19 @@ input, select { font-family: inherit; }
 
 /* loadout */
 .loadout-grid { display: flex; flex-direction: column; gap: 24px; }
-.wclass__title { font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.wclass { border-left: 2px solid transparent; padding-left: 14px; transition: 0.16s; }
+.wclass.is-active { border-left-color: var(--accent); }
+.wclass__title { font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.wclass__tag { font-size: 9px; letter-spacing: 1px; padding: 2px 7px; border-radius: 999px; background: var(--accent); color: #1a0e04; font-weight: 800; }
+.wclass__desc { font-size: 12px; color: var(--dim); max-width: 720px; margin-bottom: 8px; line-height: 1.5; }
+.wclass__kit { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.kit-chip { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+.kit-chip b { color: var(--text); }
+.wclass__tool { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px; }
+.tool-nums { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); }
+.tool-nums b { color: var(--text); }
+.tool-fx { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-badge { font-size: 10px; padding: 2px 8px; border-radius: 6px; background: rgba(120,160,255,0.10); border: 1px solid var(--line); color: var(--dim); }
 .wclass__row { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .weapon-card {
   border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--panel);
