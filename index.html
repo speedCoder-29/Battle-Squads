@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Battle Squads — a fast-paced 2D team shooter. Capture objectives or eliminate every squad." />
+  <title>Battle Squads</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23ff6a2b'/%3E%3Ctext x='50' y='68' font-size='52' font-weight='900' text-anchor='middle' fill='%231a0e04' font-family='Arial'%3EBS%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- Animated background layers (shared by all screens) -->
+  <div class="bg">
+    <div class="bg__gradient"></div>
+    <div class="bg__grid"></div>
+    <canvas id="bg-particles"></canvas>
+    <div class="bg__vignette"></div>
+  </div>
+
+  <!-- ============ LOGIN / SIGN-UP SCREEN ============ -->
+  <section id="screen-auth" class="screen screen--auth is-active">
+    <div class="auth-card">
+      <div class="brand brand--stacked">
+        <div class="brand__mark">BS</div>
+        <h1 class="brand__name">BATTLE&nbsp;SQUADS</h1>
+        <p class="brand__tag">Capture. Eliminate. Dominate.</p>
+      </div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab is-active" data-authtab="login">Log In</button>
+        <button class="auth-tab" data-authtab="signup">Create Account</button>
+      </div>
+
+      <form id="form-login" class="auth-form is-active" autocomplete="off">
+        <label class="field">
+          <span>Username</span>
+          <input type="text" name="username" placeholder="Enter your callsign" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" name="password" placeholder="••••••••" required />
+        </label>
+        <p class="auth-error" data-error="login"></p>
+        <button type="submit" class="btn btn--primary btn--full">Deploy</button>
+        <button type="button" class="btn btn--ghost btn--full" id="btn-guest">Play as Guest</button>
+      </form>
+
+      <form id="form-signup" class="auth-form" autocomplete="off">
+        <label class="field">
+          <span>Callsign</span>
+          <input type="text" name="username" placeholder="Choose a username" required minlength="3" maxlength="16" />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" name="password" placeholder="At least 4 characters" required minlength="4" />
+        </label>
+        <label class="field">
+          <span>Confirm Password</span>
+          <input type="password" name="confirm" placeholder="Repeat password" required />
+        </label>
+        <p class="auth-error" data-error="signup"></p>
+        <button type="submit" class="btn btn--primary btn--full">Enlist</button>
+      </form>
+    </div>
+    <p class="auth-footnote">Accounts are stored locally in your browser for this prototype. See README for adding a real backend.</p>
+  </section>
+
+  <!-- ============ HOME / MAIN MENU SCREEN ============ -->
+  <section id="screen-home" class="screen screen--home">
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="brand brand--inline">
+        <div class="brand__mark brand__mark--sm">BS</div>
+        <span class="brand__name brand__name--sm">BATTLE SQUADS</span>
+      </div>
+
+      <nav class="topnav">
+        <button class="topnav__btn is-active" data-nav="play">Play</button>
+        <button class="topnav__btn" data-nav="missions">Missions</button>
+        <button class="topnav__btn" data-nav="battlepass">Battle Pass</button>
+        <button class="topnav__btn" data-nav="loadout">Loadout</button>
+      </nav>
+
+      <div class="profile">
+        <div class="wallet">
+          <span class="wallet__item" title="Credits">🪙 <b id="hud-credits">0</b></span>
+          <span class="wallet__item" title="Squad Coins">💎 <b id="hud-gems">0</b></span>
+        </div>
+        <button class="profile__chip" id="btn-profile">
+          <span class="avatar" id="hud-avatar">🎯</span>
+          <span class="profile__meta">
+            <span class="profile__name" id="hud-name">Player</span>
+            <span class="profile__level">Lv <b id="hud-level">1</b></span>
+          </span>
+        </button>
+        <button class="icon-btn" id="btn-settings" title="Settings">⚙️</button>
+        <button class="icon-btn" id="btn-logout" title="Log out">⎋</button>
+      </div>
+    </header>
+
+    <!-- Home content panels -->
+    <main class="home">
+      <!-- LEFT: news / featured -->
+      <aside class="panel panel--news" data-panelgroup="play">
+        <h2 class="panel__title">Latest Drop</h2>
+        <div class="news-card">
+          <div class="news-card__banner news-card__banner--season">
+            <span class="tag">SEASON 1</span>
+            <h3>Operation First Light</h3>
+          </div>
+          <p>New objective maps, ranked queues, and the Season 1 Battle Pass are live. Squad up and climb.</p>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><b id="stat-wins">0</b><span>Wins</span></div>
+          <div class="stat"><b id="stat-matches">0</b><span>Matches</span></div>
+          <div class="stat"><b id="stat-kills">0</b><span>Eliminations</span></div>
+        </div>
+      </aside>
+
+      <!-- CENTER: PLAY / queue -->
+      <div class="play-hub" data-panelgroup="play">
+        <div class="play-hub__head">
+          <h1 class="play-hub__title">SELECT GAME MODE</h1>
+          <p class="play-hub__sub">Choose your fight, then hit deploy.</p>
+        </div>
+
+        <div class="mode-grid">
+          <button class="mode-card is-selected" data-mode="domination">
+            <div class="mode-card__icon">🚩</div>
+            <div class="mode-card__body">
+              <h3>Domination</h3>
+              <p>Capture and hold objectives. First squad to the score cap wins.</p>
+            </div>
+            <div class="mode-card__meta">
+              <span>4v4v4</span><span>•</span><span>~8 min</span>
+            </div>
+            <div class="mode-card__check">✓</div>
+          </button>
+
+          <button class="mode-card" data-mode="elimination">
+            <div class="mode-card__icon">💀</div>
+            <div class="mode-card__body">
+              <h3>Elimination</h3>
+              <p>Last squad standing. Wipe every other team to win — no respawns.</p>
+            </div>
+            <div class="mode-card__meta">
+              <span>Squads</span><span>•</span><span>~6 min</span>
+            </div>
+            <div class="mode-card__check">✓</div>
+          </button>
+        </div>
+
+        <div class="queue-bar">
+          <div class="queue-bar__info">
+            <span class="queue-bar__mode" id="queue-mode-label">Domination</span>
+            <span class="queue-bar__status" id="queue-status">Ready to deploy</span>
+          </div>
+          <button class="btn btn--play" id="btn-queue">
+            <span class="btn--play__label">DEPLOY</span>
+            <span class="btn--play__timer" id="queue-timer"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- RIGHT: daily missions preview -->
+      <aside class="panel panel--missions" data-panelgroup="play">
+        <h2 class="panel__title">Daily Missions <span class="panel__hint">resets in <b id="missions-reset">—</b></span></h2>
+        <ul class="mini-mission-list" id="mini-mission-list"></ul>
+      </aside>
+
+      <!-- ===== MISSIONS FULL PANEL ===== -->
+      <div class="subpage" data-panelgroup="missions">
+        <div class="subpage__head">
+          <h1>Daily & Weekly Missions</h1>
+          <p>Complete missions to earn Credits and Battle Pass XP.</p>
+        </div>
+        <div class="mission-columns">
+          <div>
+            <h3 class="col-title">Daily <span class="panel__hint">resets in <b class="missions-reset">—</b></span></h3>
+            <ul class="mission-list" id="mission-list-daily"></ul>
+          </div>
+          <div>
+            <h3 class="col-title">Weekly</h3>
+            <ul class="mission-list" id="mission-list-weekly"></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== BATTLE PASS FULL PANEL ===== -->
+      <div class="subpage" data-panelgroup="battlepass">
+        <div class="subpage__head bp-head">
+          <div>
+            <h1>Season 1 Battle Pass <span class="tag">FREE + PREMIUM</span></h1>
+            <p>Earn XP from matches and missions to unlock rewards.</p>
+          </div>
+          <div class="bp-progress">
+            <div class="bp-progress__label">Tier <b id="bp-tier">1</b></div>
+            <div class="bar"><div class="bar__fill" id="bp-bar"></div></div>
+            <div class="bp-progress__xp"><span id="bp-xp">0</span> / <span id="bp-xpmax">1000</span> XP</div>
+          </div>
+        </div>
+        <div class="bp-track" id="bp-track"></div>
+      </div>
+
+      <!-- ===== LOADOUT FULL PANEL ===== -->
+      <div class="subpage" data-panelgroup="loadout">
+        <div class="subpage__head">
+          <h1>Loadout</h1>
+          <p>Pick the weapon your operator deploys with. More unlocks via the Battle Pass.</p>
+        </div>
+        <div class="loadout-grid" id="loadout-grid"></div>
+      </div>
+    </main>
+  </section>
+
+  <!-- ============ SETTINGS MODAL ============ -->
+  <div id="modal-settings" class="modal">
+    <div class="modal__box">
+      <div class="modal__head">
+        <h2>Settings</h2>
+        <button class="icon-btn" data-close-modal>✕</button>
+      </div>
+      <div class="modal__body">
+        <div class="setting">
+          <label>Display Name</label>
+          <input type="text" id="set-name" maxlength="16" />
+        </div>
+        <div class="setting">
+          <label>Operator Icon</label>
+          <div class="avatar-picker" id="avatar-picker"></div>
+        </div>
+        <div class="setting">
+          <label>Master Volume <span class="setting__val" id="val-volume">70%</span></label>
+          <input type="range" id="set-volume" min="0" max="100" value="70" />
+        </div>
+        <div class="setting">
+          <label>Sound Effects</label>
+          <label class="switch"><input type="checkbox" id="set-sfx" checked /><span></span></label>
+        </div>
+        <div class="setting">
+          <label>Aim Sensitivity <span class="setting__val" id="val-sens">1.0×</span></label>
+          <input type="range" id="set-sens" min="50" max="200" value="100" />
+        </div>
+        <div class="setting">
+          <label>Graphics Quality</label>
+          <select id="set-quality">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label>Show Damage Numbers</label>
+          <label class="switch"><input type="checkbox" id="set-dmgnum" checked /><span></span></label>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <button class="btn btn--ghost" id="btn-reset-progress">Reset Progress</button>
+        <button class="btn btn--primary" data-close-modal>Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MATCH FOUND OVERLAY ============ -->
+  <div id="overlay-found" class="overlay">
+    <div class="found">
+      <h2>MATCH FOUND</h2>
+      <p id="found-mode">Domination</p>
+      <div class="found__squads" id="found-squads"></div>
+      <div class="found__count" id="found-count">3</div>
+    </div>
+  </div>
+
+  <!-- ============ IN-GAME SCREEN ============ -->
+  <section id="screen-game" class="screen screen--game">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- HUD -->
+    <div class="hud">
+      <div class="hud__top">
+        <div class="hud__scores" id="hud-scores"></div>
+        <div class="hud__timer" id="hud-gametimer">8:00</div>
+        <div class="hud__mode" id="hud-gamemode">DOMINATION</div>
+      </div>
+      <div class="hud__bottom">
+        <div class="hud__health">
+          <span class="hud__hp-label">HP</span>
+          <div class="hud__hp-bar"><div class="hud__hp-fill" id="hud-hpfill"></div></div>
+        </div>
+        <div class="hud__weapon" id="hud-weapon">Rifle</div>
+        <div class="hud__ammo"><b id="hud-ammo">30</b><span id="hud-ammomax">/30</span></div>
+      </div>
+      <div class="hud__hint" id="hud-hint">WASD move · L-click shoot · R-click aim · Shift dash · R reload · Q grenade · C tactical · F heal · B call-in · E open crate · Esc pause</div>
+    </div>
+
+    <!-- Pause menu -->
+    <div id="game-pause" class="game-menu">
+      <div class="game-menu__box">
+        <h2>Paused</h2>
+        <button class="btn btn--primary btn--full" id="btn-resume">Resume</button>
+        <button class="btn btn--ghost btn--full" id="btn-quit">Leave Match</button>
+      </div>
+    </div>
+
+    <!-- Match results -->
+    <div id="game-results" class="game-menu">
+      <div class="game-menu__box game-menu__box--wide">
+        <h2 id="result-title">VICTORY</h2>
+        <p id="result-sub">Your squad captured the objectives.</p>
+        <div class="result-stats">
+          <div class="result-stat"><b id="res-kills">0</b><span>Eliminations</span></div>
+          <div class="result-stat"><b id="res-score">0</b><span>Score</span></div>
+          <div class="result-stat"><b id="res-xp">0</b><span>Battle Pass XP</span></div>
+          <div class="result-stat"><b id="res-credits">0</b><span>Credits</span></div>
+        </div>
+        <button class="btn btn--primary btn--full" id="btn-continue">Continue</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Toast notifications -->
+  <div id="toast-wrap" class="toast-wrap"></div>
+
+  <!-- Scripts (plain scripts, load order matters — no build step / no modules) -->
+  <script src="js/weapons.js"></script>
+  <script src="js/items.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/progression.js"></script>
+  <script src="js/screens.js"></script>
+  <script src="js/matchmaking.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
