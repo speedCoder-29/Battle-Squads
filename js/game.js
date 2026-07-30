@@ -1487,10 +1487,10 @@ const Game = (() => {
       const adr = Combat.adrenaline(a.adrenaline);
       if (a.hp < a.maxHp) {
         a.hp = Math.min(a.maxHp, a.hp + adr.regen * dt);
-        a.adrenaline = Math.max(0, a.adrenaline - 0.375*adr.burn * dt);
+        a.adrenaline = Math.max(0, a.adrenaline - 0.1*adr.burn * dt);
         if (a.isPlayer && Math.random() < dt * 3) spawnFx(a.x, a.y, '#4be08a', 1);
       } else {
-        a.adrenaline = Math.max(0, a.adrenaline - 0.375 * dt);   // slow idle decay
+        a.adrenaline = Math.max(0, a.adrenaline - 0.1 * dt);   // slow idle decay
       }
     }
     if (player.channel) { player.channel.t -= dt; if (player.channel.t <= 0) { player.channel.onDone(); player.channel = null; } }
