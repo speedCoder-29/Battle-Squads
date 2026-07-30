@@ -28,6 +28,7 @@ const Game = (() => {
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
   let grenades = [], deployables = [], smokes = [], crates = [], drops = [], airstrikes = [];
   let grass = [], trenches = [], decor = [];                       // terrain + dressing
+  let terrain = null;                                              // island: ocean/beach/grass/river/roads
   let flashOverlay = 0;                                            // player blind timer (s)
   let zoom = 1, zoomTarget = 1;                                    // binoculars pull the camera back
   let teamScores = [];
@@ -55,31 +56,32 @@ const Game = (() => {
   function buildMap() {
     obstacles = []; trenches = [];
     invalidateRects();
+    terrain = Terrain.generate(MAP_W, MAP_H, mode === 'domination' ? 20260730 : 90210);
     const S = Structures;
     // Each mode gets its own board. Objectives/spawns live in the open ground
     // between the buildings — see OBJECTIVE_SPOTS and spawnPoint().
     if (mode === 'domination') {
       obstacles.push(
-        ...S.place('camp',        260, 320),
-        ...S.place('mansion',    1360, 240),
-        ...S.place('apartments', 2560, 260),
-        ...S.place('house',      3880, 380),
-        ...S.place('tower',      3300, 900),
-        ...S.place('shanty',      700, 800),
-        ...S.place('warehouse',  1780, 780),
-        ...S.place('farm',       3760, 1120),
-        ...S.place('house',       300, 1500),
-        ...S.place('checkpoint', 1420, 1420),
-        ...S.place('hangar',     2500, 1180),
-        ...S.place('camp',       3880, 1900),
-        ...S.place('mansion',    1120, 1900),
-        ...S.place('bunker',     2280, 1880),
-        ...S.place('depot',       520, 2500),
-        ...S.place('base',       3040, 2380),
-        ...S.place('apartments', 1500, 2560),
-        ...S.place('tower',       180, 2760),
-        ...S.place('checkpoint', 2500, 2700),
-        ...S.place('house',      4060, 2620),
+        ...tryPlace('camp', 260, 320),
+        ...tryPlace('mansion', 1360, 240),
+        ...tryPlace('apartments', 2560, 260),
+        ...tryPlace('house', 3880, 380),
+        ...tryPlace('tower', 3300, 900),
+        ...tryPlace('shanty', 700, 800),
+        ...tryPlace('warehouse', 1780, 780),
+        ...tryPlace('farm', 3760, 1120),
+        ...tryPlace('house', 300, 1500),
+        ...tryPlace('checkpoint', 1420, 1420),
+        ...tryPlace('hangar', 2500, 1180),
+        ...tryPlace('camp', 3880, 1900),
+        ...tryPlace('mansion', 1120, 1900),
+        ...tryPlace('bunker', 2280, 1880),
+        ...tryPlace('depot', 520, 2500),
+        ...tryPlace('base', 3040, 2380),
+        ...tryPlace('apartments', 1500, 2560),
+        ...tryPlace('tower', 180, 2760),
+        ...tryPlace('checkpoint', 2500, 2700),
+        ...tryPlace('house', 4060, 2620),
       );
       obstacles.push(
         S.seg('sandbag',   1120, 1180, 5, 'h', 0.5),
@@ -126,18 +128,18 @@ const Game = (() => {
       ];
     } else {
       obstacles.push(
-        ...S.place('camp',        180, 200),
-        ...S.place('mansion',     900, 160),
-        ...S.place('house',      2520, 240),
-        ...S.place('apartments', 1760, 700),
-        ...S.place('shanty',      420, 760),
-        ...S.place('farm',       2380, 900),
-        ...S.place('house',       220, 1420),
-        ...S.place('bunker',     1020, 1500),
-        ...S.place('tower',      2900, 1560),
-        ...S.place('checkpoint', 1500, 1300),
-        ...S.place('base',       1960, 1680),
-        ...S.place('depot',       560, 1820),
+        ...tryPlace('camp', 180, 200),
+        ...tryPlace('mansion', 900, 160),
+        ...tryPlace('house', 2520, 240),
+        ...tryPlace('apartments', 1760, 700),
+        ...tryPlace('shanty', 420, 760),
+        ...tryPlace('farm', 2380, 900),
+        ...tryPlace('house', 220, 1420),
+        ...tryPlace('bunker', 1020, 1500),
+        ...tryPlace('tower', 2900, 1560),
+        ...tryPlace('checkpoint', 1500, 1300),
+        ...tryPlace('base', 1960, 1680),
+        ...tryPlace('depot', 560, 1820),
       );
       obstacles.push(
         S.seg('sandbag',   1320, 1000, 4, 'h', 0.5),
@@ -170,12 +172,75 @@ const Game = (() => {
         ...S.scatter(['rock', 'bush'], 2000, 2000, 600, 360, 18),
       ];
     }
-    // keep props on the board, and never inside a wall — it would look like
-    // they were growing out of it
+    // Loose cover isn't part of a building, so a piece that landed in the water
+    // can just be dropped — buildings go through tryPlace() and stay whole.
+    obstacles = obstacles.filter(o =>
+      o.building || Terrain.isSpawnable(terrain, o.x + o.w / 2, o.y + o.h / 2));
+    invalidateRects();
+
+    // scatter beach dressing too, so the shoreline isn't bare
+    decor.push(...beachDecor());
+    // keep props on the board and out of walls, water and the road
     const edge = 30;
     decor = decor
       .map(d => ({ ...d, x: clamp(d.x, edge, MAP_W - edge), y: clamp(d.y, edge, MAP_H - edge) }))
-      .filter(d => !pointInObstacle(d.x, d.y));
+      .filter(d => Sprites.has(d.kind))
+      .filter(d => !pointInObstacle(d.x, d.y))
+      .filter(d => Terrain.isSpawnable(terrain, d.x, d.y))
+      .filter(d => !Terrain.onRoad(terrain, d.x, d.y));
+
+  }
+
+  /* Place a building only where the terrain allows it, and keep it whole.
+     Filtering segment-by-segment would carve holes in anything straddling the
+     river, so a placement either lands entirely or is skipped and nudged. */
+  function placeBuilding(name, x, y) {
+    const parts = Structures.place(name, x, y);
+    if (!parts.length) return [];
+    // bounding box of the whole thing
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of parts) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x + p.w); y1 = Math.max(y1, p.y + p.h);
+    }
+    // every corner and the centre must be dry, inland ground
+    const probes = [[x0, y0], [x1, y0], [x0, y1], [x1, y1], [(x0 + x1) / 2, (y0 + y1) / 2]];
+    for (const [px, py] of probes) {
+      if (!Terrain.isBuildable(terrain, px, py, 10)) return [];
+      if (px < 40 || py < 40 || px > MAP_W - 40 || py > MAP_H - 40) return [];
+    }
+    return parts;
+  }
+
+  /* Try a building at its intended spot, then at a few nearby offsets, so a
+     river crossing its footprint moves it rather than deleting it. */
+  function tryPlace(name, x, y) {
+    const offsets = [[0, 0], [220, 0], [-220, 0], [0, 220], [0, -220],
+                     [320, 320], [-320, 320], [320, -320], [-320, -320], [520, 0], [-520, 0]];
+    for (const [ox, oy] of offsets) {
+      const parts = placeBuilding(name, x + ox, y + oy);
+      if (parts.length) return parts;
+    }
+    return [];
+  }
+
+  /* palms and driftwood along the sand ring */
+  function beachDecor() {
+    const out = [];
+    const band = (Terrain.BEACH_INSET + Terrain.OCEAN_INSET) / 2;
+    const kinds = ['palm', 'rock', 'stump', 'crate'];
+    for (let i = 0; i < 90; i++) {
+      const k = kinds[Math.floor(Math.random() * kinds.length)];
+      const side = Math.floor(Math.random() * 4);
+      const along = rand(band, (side % 2 ? MAP_H : MAP_W) - band);
+      const off = rand(Terrain.OCEAN_INSET + 30, Terrain.BEACH_INSET - 30);
+      const p = side === 0 ? { x: along, y: off }
+        : side === 1 ? { x: MAP_W - off, y: along }
+        : side === 2 ? { x: along, y: MAP_H - off }
+        : { x: off, y: along };
+      out.push({ kind: k, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 0.8 + Math.random() * 0.4 });
+    }
+    return out;
   }
   const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
   const onGrass = (a) => grass.some(g => inRect(a.x, a.y, g));
@@ -959,7 +1024,7 @@ const Game = (() => {
     for (let i = 0; i < n; i++) {
       let x, y, tries = 0;
       do { x = rand(200, MAP_W - 200); y = rand(200, MAP_H - 200); tries++; }
-      while (pointInObstacle(x, y) && tries < 20);
+      while (tries < 40 && (pointInObstacle(x, y) || !Terrain.isSpawnable(terrain, x, y)));
       crates.push({ x, y, tier: Items.rollCrateTier(), opened: false });
     }
   }
@@ -1339,7 +1404,8 @@ const Game = (() => {
     if (m > 0) {
       const base = a.isVehicle ? a.vspeed
         : a.weapon.moveSpeed * 0.72 * a.cls.speed * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
-      const spd = base * (a.wireSlow || 1) * dt;
+      const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
+      const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
       const px = a.x, py = a.y;
       a.x += (moveX / m) * spd; a.y += (moveY / m) * spd;
       resolveObstacles(a);
@@ -1407,7 +1473,8 @@ const Game = (() => {
         if (player.channel) base *= 0.4;             // channeling a heal
         if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
         if (tool.shield && input.ads) base *= tool.slow;
-        const spd = base * (player.wireSlow || 1) * dt;
+        const surf = terrain ? Terrain.surfaceAt(terrain, player.x, player.y) : null;
+        const spd = base * (player.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
         const px = player.x, py = player.y;
         player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
         player.vx = (player.x - px) / dt; player.vy = (player.y - py) / dt;
@@ -1774,25 +1841,8 @@ const Game = (() => {
     ctx.scale(zoom, zoom);          // binoculars pull the whole world back
     ctx.translate(-camX, -camY);
 
-    // ground
-    // brighter ground: a lit gradient rather than a flat near-black field
-    const gnd = ctx.createLinearGradient(0, 0, MAP_W, MAP_H);
-    gnd.addColorStop(0, '#2b3a5e');
-    gnd.addColorStop(0.5, '#243350');
-    gnd.addColorStop(1, '#1e2b45');
-    ctx.fillStyle = gnd;
-    ctx.fillRect(0, 0, MAP_W, MAP_H);
-    // grid
-    ctx.strokeStyle = 'rgba(170,205,255,0.10)'; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= MAP_W; x += 80) { ctx.moveTo(x, 0); ctx.lineTo(x, MAP_H); }
-    for (let y = 0; y <= MAP_H; y += 80) { ctx.moveTo(0, y); ctx.lineTo(MAP_W, y); }
-    ctx.stroke();
-    // border
-    ctx.strokeStyle = 'rgba(180,215,255,0.45)'; ctx.lineWidth = 4;
-    ctx.strokeRect(0, 0, MAP_W, MAP_H);
-
-    drawTerrain();
+    drawIsland();      // ocean, beach, grass, river, bridges, roads
+    drawTerrain();     // grass patches the ghillie uses, and dug trenches
 
     // objectives
     for (const obj of objectives) {
@@ -1943,6 +1993,88 @@ const Game = (() => {
     if (flashOverlay > 0) { ctx.fillStyle = `rgba(255,255,255,${clamp(flashOverlay / 1.5, 0, 0.96)})`; ctx.fillRect(0, 0, W, H); }
   }
 
+  /* ---------------- the island ----------------
+     Painted in bands from the outside in, the way the terrain is generated:
+     ocean, then beach, then grass, then the river cut through it, then the
+     bridges and roads laid on top. */
+  function drawIsland() {
+    const T = terrain; if (!T) return;
+    const C = Terrain.COLORS;
+
+    // ocean fills everything; the bands paint over it
+    ctx.fillStyle = C.oceanDeep;
+    ctx.fillRect(-400, -400, MAP_W + 800, MAP_H + 800);
+    ctx.fillStyle = C.ocean;
+    ctx.fillRect(-200, -200, MAP_W + 400, MAP_H + 400);
+
+    // beach
+    const bi = T.oceanInset;
+    ctx.fillStyle = C.beach;
+    ctx.fillRect(bi, bi, MAP_W - bi * 2, MAP_H - bi * 2);
+    ctx.strokeStyle = C.beachEdge; ctx.lineWidth = 3;
+    ctx.strokeRect(bi, bi, MAP_W - bi * 2, MAP_H - bi * 2);
+
+    // grass interior
+    const gi = T.beachInset;
+    ctx.fillStyle = C.grass;
+    ctx.fillRect(gi, gi, MAP_W - gi * 2, MAP_H - gi * 2);
+
+    // tonal patches so the field isn't a flat slab
+    ctx.save();
+    ctx.beginPath(); ctx.rect(gi, gi, MAP_W - gi * 2, MAP_H - gi * 2); ctx.clip();
+    for (const p of T.patches) {
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = p.light ? C.grassLight : C.grassAlt;
+      ctx.globalAlpha = 0.35; ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    // river, drawn as a thick stroked polyline with a lighter bank
+    for (const r of T.rivers) {
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      r.pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.strokeStyle = C.riverEdge; ctx.lineWidth = r.width + 12; ctx.stroke();
+      ctx.strokeStyle = C.river; ctx.lineWidth = r.width; ctx.stroke();
+    }
+
+    // roads
+    for (const rd of T.roads) {
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      rd.pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.strokeStyle = C.road; ctx.lineWidth = rd.width; ctx.stroke();
+      // centre line
+      ctx.setLineDash([26, 26]);
+      ctx.strokeStyle = C.roadLine; ctx.lineWidth = 3; ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // bridges over the river
+    for (const b of T.bridges) {
+      ctx.save();
+      ctx.translate(b.x, b.y); ctx.rotate(b.angle);
+      ctx.fillStyle = Terrain.COLORS.bridge;
+      ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h);
+      ctx.strokeStyle = Terrain.COLORS.bridgeEdge; ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(-b.w / 2, -b.h / 2); ctx.lineTo(b.w / 2, -b.h / 2);
+      ctx.moveTo(-b.w / 2, b.h / 2); ctx.lineTo(b.w / 2, b.h / 2);
+      ctx.stroke();
+      // planking
+      ctx.strokeStyle = 'rgba(94,70,41,0.5)'; ctx.lineWidth = 2;
+      for (let i = -b.w / 2 + 14; i < b.w / 2; i += 28) {
+        ctx.beginPath(); ctx.moveTo(i, -b.h / 2); ctx.lineTo(i, b.h / 2); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // map edge
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 3;
+    ctx.strokeRect(0, 0, MAP_W, MAP_H);
+  }
+
   /* ---------------- terrain & structures ---------------- */
   function drawTerrain() {
     // grass (ghillie cover)
@@ -1989,27 +2121,21 @@ const Game = (() => {
   /* props: shadow first, then the prop, so a tree never shades itself */
   function drawDecor() {
     if (!decor.length) return;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     // shadows
     for (const d of decor) {
-      const def = Structures.DECOR[d.kind]; if (!def) continue;
-      const r = def.r * d.scale;
+      const m = Sprites.META[d.kind]; if (!m) continue;
+      const r = m.r * d.scale;
       ctx.save();
       ctx.fillStyle = SHADOW;
-      ctx.translate(d.x + SUN.dx * def.shadow, d.y + SUN.dy * def.shadow);
+      ctx.translate(d.x + SUN.dx * m.shadow, d.y + SUN.dy * m.shadow);
       ctx.scale(1, 0.55);                                  // flattened, like a low sun
       ctx.beginPath(); ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
-    // the props themselves
+    // the props themselves, drawn as vector sprites
     for (const d of decor) {
-      const def = Structures.DECOR[d.kind]; if (!def) continue;
-      ctx.save();
-      ctx.translate(d.x, d.y);
-      ctx.rotate(d.rot * 0.12);                            // a little scatter, not spinning
-      ctx.font = `${Math.round(def.r * 1.7 * d.scale)}px Segoe UI`;
-      ctx.fillText(def.icon, 0, 0);
-      ctx.restore();
+      if (!Sprites.has(d.kind)) continue;
+      Sprites.draw(ctx, d.kind, d.x, d.y, d.scale, d.rot * 0.25);
     }
   }
 

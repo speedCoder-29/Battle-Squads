@@ -375,24 +375,9 @@ const Structures = (() => {
     },
   };
 
-  /* ---------- DECOR ----------
-     Pure dressing: never collides, never blocks a bullet or line of sight.
-     It exists so the map reads as a place rather than a set of rectangles.
-     `r` is the draw radius; `shadow` is how far its shadow is thrown. */
-  const DECOR = {
-    crate:   { icon: '📦', r: 13, shadow: 5,  tint: '#6b5636' },
-    barrel:  { icon: '🛢️', r: 12, shadow: 5,  tint: '#4a5560' },
-    tree:    { icon: '🌲', r: 22, shadow: 11, tint: '#2f5b3a' },
-    palm:    { icon: '🌴', r: 22, shadow: 11, tint: '#3a5b2f' },
-    bush:    { icon: '🌿', r: 15, shadow: 4,  tint: '#3d6b42' },
-    rock:    { icon: '🪨', r: 15, shadow: 6,  tint: '#5a5f6b' },
-    rubble:  { icon: '🧱', r: 12, shadow: 4,  tint: '#5c4a3f' },
-    pallet:  { icon: '🪵', r: 13, shadow: 3,  tint: '#6b5636' },
-    tyre:    { icon: '⚫', r: 11, shadow: 3,  tint: '#2a2d33' },
-    cone:    { icon: '🔺', r: 10, shadow: 3,  tint: '#c25c1e' },
-    antenna: { icon: '📡', r: 16, shadow: 7,  tint: '#5a6675' },
-    sign:    { icon: '🪧', r: 13, shadow: 5,  tint: '#6b6250' },
-  };
+  /* ---------- DECOR PLACEMENT ----------
+     The props themselves (their look, radius and shadow) live in sprites.js;
+     this is only the scattering helper the map generator uses. */
   /* scatter n props of the given kinds inside a rect */
   function scatter(kinds, x, y, w, h, n, rng) {
     const rand = rng || Math.random;
@@ -408,7 +393,7 @@ const Structures = (() => {
   }
 
   return {
-    WALL_TYPES, BUILDINGS, DECOR, scatter, PX_PER_M, HP_SCALE,
+    WALL_TYPES, BUILDINGS, scatter, PX_PER_M, HP_SCALE,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
     /* place a named building and tag every piece with it */
     place(name, ox, oy) {

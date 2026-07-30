@@ -77,7 +77,9 @@ battle-squads/
 │   ├── botai.js        # 10 bot difficulty levels (aim / survival / teamwork)
 │   ├── net.js          # multiplayer client: transports + snapshot interpolation
 │   ├── classes.js      # 10 classes: base speed, tool, consumable + carry limit
-│   ├── structures.js   # wall types, 9 building blueprints, decor props
+│   ├── structures.js   # wall types + 13 building blueprints
+│   ├── terrain.js      # seeded island: ocean, beach, grass, river, bridges, roads
+│   ├── sprites.js      # all world art, drawn as canvas vectors (no image files)
 │   ├── items.js        # consumables, loot-crate tables, legendary weapons
 │   ├── storage.js      # localStorage persistence (accounts, profile, settings)
 │   ├── audio.js        # procedural WebAudio SFX (no audio files needed)
@@ -390,6 +392,50 @@ the old stack on the ground rather than deleting it. Drops bob, merge with ident
 piles, time out after 90s, and are picked back up with `E`. There's a test asserting the
 invariant directly: *what you end up carrying plus what hits the floor always equals what you
 were given.*
+
+## The map
+
+Laid out the way surviv.io/survev arranges an island, generated from a seed so a
+given map is reproducible:
+
+```
+ocean ──► beach ──► grass interior
+                      │
+             a river winds through it, crossed by
+             bridges, with roads linking the
+             built-up areas
+```
+
+Each surface does something to you ([js/terrain.js](js/terrain.js)):
+
+| Surface | Effect |
+|---|---|
+| Road | 1.12× move speed — the fast way across the map |
+| Grass / bridge | normal |
+| Beach | 0.92× — sand drags |
+| River | 0.55×, swimming |
+| Ocean | 0.45×, swimming — the map border |
+
+The river never cuts the map in two: three bridges always cross it, and they're
+walkable even though the water isn't. Buildings are placed terrain-aware — a
+placement that would straddle the river gets nudged to a nearby spot rather than
+being cut in half, and loose cover that lands in water is simply dropped. Crates
+and props are kept out of the water and off the roads.
+
+## Art
+
+Everything used to be an emoji, which meant a different-looking game on every
+machine. All of it is now **vector sprites drawn in canvas**
+([js/sprites.js](js/sprites.js)) in a consistent top-down style: flat fills, a
+darker outline, one light source. Sixteen kinds — trees, palms, bushes, boulders,
+crates, barrels, pallets, tyres, cones, rubble, antennas, signs, tents, sandbag
+piles, shipping containers, stumps.
+
+> On sprites: I couldn't use survev's actual image assets. They're a commercial
+> game's art, and vendoring them into a public repo is a redistribution problem
+> rather than a technical one. The style is matched; the pixels are drawn here,
+> which also keeps the game a zero-asset static site that renders identically
+> everywhere.
 
 ## Shadows & decor
 
