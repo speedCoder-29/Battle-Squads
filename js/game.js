@@ -27,7 +27,7 @@ const Game = (() => {
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
   let grenades = [], deployables = [], smokes = [], crates = [];   // tactical layer
-  let grass = [], trenches = [];                                   // terrain the tools care about
+  let grass = [], trenches = [], decor = [];                       // terrain + dressing
   let flashOverlay = 0;                                            // player blind timer (s)
   let zoom = 1, zoomTarget = 1;                                    // binoculars pull the camera back
   let teamScores = [];
@@ -60,15 +60,20 @@ const Game = (() => {
     // between the buildings — see OBJECTIVE_SPOTS and spawnPoint().
     if (mode === 'domination') {
       obstacles.push(
-        ...S.place('camp',     220, 280),
-        ...S.place('mansion', 1320, 200),
-        ...S.place('house',   2740, 320),
-        ...S.place('house',    260, 1320),
-        ...S.place('house',   1780, 720),
-        ...S.place('camp',    2840, 1060),
-        ...S.place('mansion', 1160, 1480),
-        ...S.place('base',    2400, 1560),
-        ...S.place('house',    720, 1920),
+        ...S.place('camp',      220, 280),
+        ...S.place('mansion',  1320, 200),
+        ...S.place('house',    2740, 320),
+        ...S.place('tower',    2400, 700),
+        ...S.place('house',     260, 1320),
+        ...S.place('warehouse', 1700, 640),
+        ...S.place('shanty',    640, 700),
+        ...S.place('camp',     2840, 1060),
+        ...S.place('mansion',  1160, 1480),
+        ...S.place('bunker',   2560, 1180),
+        ...S.place('base',     2400, 1560),
+        ...S.place('depot',     900, 2000),
+        ...S.place('house',    1900, 1920),
+        ...S.place('tower',     140, 2020),
       );
       obstacles.push(
         S.seg('sandbag',   900, 900,  4, 'h', 0.5),
@@ -92,13 +97,27 @@ const Game = (() => {
         { x: 700, y: 320, w: 220, h: 200 }, { x: 1900, y: 1900, w: 380, h: 240 },
         { x: 2500, y: 1000, w: 260, h: 220 }, { x: 2200, y: 2000, w: 300, h: 200 },
       ];
+      decor = [
+        ...S.scatter(['tree', 'bush', 'rock'], 100, 700, 700, 500, 26),
+        ...S.scatter(['tree', 'bush'], 2650, 620, 700, 480, 24),
+        ...S.scatter(['crate', 'barrel', 'pallet', 'tyre'], 1660, 600, 740, 500, 22),
+        ...S.scatter(['rubble', 'rock', 'tyre'], 560, 640, 460, 400, 18),
+        ...S.scatter(['barrel', 'cone', 'sign'], 840, 1900, 560, 340, 16),
+        ...S.scatter(['crate', 'barrel'], 2340, 1520, 700, 460, 18),
+        ...S.scatter(['bush', 'tree'], 1300, 1880, 700, 380, 20),
+        ...S.scatter(['antenna', 'crate'], 2380, 660, 260, 260, 6),
+        ...S.scatter(['tree', 'bush', 'rock'], 100, 1900, 520, 360, 16),
+      ];
     } else {
       obstacles.push(
-        ...S.place('camp',    140, 170),
-        ...S.place('mansion', 800, 130),
-        ...S.place('house',   1900, 200),
-        ...S.place('house',   180, 1090),
-        ...S.place('base',    1620, 1110),
+        ...S.place('camp',      140, 170),
+        ...S.place('mansion',   800, 130),
+        ...S.place('house',    1900, 200),
+        ...S.place('shanty',   1380, 640),
+        ...S.place('house',     180, 1090),
+        ...S.place('bunker',    760, 1180),
+        ...S.place('tower',    2180, 900),
+        ...S.place('base',     1620, 1110),
       );
       obstacles.push(
         S.seg('sandbag',   980, 900,  4, 'h', 0.5),
@@ -117,7 +136,21 @@ const Game = (() => {
         { x: 700, y: 1200, w: 380, h: 220 }, { x: 1300, y: 620, w: 300, h: 180 },
         { x: 620, y: 240, w: 200, h: 180 }, { x: 1280, y: 1330, w: 280, h: 200 },
       ];
+      decor = [
+        ...S.scatter(['tree', 'bush', 'rock'], 120, 560, 560, 400, 20),
+        ...S.scatter(['tree', 'bush'], 1950, 620, 420, 420, 16),
+        ...S.scatter(['crate', 'barrel', 'pallet'], 1560, 1060, 660, 460, 18),
+        ...S.scatter(['rubble', 'tyre', 'cone'], 1340, 600, 460, 340, 14),
+        ...S.scatter(['bush', 'tree'], 620, 1160, 520, 340, 16),
+        ...S.scatter(['crate', 'barrel', 'sign'], 700, 1140, 260, 260, 6),
+      ];
     }
+    // keep props on the board, and never inside a wall — it would look like
+    // they were growing out of it
+    const edge = 30;
+    decor = decor
+      .map(d => ({ ...d, x: clamp(d.x, edge, MAP_W - edge), y: clamp(d.y, edge, MAP_H - edge) }))
+      .filter(d => !pointInObstacle(d.x, d.y));
   }
   const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
   const onGrass = (a) => grass.some(g => inRect(a.x, a.y, g));
@@ -374,7 +407,13 @@ const Game = (() => {
     a.ammo--;
 
     const ads = a.isPlayer && input.ads;
-    const cone = w.spreadBase * (ads ? w.adsMult : 1) + a.bloom;
+    // moving widens the cone by the gun's own moveSpread — a MAC-10 sprays at
+    // a run, a QBB bullpup barely notices. ADS steadies both.
+    const speed = Math.hypot(a.vx || 0, a.vy || 0);
+    const moving = clamp(speed / 200, 0, 1);
+    const cone = w.spreadBase * (ads ? w.adsMult : 1)
+      + (w.moveSpread || 0) * moving * (ads ? 0.45 : 1)
+      + a.bloom;
     const pellets = w.pellets || 1;
     for (let i = 0; i < pellets; i++) {
       const jitter = (Math.random() - 0.5) * cone * 2 + (Math.random() - 0.5) * w.pelletSpread * 2;
@@ -1142,10 +1181,10 @@ const Game = (() => {
       const adr = Combat.adrenaline(a.adrenaline);
       if (a.hp < a.maxHp) {
         a.hp = Math.min(a.maxHp, a.hp + adr.regen * dt);
-        a.adrenaline = Math.max(0, a.adrenaline - adr.burn * dt);
+        a.adrenaline = Math.max(0, a.adrenaline - 0.375*adr.burn * dt);
         if (a.isPlayer && Math.random() < dt * 3) spawnFx(a.x, a.y, '#4be08a', 1);
       } else {
-        a.adrenaline = Math.max(0, a.adrenaline - 1.5 * dt);   // slow idle decay
+        a.adrenaline = Math.max(0, a.adrenaline - 0.375 * dt);   // slow idle decay
       }
     }
     if (player.channel) { player.channel.t -= dt; if (player.channel.t <= 0) { player.channel.onDone(); player.channel = null; } }
@@ -1562,7 +1601,10 @@ const Game = (() => {
       ctx.globalAlpha = 0.5; ctx.fillText(obj.name, obj.x, obj.y); ctx.globalAlpha = 1;
     }
 
-    // obstacles
+    // decor sits on the ground, under the walls and everyone
+    drawDecor();
+    // every shadow in one pass, then the things that cast them
+    drawStructureShadows();
     for (const o of obstacles) drawStructure(o);
 
     drawCratesAndDeployables();
@@ -1588,8 +1630,9 @@ const Game = (() => {
         }
         continue;
       }
-      if (a.isVehicle) { drawVehicle(a); continue; }
+      if (a.isVehicle) { drawUnitShadow(a.x, a.y, a.r * 1.15); drawVehicle(a); continue; }
       const hidden = camouflaged(a);
+      if (!hidden) drawUnitShadow(a.x, a.y, a.r);
       if (hidden) ctx.globalAlpha = a.isPlayer ? 0.45 : 0.12;   // ghillied: barely there
       // tool swing arc
       if (a.swingT > 0) {
@@ -1692,6 +1735,70 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(90,66,40,0.45)'; ctx.fill();
       ctx.strokeStyle = 'rgba(176,138,90,0.5)'; ctx.lineWidth = 2; ctx.stroke();
     }
+  }
+
+  /* ---------------- shadows & decor ----------------
+     One low sun, so everything casts the same way. Shadows are drawn as a
+     separate pass under the objects that cast them, which keeps them from
+     ever landing on top of something they should be beneath. */
+  const SUN = { dx: 0.55, dy: 0.38 };          // direction shadows are thrown
+  const SHADOW = 'rgba(0,0,0,0.34)';
+
+  /* offset silhouettes of every solid wall, drawn before the walls themselves */
+  function drawStructureShadows() {
+    ctx.fillStyle = SHADOW;
+    for (const s of structureRects()) {
+      const k = kindOf(s);
+      if (k.height !== 'high' || s.open) continue;         // only tall things cast
+      const lift = (s.thickness || 0.3) * 26;              // thicker wall, longer shadow
+      roundRect(s.x + SUN.dx * lift, s.y + SUN.dy * lift, s.w, s.h, 5);
+      ctx.fill();
+    }
+    // low cover gets a tighter, softer shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    for (const s of structureRects()) {
+      const k = kindOf(s);
+      if (k.height !== 'low' || k.passable) continue;
+      roundRect(s.x + SUN.dx * 6, s.y + SUN.dy * 6, s.w, s.h, 3);
+      ctx.fill();
+    }
+  }
+
+  /* props: shadow first, then the prop, so a tree never shades itself */
+  function drawDecor() {
+    if (!decor.length) return;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    // shadows
+    for (const d of decor) {
+      const def = Structures.DECOR[d.kind]; if (!def) continue;
+      const r = def.r * d.scale;
+      ctx.save();
+      ctx.fillStyle = SHADOW;
+      ctx.translate(d.x + SUN.dx * def.shadow, d.y + SUN.dy * def.shadow);
+      ctx.scale(1, 0.55);                                  // flattened, like a low sun
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    // the props themselves
+    for (const d of decor) {
+      const def = Structures.DECOR[d.kind]; if (!def) continue;
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rot * 0.12);                            // a little scatter, not spinning
+      ctx.font = `${Math.round(def.r * 1.7 * d.scale)}px Segoe UI`;
+      ctx.fillText(def.icon, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  /* soft ground shadow under a unit */
+  function drawUnitShadow(x, y, r) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.30)';
+    ctx.translate(x + SUN.dx * 7, y + SUN.dy * 7);
+    ctx.scale(1, 0.6);
+    ctx.beginPath(); ctx.arc(0, 0, r * 1.02, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
   }
 
   function drawStructure(s) {

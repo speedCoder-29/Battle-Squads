@@ -17,7 +17,12 @@
    ============================================================ */
 const Structures = (() => {
   const PX_PER_M = 40;
-  const HP_SCALE = 10;
+  /* HP_SCALE turns the design table's "10 x thickness" into playable numbers.
+     It started at 10, which made a 0.3 wood wall 30 HP — one axe swing, or a
+     third of a magazine. Buildings fell apart before a fight got going, so it
+     is now 30: that same wall takes 90, a metal 0.6 takes 360, and reinforced
+     walls take real explosive work. The table's ratios are untouched. */
+  const HP_SCALE = 30;
   const m = (v) => v * PX_PER_M;
 
   /* ---------- WALL TYPES ---------- */
@@ -39,38 +44,38 @@ const Structures = (() => {
       effect: 'Penetrable up to 0.5 thickness, then ricochets for 50%',
     },
     door: {
-      name: 'Door', height: 'high', hp: 30, toughness: 1, door: true,
+      name: 'Door', height: 'high', hp: 90, toughness: 1, door: true,
       bullets: 'pen', lossPerM: 1.0,            // it's wood, 0.3 thick
       defThickness: 0.3, defLength: 1.5,
       fill: '#4a3620', stroke: 'rgba(226,180,110,0.7)',
       effect: 'Opens and closes',
     },
     rdoor: {
-      name: 'Reinforced Door', height: 'high', hp: 100, toughness: 5, door: true,
+      name: 'Reinforced Door', height: 'high', hp: 300, toughness: 5, door: true,
       bullets: 'reflect', defThickness: 0.35, defLength: 1.5,
       fill: '#37404f', stroke: 'rgba(200,215,240,0.75)',
       effect: 'Opens and closes · bullets ricochet for 50%',
     },
     rwall: {
-      name: 'Reinforced Wall', height: 'high', hp: 100, toughness: 5,
+      name: 'Reinforced Wall', height: 'high', hp: 300, toughness: 5,
       bullets: 'reflect',
       fill: '#333c4a', stroke: 'rgba(200,215,240,0.7)',
       effect: 'Bullets ricochet for 50%',
     },
     wire: {
-      name: 'Barbed Wire', height: 'low', hp: 30, toughness: 5,
+      name: 'Barbed Wire', height: 'low', hp: 60, toughness: 5,
       bullets: 'through', passable: true, slow: 0.1, dps: 2,
       fill: 'rgba(150,165,195,0.10)', stroke: 'rgba(210,220,240,0.55)',
       effect: '90% movement slowdown · 2 damage/s',
     },
     sandbag: {
-      name: 'Sand Bags', height: 'low', hp: 100, toughness: 6,
+      name: 'Sand Bags', height: 'low', hp: 300, toughness: 6,
       bullets: 'stop',
       fill: '#3a3520', stroke: 'rgba(220,200,120,0.45)',
       effect: 'Stops bullets outright',
     },
     barricade: {
-      name: 'Barricade', height: 'low', hp: 50, toughness: 1,
+      name: 'Barricade', height: 'low', hp: 150, toughness: 1,
       bullets: 'pen', flatLoss: 0.5,
       fill: '#3a3040', stroke: 'rgba(196,107,255,0.4)',
       effect: 'Bullets lose 50% damage passing through',
@@ -215,6 +220,79 @@ const Structures = (() => {
       return out;
     },
 
+    /* warehouse: one big metal hall, a mezzanine wall, wide roller doors.
+       Ricochet city — think twice before spraying inside it. */
+    warehouse(ox, oy) {
+      const w = 660, h = 420;
+      const out = shell(ox, oy, w, h, 'metal', 0.55, [
+        { side: 'n', at: 250, type: 'rdoor', len: 3 },
+        { side: 's', at: 120 }, { side: 'e', at: 170, type: 'rdoor' },
+      ]);
+      // internal racking, staggered so there's no straight sightline through
+      out.push(seg('metal', ox + 150, oy + 90, 4.5, 'v', 0.3));
+      out.push(seg('metal', ox + 380, oy + 210, 4.5, 'v', 0.3));
+      out.push(seg('barricade', ox + 220, oy + 300, 5, 'h', 0.3));
+      out.push(seg('sandbag', ox + 470, oy + 110, 3, 'h', 0.5));
+      return out;
+    },
+
+    /* bunker: small, squat and reinforced. Nothing short of HEAT gets in
+       through the walls, so the doors are the fight. */
+    bunker(ox, oy) {
+      const w = 300, h = 240;
+      const out = shell(ox, oy, w, h, 'rwall', 0.5, [
+        { side: 'w', at: 90, type: 'rdoor' }, { side: 'e', at: 90, type: 'rdoor' },
+      ]);
+      // firing step inside
+      out.push(seg('sandbag', ox + 40, oy + 60, 4.5, 'h', 0.5));
+      out.push(seg('sandbag', ox + 40, oy + 180, 4.5, 'h', 0.5));
+      // wire apron outside
+      out.push(seg('wire', ox - 70, oy - 50, 11, 'h', 0.4));
+      out.push(seg('wire', ox - 70, oy - 50, 8.5, 'v', 0.4));
+      return out;
+    },
+
+    /* watchtower: tiny reinforced footprint with a commanding sightline.
+       Cheap to hold, hard to dig out. */
+    tower(ox, oy) {
+      const w = 150, h = 150;
+      const out = shell(ox, oy, w, h, 'rwall', 0.4, [{ side: 's', at: 45, type: 'rdoor' }]);
+      out.push(seg('sandbag', ox - 50, oy + 170, 5, 'h', 0.5));
+      return out;
+    },
+
+    /* shanty row: four flimsy wooden shacks. Everything here is toughness 1-2,
+       so a Breacher or a fire axe can simply make a new door. */
+    shanty(ox, oy) {
+      const out = [];
+      const hut = (hx, hy, w, h, doorAt) => {
+        out.push(...shell(hx, hy, w, h, 'wood', 0.2, [{ side: 's', at: doorAt }]));
+      };
+      hut(ox, oy, 170, 140, 55);
+      hut(ox + 210, oy + 30, 170, 140, 40);
+      hut(ox + 40, oy + 200, 170, 140, 70);
+      hut(ox + 250, oy + 220, 170, 140, 50);
+      out.push(seg('barricade', ox + 185, oy + 180, 4, 'v', 0.3));
+      return out;
+    },
+
+    /* fuel depot: sandbag revetments around metal tanks. Open ground with
+       lots of low cover, so it plays completely unlike the buildings. */
+    depot(ox, oy) {
+      const out = [];
+      const tank = (tx, ty) => {
+        out.push(seg('metal', tx, ty, 2.6, 'h', 0.45));
+        out.push(seg('metal', tx, ty + 70, 2.6, 'h', 0.45));
+        out.push(seg('metal', tx, ty, 1.75, 'v', 0.45));
+        out.push(seg('metal', tx + 104, ty, 1.75, 'v', 0.45));
+      };
+      tank(ox, oy); tank(ox + 190, oy); tank(ox + 95, oy + 150);
+      out.push(seg('sandbag', ox - 50, oy - 40, 8, 'h', 0.5));
+      out.push(seg('sandbag', ox - 50, oy + 260, 8, 'h', 0.5));
+      out.push(seg('wire', ox + 330, oy - 20, 7, 'v', 0.4));
+      return out;
+    },
+
     /* camp: a cluster of low tents behind sandbags and wire */
     camp(ox, oy) {
       const out = [];
@@ -235,8 +313,40 @@ const Structures = (() => {
     },
   };
 
+  /* ---------- DECOR ----------
+     Pure dressing: never collides, never blocks a bullet or line of sight.
+     It exists so the map reads as a place rather than a set of rectangles.
+     `r` is the draw radius; `shadow` is how far its shadow is thrown. */
+  const DECOR = {
+    crate:   { icon: '📦', r: 13, shadow: 5,  tint: '#6b5636' },
+    barrel:  { icon: '🛢️', r: 12, shadow: 5,  tint: '#4a5560' },
+    tree:    { icon: '🌲', r: 22, shadow: 11, tint: '#2f5b3a' },
+    palm:    { icon: '🌴', r: 22, shadow: 11, tint: '#3a5b2f' },
+    bush:    { icon: '🌿', r: 15, shadow: 4,  tint: '#3d6b42' },
+    rock:    { icon: '🪨', r: 15, shadow: 6,  tint: '#5a5f6b' },
+    rubble:  { icon: '🧱', r: 12, shadow: 4,  tint: '#5c4a3f' },
+    pallet:  { icon: '🪵', r: 13, shadow: 3,  tint: '#6b5636' },
+    tyre:    { icon: '⚫', r: 11, shadow: 3,  tint: '#2a2d33' },
+    cone:    { icon: '🔺', r: 10, shadow: 3,  tint: '#c25c1e' },
+    antenna: { icon: '📡', r: 16, shadow: 7,  tint: '#5a6675' },
+    sign:    { icon: '🪧', r: 13, shadow: 5,  tint: '#6b6250' },
+  };
+  /* scatter n props of the given kinds inside a rect */
+  function scatter(kinds, x, y, w, h, n, rng) {
+    const rand = rng || Math.random;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const kind = kinds[Math.floor(rand() * kinds.length)];
+      out.push({
+        kind, x: x + rand() * w, y: y + rand() * h,
+        rot: rand() * Math.PI * 2, scale: 0.8 + rand() * 0.45,
+      });
+    }
+    return out;
+  }
+
   return {
-    WALL_TYPES, BUILDINGS, PX_PER_M, HP_SCALE,
+    WALL_TYPES, BUILDINGS, DECOR, scatter, PX_PER_M, HP_SCALE,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
     /* place a named building and tag every piece with it */
     place(name, ox, oy) {

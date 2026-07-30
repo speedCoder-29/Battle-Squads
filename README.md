@@ -76,7 +76,7 @@ battle-squads/
 │   ├── botai.js        # 10 bot difficulty levels (aim / survival / teamwork)
 │   ├── net.js          # multiplayer client: transports + snapshot interpolation
 │   ├── classes.js      # 10 classes: base speed, tool, consumable + carry limit
-│   ├── structures.js   # wall types (HP/toughness/ballistics) + building blueprints
+│   ├── structures.js   # wall types, 9 building blueprints, decor props
 │   ├── items.js        # consumables, loot-crate tables, legendary weapons
 │   ├── storage.js      # localStorage persistence (accounts, profile, settings)
 │   ├── audio.js        # procedural WebAudio SFX (no audio files needed)
@@ -183,6 +183,45 @@ nine identical robots.
 Level 1 is a distracted rookie who never retreats and fights alone. Level 10 reacts
 in 90ms, leads every shot, breaks contact at 45% HP, heals, and focus-fires with its
 squad. Contact-sharing unlocks at level 5; heals at level 3.
+
+## Weapon stats & survev
+
+The roster's numbers are joined directly from survev's source
+([`gunDefs.ts`](https://github.com/leia-uwu/survev/blob/master/shared/defs/gameObjects/gunDefs.ts)
+and [`bulletDefs.ts`](https://github.com/leia-uwu/survev/blob/master/shared/defs/gameObjects/bulletDefs.ts)),
+gun by gun:
+
+| Ours | survev source | What transfers |
+|---|---|---|
+| damage | `bullet_<gun>.damage` | directly — survev is also per-100 HP |
+| fire rate | `1 / gunDef.fireDelay` | ak47 `0.1s` → 10 rps |
+| mag / reload | `maxClip` / `reloadTime` | directly |
+| accuracy | `gunDef.shotSpread` (deg) × 1.586 | same cone in our radian model |
+| **move spread** | `gunDef.moveSpread` | new mechanic — see below |
+| falloff | `(1 − bulletDef.falloff) × 50` | steep falloff = low survev number |
+| range / velocity | `bulletDef.distance` / `.speed` | per-gun, not per-type |
+
+Spot checks: AKM = 13.5 dmg @ 10 rps (ak47), Vector = 7.5 @ 26.3 (vector),
+M249 = 14 dmg / 100 mag / 6.7s (m249), PKP = 18 / 200 belt / 5s, Mk 14 = 28 @ 4.35
+(m39), SVD = 37 @ 4, Barrett = 99 (barrett), SV-98 = 80, M870 = 12.5 × 9 buckshot.
+There are tests asserting these against the source numbers.
+
+**Move spread is now a real mechanic.** Firing while moving widens your cone by the
+gun's own `moveSpread`, scaled by how fast you're going, and aiming down sights cuts
+it by half. It's a big differentiator: the Uzi (MAC-10, 11°) sprays wildly at a run
+while the QBZ-95B bullpup (QBB-97, 0.5°) barely notices — a 22× difference that the
+old per-type model couldn't express at all.
+
+**Documented deviations**, all because our roster isn't 1:1 with theirs:
+
+- K11 and AN-94 are 3- and 2-round bursts here; survev's nearest guns are full-auto,
+  so their damage is scaled to fit a sane burst count.
+- P90 is interpolated between survev's MP5 and UMP9 — we need a full-auto SMG with a
+  50-round mag and neither is quite that.
+- RPK-74 takes the BAR's round with the DP-28's cyclic rate.
+- SV-98, QBU-10, DEagle and the FAMAS burst cycle slightly faster than survev's,
+  purely so each class stays inside its TTK band.
+- Launchers have no survev counterpart and keep our own tuned values.
 
 ## Damage calculator
 
@@ -308,11 +347,41 @@ One consequence worth knowing: normal rounds only *demolish* toughness-1 walls. 
 still shoot *through* thicker cover per the penetration rules — you just can't level a
 house with a rifle.
 
-Each map is assembled from **real buildings** — a **camp** of tents behind wire, a wooden
-**house**, a **mansion** with a reinforced strongroom, and a **military base** whose metal
-shell bounces rifle fire back at you — with the objectives out in the open ground between
-them. Domination's larger board carries nine buildings (141 wall pieces) to Elimination's
-five (81). Doors open and close with `E`, and bots shove them open as they push through.
+Each map is assembled from **nine building types**, each built from materials that make
+it play differently:
+
+| Building | Made of | How it plays |
+|---|---|---|
+| **House** | Wood 0.3 | Breachable with a fire axe; two doors, one divider |
+| **Mansion** | Wood 0.4 + reinforced core | Four ways in, a strongroom you need explosives for |
+| **Military base** | Metal 0.6 | Ricochets rifle fire back at you; reinforced doors |
+| **Warehouse** | Metal 0.55 | Big open hall, staggered racking, no straight sightline |
+| **Bunker** | Reinforced 0.5 | Walls need HEAT — the doors are the fight |
+| **Watchtower** | Reinforced 0.4 | Tiny footprint, commanding sightline, hard to dig out |
+| **Shanty row** | Wood 0.2 | Four flimsy shacks; make your own door anywhere |
+| **Fuel depot** | Metal tanks + sandbags | Open ground, all low cover — plays unlike a building |
+| **Camp** | Barricade tents | Low cover behind wire |
+
+Domination's larger board carries fourteen of them (~125 wall pieces), Elimination eight.
+Doors open and close with `E`, and bots shove them open as they push through.
+
+**Buildings are three times tougher than the raw design table.** `HP_SCALE` went from 10
+to 30: a wood 0.3 wall is 90 HP instead of 30, metal 0.6 is 360, reinforced is 300. At the
+old values a single fire-axe swing dropped a wall and buildings disintegrated before a
+fight got going — a full match now ends with most of the map still standing. The table's
+ratios between materials are untouched.
+
+## Shadows & decor
+
+One low sun, so everything casts consistently. Shadows are drawn as a separate pass
+underneath the objects that cast them, so nothing ever shades something it should be
+beneath: tall walls throw a shadow proportional to their thickness, low cover gets a
+tighter softer one, and units and props get flattened elliptical shadows.
+
+Twelve **decor** kinds — trees, bushes, rocks, crates, barrels, pallets, tyres, cones,
+rubble, antennas, signs — are scattered per map. They're purely visual: they never
+collide, block a bullet, or break line of sight, and they're filtered so nothing spawns
+growing out of a wall. There are tests holding them to that.
 
 > Two notes where the wall table was ambiguous: HP is the table's formula × 10 so the
 > numbers land in a playable range (this makes a wood 0.3 door exactly the 30 HP the table
@@ -323,7 +392,8 @@ five (81). Doors open and close with `E`, and bots shove them open as they push 
 
 ## Weapons, consumables & loot
 
-- **30 weapons across 10 classes** ([js/weapons.js](js/weapons.js)) — the design roster with real
+- **30 weapons across 10 classes** ([js/weapons.js](js/weapons.js)) — stats matched to survev
+  (see below) with real
   ballistics: damage, burst, pellets, fire rate, mag/reload, accuracy→spread, recoil→bloom,
   weight→mobility, damage falloff, and explosive splash. Browse them by class in the **Loadout** screen.
 - **Consumables** ([js/items.js](js/items.js)) — grenades (Frag, Impact, C4, Smoke, Flashbang),
