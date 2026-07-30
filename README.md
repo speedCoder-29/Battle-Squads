@@ -69,7 +69,9 @@ battle-squads/
 ├── index.html          # all screens (auth, home, game) in one page
 ├── css/styles.css      # full theme + layouts + animated background
 ├── js/
-│   ├── weapons.js      # 30-weapon roster + ballistics + legendary modifiers
+│   ├── weapons.js      # 30-weapon roster + ballistics + attachments + ammo
+│   ├── combat.js       # the damage calculator (types, zones, armour, adrenaline)
+│   ├── skins.js        # cosmetic weapon skins + the credit shop
 │   ├── classes.js      # 10 classes: base speed, tool, consumable + carry limit
 │   ├── structures.js   # wall types (HP/toughness/ballistics) + building blueprints
 │   ├── items.js        # consumables, loot-crate tables, legendary weapons
@@ -138,6 +140,84 @@ Melee tools have **damage, reach, structure damage, pierce and a cooldown**
 ([js/classes.js](js/classes.js)). Swing a hammer or spade at open ground and you **build**
 or **dig in** instead of striking.
 
+## Damage calculator
+
+Every point of damage in the game goes through one function
+([js/combat.js](js/combat.js)), so these tables are the whole combat model:
+
+```
+raw damage → damage-type vs target-class → hit zone → armour → adrenaline
+```
+
+**Damage type vs target.** What a round is decides whether it can hurt what it hits.
+
+| | Normal | AP | Explosive | HEAT |
+|---|---|---|---|---|
+| Infantry (100 HP) | 100% | 100% | 100% | 100% |
+| Armored Jeep (150 HP) | 10% | 20% | 50% | 100% |
+| Tank (250 HP) | 0% | 0% | 25% | 50% |
+
+A tank is not tough because it has a big health bar — it is tough because rifle
+rounds do literally nothing to it. Bring the RPG-7 (the roster's HEAT weapon) or
+at least explosives. The Barrett counts as AP natively, thanks to its
+Anti-Materiel tag.
+
+**Hit zones.** There is no vertical aim in a top-down game, so each hit rolls a
+zone using the design's size weights. Limb 50% (2/5), body 100% (2/5), head
+200% (1/5) — which averages to exactly 1.0×, so the DPS maths above still holds;
+zones add variance and headshot payoff, not power. Explosions always count as
+body hits, and barbed wire bypasses zones entirely.
+
+**Armour** drops from crates (T1 from regular, T2 from silver, T3 from gold) and
+costs you movement speed. Vests scale body damage; helmets replace the 200%
+headshot multiplier — a Helmet T3 is exactly what stops a sniper one-shotting you.
+Penetration buffs deliberately do nothing against armour.
+
+| Tier | Vest | Helmet |
+|---|---|---|
+| T1 | 70% body damage, −15% speed | 150% head damage, −7% speed |
+| T2 | 40% body damage, −30% speed | 100% head damage, −14% speed |
+| T3 | 10% body damage, −45% speed | 50% head damage, −21% speed |
+
+**Adrenaline** (from Pills/Soda/Stim/Flag) gives *Adren%/2* as movement, reload
+and handling speed — so at 100 adrenaline you move, reload and aim 50% faster —
+plus damage reduction that steps at 25/50/75/100% for 5/20/35/50%.
+
+## Attachments & specialized ammo
+
+Both are picked per weapon in the **gunsmith** panel at the top of the Loadout
+screen, which shows live stat deltas as you toggle them. Each weapon only offers
+what its roster row allows.
+
+| Attachment | Buff | Debuff |
+|---|---|---|
+| Grenade Launcher | Throw grenades while holding your primary | −10% Speed, +25% Handling |
+| Scope | −50% Scope (2× magnification) | +50% Handling |
+| Suppressor | −75% Firing Audio | −5% Damage |
+| Bipod | −50% Scoping Recoil | −100% Scoping Movement Speed |
+| Sawed-Off | −50% Weight, −50% Reload | +50% Accuracy (wider cone), +50% Scope |
+| Flare Launcher | Single-use airstrike | −5% Speed, +50% Handling |
+
+| Ammo | Buff | Debuff |
+|---|---|---|
+| AP | +50% Penetration (and counts as AP damage) | +50% Recoil |
+| Tracer | Glowing rounds | Glowing rounds — they see you too |
+| HP | +25% Damage | −50% Penetration |
+| Slug | +900% Damage, +50% Penetration, −50% Falloff | +50% Recoil, +50% Weight, −8 Pellets |
+| Birdshot | +100% Pellets, −50% Recoil | +50% Falloff, −50% Penetration |
+
+**Penetration** is a wall-punching stat: it cuts how much damage a round loses
+passing through cover (see the wall table below). It does nothing against armour.
+
+## Skins
+
+Purely cosmetic — no skin touches a stat, and there's a test asserting that.
+15 skins across four rarities repaint your weapon barrel, muzzle flash and
+tracers in-match, and restyle the card in the Loadout screen. They're bought
+with credits (the wallet missions already pay into) and are account-wide, so a
+skin you own can go on any gun it fits. A couple are type-restricted — Cold Bore
+only mounts on a Sniper Rifle or DMR.
+
 ## Walls & buildings
 
 Every wall on the map is a typed, destructible piece ([js/structures.js](js/structures.js)).
@@ -156,12 +236,24 @@ Every wall on the map is a typed, destructible piece ([js/structures.js](js/stru
 | Barricade | Low | 50 | 1 | Bullets lose 50% damage passing through |
 | Trench | Underground | 1 | 6 | Infantry inside dodge 50% of incoming fire |
 
-**Toughness vs Structure Pierce** is what ties the two tables together: a tool can only work a
-wall whose Toughness its Pierce matches or beats, so a Bayonet (pierce 1) chops doors,
-barricades and thin planks but bounces off metal, while the clearing effects are explicit
-exemptions — the Bayonet still shreds barbed wire (toughness 5) and the Trench Spade still
-clears sandbags (toughness 6). Explosives ignore toughness entirely: that's how a
-Demolitionist makes an entry point through a reinforced wall.
+**Toughness** is the ladder that decides what can break what:
+
+| Toughness | Meaning |
+|---|---|
+| 1 | Destructible by anything — including plain rifle fire |
+| 2 | Destructible by some melees (Structure Pierce 2+) |
+| 3 | Destructible by the Stone Hammer (Pierce 3) |
+| 4+ | Destructible by HEAT weapons |
+
+A tool's **Structure Pierce** is what it out-ranks: a Bayonet (pierce 1) chops doors,
+barricades and thin planks but bounces off metal. Explosives handle up to toughness 3;
+only HEAT gets through metal and reinforced walls. The clearing effects are explicit
+exemptions on top — the Bayonet still shreds barbed wire (toughness 5) and the Trench
+Spade still clears sandbags (toughness 6) regardless.
+
+One consequence worth knowing: normal rounds only *demolish* toughness-1 walls. They
+still shoot *through* thicker cover per the penetration rules — you just can't level a
+house with a rifle.
 
 Each map is assembled from **real buildings** — a **camp** of tents behind wire, a wooden
 **house**, a **mansion** with a reinforced strongroom, and a **military base** whose metal
@@ -190,19 +282,23 @@ five (81). Doors open and close with `E`, and bots shove them open as they push 
   **vehicle token**.
 - **Adrenaline** is a boost resource (from Pills/Soda/Stim/Flag) that grants +25% move speed while active.
 
-> Currently functional as gameplay: all weapon ballistics, every class tool and consumable,
-> the full wall table (penetration, ricochet, destruction, doors), buildings, every
-> grenade/tactical/heal, crates, legendary weapons, adrenaline, and AI-driven call-in vehicles.
-> Bots use their class speed, open doors and melee you at point-blank range.
-> **Not yet wired to combat:**
-> specialized ammo types (AP/HP/Tracer/Slug), weapon attachments (Suppressor, Grenade Launcher, etc.),
-> and *drivable* vehicles (call-ins currently fight as allied AI). These are the natural next steps.
+> Currently functional as gameplay: all weapon ballistics, the full damage calculator
+> (damage types, hit zones, armour, adrenaline), attachments and specialized ammo, skins,
+> every class tool and consumable, the full wall table (penetration, ricochet, destruction,
+> doors), buildings, every grenade/tactical/heal, crates, legendary weapons, and AI-driven
+> call-in vehicles. Bots use their class speed, open doors and melee you at point-blank range.
+> **Not yet wired:** the Flare Launcher airstrike and Grenade Launcher fire mode are declared
+> and carried onto the weapon but don't yet fire; suppressor audio is a stat with no sound
+> model behind it; and vehicles are still AI-driven rather than drivable.
 
 ## Tuning knobs
 
 Quick things to tweak while designing your game:
 
 - **Weapons** — the `RAW` table in `js/weapons.js` (edit stats inline; the builder derives the rest).
+  `ATTACHMENTS` and `AMMO_TYPES` live in the same file.
+- **Damage model** — `TARGETS`, `HIT_ZONES`, `VESTS`, `HELMETS`, `ADREN_DR` in `js/combat.js`.
+- **Skins** — the `SKINS` table and `RARITIES` pricing in `js/skins.js`.
 - **Classes & tools** — `TOOLS` and the `RAW` class table in `js/classes.js`.
 - **Walls & buildings** — `WALL_TYPES` and the `BUILDINGS` blueprints in `js/structures.js`;
   where they get placed is `buildMap()` in `js/game.js`.

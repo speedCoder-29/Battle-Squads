@@ -9,7 +9,7 @@ const Game = (() => {
   // domination is fought over a much bigger board than the elimination arena
   const MAP_SIZES = { domination: { w: 3400, h: 2300 }, elimination: { w: 2400, h: 1600 } };
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
-  const SCORE_CAP = 5000;             // domination win score
+  const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
   const TEAM_COLORS = ['#3d7bff', '#ff4b5c', '#4be08a', '#c46bff', '#ffa726', '#35e0ff'];
   const TEAM_NAMES  = ['Blue', 'Red', 'Green', 'Violet', 'Amber', 'Cyan'];
@@ -131,14 +131,22 @@ const Game = (() => {
   }
 
   function makeAgent(team, isPlayer, weaponId) {
-    const w = Weapons.byId[weaponId] || Weapons.byId[Weapons.default];
+    const base = Weapons.byId[weaponId] || Weapons.byId[Weapons.default];
+    // the player's saved attachments / ammo / skin are baked in at spawn
+    const profile = isPlayer ? DB.getProfile() : null;
+    const w = isPlayer && profile
+      ? Weapons.configure(base, { attachments: profile.attachments[base.id], ammo: profile.ammo[base.id] })
+      : base;
+    const skin = Skins.get(profile ? Skins.equipped(profile, base.id) : 'default');
     const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
       team, isPlayer, alive: true,
       x: 0, y: 0, r: 16, angle: 0,
-      hp: 100, maxHp: 100,
+      klass: 'infantry',                                    // see Combat.TARGETS
+      hp: Combat.maxHpFor('infantry'), maxHp: Combat.maxHpFor('infantry'),
+      vest: 0, helmet: 0,                                   // armour tiers 0-3
       weaponId: w.id, weapon: w,
-      cls, tool: cls.tool,                                  // class kit
+      cls, tool: cls.tool, skin,                            // class kit + weapon skin
       toolCd: 0, toolActive: false, swingT: 0, builds: 0, stillT: 0,
       ammo: w.mag, reloadTimer: 0, fireCd: 0,
       bloom: 0, burstLeft: 0, burstCd: 0, postBurstCd: 0,   // firing state
@@ -335,7 +343,7 @@ const Game = (() => {
 
   function startReload(a) {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
-    a.reloadTimer = a.weapon.reloadMs;
+    a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline).reload;   // Adren%/2 reload speedup
     a.burstLeft = 0;
     if (a.isPlayer) SFX.reload();
   }
@@ -368,7 +376,9 @@ const Game = (() => {
         sx: a.x, sy: a.y,
         team: a.team, dmg: w.damage, falloff: w.falloff,
         splash: w.splashRadius, splashR: w.splashRadius,
-        life: 1.6, owner: a, color: w.ammoColor,
+        dmgType: w.dmgType, pen: w.penetration || 0,
+        life: 1.6, owner: a, color: (a.skin && a.skin.tracer) || w.ammoColor,
+        tracer: !!w.tracer,
       });
     }
     a.bloom = Math.min(w.bloomMax, a.bloom + w.recoilKick);
@@ -377,21 +387,23 @@ const Game = (() => {
   }
 
   /* Explosion from launcher rounds — AoE damage that falls off with distance. */
-  function explode(x, y, baseDmg, radius, team, owner) {
+  function explode(x, y, baseDmg, radius, team, owner, type = 'explosive') {
     spawnFx(x, y, '#ff9d3b', 22);
     for (const a of agents) {
       if (!a.alive) continue;
       const d = Math.hypot(a.x - x, a.y - y);
       if (d < radius) {
         const dmg = baseDmg * (1 - d / radius) * (a.team === team ? 0.5 : 1);
-        if (dmg > 1) applyDamage(a, dmg, owner);
+        // blasts always count as body hits — no lucky head/limb rolls from splash
+        if (dmg > 1) applyDamage(a, dmg, owner, type, 'body');
       }
     }
     // blasts tear up cover and sentries too — that's how you make an entry point
+    const src = { kind: type === 'heat' ? 'heat' : 'explosive' };
     for (const s of structureRects().slice()) {
       const cx = clamp(x, s.x, s.x + s.w), cy = clamp(y, s.y, s.y + s.h);
       const d = Math.hypot(cx - x, cy - y);
-      if (d < radius) damageStructure(s, baseDmg * (1 - d / radius) * 1.5, cx, cy);
+      if (d < radius && Combat.canDamageStructure(s, src)) damageStructure(s, baseDmg * (1 - d / radius) * 1.5, cx, cy);
     }
     for (let i = deployables.length - 1; i >= 0; i--) {
       const dp = deployables[i];
@@ -495,7 +507,7 @@ const Game = (() => {
   }
   /* A tool can only work a wall its Structure Pierce out-rates, unless it has
      an explicit clearing effect for that type (bayonet→wire, spade→sandbags). */
-  const canBreach = (t, s) => t.clears === s.type || t.pierce >= s.toughness;
+  const canBreach = (t, s) => Combat.canDamageStructure(s, { kind: 'melee', pierce: t.pierce, clears: t.clears });
   function toolStructureDamage(t, s) {
     if (t.clears === s.type) return s.maxHp;             // clearing tools cut straight through
     return t.structure * ((t.vs && t.vs[s.type]) || 1);
@@ -647,11 +659,15 @@ const Game = (() => {
     hudMsg((t === 'tank' ? 'Tank' : 'Armored Jeep') + ' called in!'); SFX.win();
   }
   function spawnVehicle(team, vtype, x, y) {
+    // HP comes from the damage table; what makes a tank tough is that rifle
+    // rounds do 0% to it, not a huge health pool
     const conf = vtype === 'tank'
-      ? { hp: 600, weapon: 'qlz-87', r: 26, speed: 110 }
-      : { hp: 320, weapon: 'm249', r: 22, speed: 175 };
+      ? { weapon: 'qlz-87', r: 26, speed: 110 }
+      : { weapon: 'm249', r: 22, speed: 175 };
     const v = makeAgent(team, false, conf.weapon);
-    v.isVehicle = true; v.vtype = vtype; v.maxHp = conf.hp; v.hp = conf.hp; v.r = conf.r; v.vspeed = conf.speed;
+    const hp = Combat.maxHpFor(vtype);
+    v.isVehicle = true; v.vtype = vtype; v.klass = vtype;
+    v.maxHp = hp; v.hp = hp; v.r = conf.r; v.vspeed = conf.speed;
     v.name = (vtype === 'tank' ? 'Tank' : 'Jeep');
     v.x = clamp(x, v.r, MAP_W - v.r); v.y = clamp(y, v.r, MAP_H - v.r);
     agents.push(v);
@@ -722,6 +738,16 @@ const Game = (() => {
         const cls = (Weapons.byId[player.baseWeapon.id] || player.weapon).className;
         const gold = Items.makeLegendary(Items.bestOfClass(cls));
         equipWeapon(player, gold); hudMsg('LEGENDARY! ' + gold.name); break;
+      }
+      case 'armorT1': case 'armorT2': case 'armorT3': {
+        const tier = +entry.id.slice(-1);
+        // upgrade whichever piece is further behind
+        const slot = (player.vest <= player.helmet) ? 'vest' : 'helmet';
+        if (player[slot] >= tier) { hudMsg('Already better armored'); break; }
+        player[slot] = tier;
+        const piece = slot === 'vest' ? Combat.vest(tier) : Combat.helmet(tier);
+        hudMsg(`${piece.name} equipped (${Math.round(piece.speed * -100)}% speed)`);
+        break;
       }
       case 'jeep': player.inv.tokens.push('jeep'); hudMsg('Jeep token — press B to call in'); break;
       case 'tank': player.inv.tokens.push('tank'); hudMsg('Tank token — press B to call in'); break;
@@ -830,7 +856,8 @@ const Game = (() => {
     }
     if (dps > 0) {
       a.wireAcc = (a.wireAcc || 0) + dps * dt;
-      if (a.wireAcc >= 4) { applyDamage(a, a.wireAcc, null); a.wireAcc = 0; }
+      // environmental: no hit-zone roll, no armour — the wire just cuts you
+      if (a.wireAcc >= 4) { applyDamage(a, a.wireAcc, null, 'true'); a.wireAcc = 0; }
     }
     return slow;
   }
@@ -975,7 +1002,8 @@ const Game = (() => {
 
     const m = Math.hypot(moveX, moveY);
     if (m > 0) {
-      const base = a.isVehicle ? a.vspeed : a.weapon.moveSpeed * 0.72 * a.cls.speed;
+      const base = a.isVehicle ? a.vspeed
+        : a.weapon.moveSpeed * 0.72 * a.cls.speed * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
       const spd = base * (a.wireSlow || 1) * dt;
       const px = a.x, py = a.y;
       a.x += (moveX / m) * spd; a.y += (moveY / m) * spd;
@@ -1024,9 +1052,12 @@ const Game = (() => {
       // "standing still" powers the ghillie suit
       player.stillT = m > 0 ? 0 : player.stillT + dt;
       if (m > 0) {
+        const adr = Combat.adrenaline(player.adrenaline);
         let base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
+        base *= Combat.armorSpeed(player);           // vest + helmet weigh you down
+        base *= adr.speed;                           // Adren%/2 movement speedup
         if (input.ads) base *= 0.55;                 // aiming slows you
-        if (player.adrenaline > 0) base *= 1.25;     // adrenaline speed boost
+        if (input.ads && player.weapon.scopeMoveMult !== undefined) base *= player.weapon.scopeMoveMult;  // bipod
         if (player.channel) base *= 0.4;             // channeling a heal
         if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
         if (tool.shield && input.ads) base *= tool.slow;
@@ -1050,8 +1081,11 @@ const Game = (() => {
       input.fireEdge = false;
     }
 
-    // camera zoom (binoculars)
-    zoomTarget = (player.alive && player.toolActive && player.tool.zoom) ? 1 / player.tool.zoom : 1;
+    // camera zoom: binoculars pull back, scoping a long gun pulls out to its
+    // scope stat (snipers ~0.16 = a lot of magnification, pistols ~2 = none)
+    if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = 1 / player.tool.zoom;
+    else if (player.alive && input.ads) zoomTarget = clamp(0.35 + player.weapon.scope * 0.32, 0.4, 1);
+    else zoomTarget = 1;
     zoom += (zoomTarget - zoom) * Math.min(1, 9 * dt);
 
     // agents timers + AI
@@ -1095,7 +1129,7 @@ const Game = (() => {
               const travelled = Math.hypot(b.x - b.sx, b.y - b.sy);
               const steps = Math.max(0, travelled - FALLOFF_START) / FALLOFF_UNIT;
               const mult = Math.max(FALLOFF_MIN, 1 - b.falloff * steps);
-              applyDamage(a, b.dmg * mult, b.owner);
+              applyDamage(a, b.dmg * mult, b.owner, b.dmgType);
               spawnFx(b.x, b.y, TEAM_COLORS[a.team], 4);
             }
             dead = true; break;
@@ -1114,7 +1148,7 @@ const Game = (() => {
         }
       }
       if (dead) {
-        if (b.splash) explode(b.x, b.y, b.dmg, b.splashR, b.team, b.owner);
+        if (b.splash) explode(b.x, b.y, b.dmg, b.splashR, b.team, b.owner, b.dmgType);
         bullets.splice(i, 1);
       }
     }
@@ -1158,12 +1192,16 @@ const Game = (() => {
     const bal = Structures.ballistics(wall);
     if (bal.mode === 'through') return false;
 
-    if (!b.splash) damageStructure(wall, b.dmg, b.x, b.y);
+    // a round only chews the wall if its damage type out-ranks the toughness
+    const src = { kind: b.dmgType === 'heat' ? 'heat' : b.splash ? 'explosive' : 'bullet', ap: b.dmgType === 'ap' };
+    if (!b.splash && Combat.canDamageStructure(wall, src)) damageStructure(wall, b.dmg, b.x, b.y);
 
     if (bal.mode === 'stop') { if (!b.splash) spawnFx(b.x, b.y, '#8ea0c9', 3); return true; }
 
     if (bal.mode === 'pen') {
-      b.dmg *= bal.keep;
+      // AP/Slug penetration cuts the damage the wall steals; HP/Birdshot adds to it
+      const loss = Math.max(0, Math.min(1, (1 - bal.keep) / (1 + (b.pen || 0))));
+      b.dmg *= (1 - loss);
       spawnFx(b.x, b.y, '#cfd8ee', 2);
       return b.dmg < 1;                          // spent rounds stop in the wall
     }
@@ -1193,19 +1231,32 @@ const Game = (() => {
     return a.isPlayer ? 0 : 0.5;
   }
 
-  function applyDamage(a, dmg, owner) {
+  /* The one place damage is applied. Everything upstream just says how much
+     raw damage of what type; combat.js decides what actually lands. */
+  function applyDamage(a, dmg, owner, type = 'normal', zone = null) {
     dmg *= shieldFactor(a, owner);
     // dug in: infantry in a trench dodge half of what comes at them
     if (!a.isVehicle && inTrench(a) && Math.random() < Structures.WALL_TYPES.trench.dodge) {
       spawnFx(a.x, a.y, '#b08a5a', 4);
       return;
     }
+    // damage type vs target class, hit zone, armour, adrenaline
+    const hit = Combat.resolve({ damage: dmg, type, zone }, a);
+    dmg = hit.damage;
     if (dmg <= 0) {
-      if (a.isPlayer) spawnFx(a.x + Math.cos(a.angle) * a.r, a.y + Math.sin(a.angle) * a.r, '#cfd8ee', 4);
+      // a round that simply cannot hurt this target (rifle fire on a tank)
+      spawnFx(a.x + rand(-a.r, a.r), a.y + rand(-a.r, a.r), '#cfd8ee', 4);
+      if (owner && owner.isPlayer) hudMsg(`${Combat.targetOf(a).name} shrugs it off — you need ${a.klass === 'tank' ? 'HEAT' : 'explosives'}`);
       return;
     }
     a.hp -= dmg;
-    if (DB.getSettings().dmgNumbers) dmgNums.push({ x: a.x, y: a.y - a.r, val: Math.round(dmg), life: 0.7, crit: dmg >= 40 });
+    if (DB.getSettings().dmgNumbers) {
+      dmgNums.push({
+        x: a.x, y: a.y - a.r, val: Math.round(dmg), life: 0.7,
+        crit: hit.zone === 'head', zone: hit.zone,
+      });
+    }
+    if (hit.zone === 'head' && owner && owner.isPlayer) SFX.reward();
     if (a.isPlayer) SFX.hurt();
     if (a.hp <= 0) {
       a.hp = 0; a.alive = false;
@@ -1438,9 +1489,23 @@ const Game = (() => {
         ctx.fillStyle = 'rgba(207,216,238,0.75)'; roundRect(a.r - 2, -16, 7, 32, 3); ctx.fill();
         ctx.restore();
       }
-      // barrel
-      ctx.strokeStyle = '#e9f0ff'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x + Math.cos(a.angle) * (a.r + 12), a.y + Math.sin(a.angle) * (a.r + 12)); ctx.stroke();
+      // barrel, painted with the equipped skin
+      const sk = a.skin || Skins.get('default');
+      const bx = a.x + Math.cos(a.angle) * (a.r + 12), by = a.y + Math.sin(a.angle) * (a.r + 12);
+      if (sk.glow) { ctx.shadowColor = sk.accent; ctx.shadowBlur = 10; }
+      ctx.strokeStyle = sk.barrel; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(bx, by); ctx.stroke();
+      if (sk.stripes) {   // a contrasting wrap partway down the barrel
+        ctx.strokeStyle = sk.accent; ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(a.x + Math.cos(a.angle) * (a.r + 4), a.y + Math.sin(a.angle) * (a.r + 4));
+        ctx.lineTo(a.x + Math.cos(a.angle) * (a.r + 8), a.y + Math.sin(a.angle) * (a.r + 8));
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+      // muzzle tip in the skin accent
+      ctx.fillStyle = sk.accent;
+      ctx.beginPath(); ctx.arc(bx, by, 2.5, 0, Math.PI * 2); ctx.fill();
       // body
       ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
       ctx.fillStyle = TEAM_COLORS[a.team]; ctx.fill();
@@ -1453,6 +1518,13 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 12, hpw, 5);
       ctx.fillStyle = a.hp > 50 ? '#4be08a' : a.hp > 25 ? '#ffcf4a' : '#ff4b5c';
       ctx.fillRect(a.x - hpw / 2, a.y - a.r - 12, hpw * (a.hp / a.maxHp), 5);
+      // armour pips above the health bar
+      if (a.vest || a.helmet) {
+        ctx.fillStyle = '#9fd8ff';
+        for (let p = 0; p < a.vest; p++) ctx.fillRect(a.x - hpw / 2 + p * 5, a.y - a.r - 18, 4, 3);
+        ctx.fillStyle = '#ffcf4a';
+        for (let p = 0; p < a.helmet; p++) ctx.fillRect(a.x + hpw / 2 - 4 - p * 5, a.y - a.r - 18, 4, 3);
+      }
       ctx.globalAlpha = 1;
     }
 
@@ -1461,9 +1533,11 @@ const Game = (() => {
     // damage numbers
     for (const d of dmgNums) {
       ctx.globalAlpha = clamp(d.life * 1.6, 0, 1);
-      ctx.fillStyle = d.crit ? '#ffcf4a' : '#fff';
-      ctx.font = `bold ${d.crit ? 22 : 16}px Segoe UI`; ctx.textAlign = 'center';
-      ctx.fillText(d.val, d.x, d.y);
+      // head = gold and big, limb = dim and small, body = plain
+      ctx.fillStyle = d.zone === 'head' ? '#ffcf4a' : d.zone === 'limb' ? '#9aa7bd' : '#fff';
+      ctx.font = `bold ${d.zone === 'head' ? 22 : d.zone === 'limb' ? 13 : 16}px Segoe UI`;
+      ctx.textAlign = 'center';
+      ctx.fillText(d.zone === 'head' ? d.val + '!' : d.val, d.x, d.y);
     }
     ctx.globalAlpha = 1;
 
@@ -1674,11 +1748,27 @@ const Game = (() => {
   /* on-canvas HUD for the tactical kit (inventory, adrenaline, channel, messages) */
   function drawTacticalHud() {
     const p = player; if (!p || !p.inv) return;
-    // adrenaline bar (above the HTML health bar area)
+    // adrenaline bar (above the HTML health bar area) with its current perks
+    const adr = Combat.adrenaline(p.adrenaline);
     if (p.adrenaline > 0) {
       const bx = 22, by = H - 66, bw = 220;
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
-      ctx.fillStyle = '#ffcf4a'; roundRect(bx, by, bw * (p.adrenaline / 100), 8, 4); ctx.fill();
+      ctx.fillStyle = '#ffcf4a'; roundRect(bx, by, bw * (adr.amount / 100), 8, 4); ctx.fill();
+      // tier marks at 25/50/75
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      for (const t of [25, 50, 75]) ctx.fillRect(bx + bw * (t / 100), by, 1, 8);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#ffcf4a';
+      ctx.fillText(`ADR +${Math.round((adr.speed - 1) * 100)}% spd/rld/hnd · -${Math.round(adr.dr * 100)}% dmg`, bx + bw + 10, by + 4);
+    }
+    // armour readout
+    if (p.vest || p.helmet) {
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#9fd8ff';
+      const bits = [];
+      if (p.vest) bits.push(`🦺 T${p.vest} (${Math.round(Combat.vest(p.vest).body * 100)}% body)`);
+      if (p.helmet) bits.push(`⛑ T${p.helmet} (${Math.round(Combat.helmet(p.helmet).head * 100)}% head)`);
+      ctx.fillText(bits.join('  '), 22, H - 122);
     }
     // class chip (top-left, under the health bar area)
     const cls = p.cls;

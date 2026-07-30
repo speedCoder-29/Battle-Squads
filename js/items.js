@@ -42,24 +42,27 @@ const Items = (() => {
   // weighted tables straight from the design doc (weights are % chances)
   const CRATE_TABLES = {
     regular: [
-      { id: 'bandage',        w: 25, label: 'Bandage' },
+      { id: 'bandage',        w: 20, label: 'Bandage' },
       { id: 'soda',           w: 15, label: 'Soda' },
       { id: 'stim',           w: 5,  label: 'Stim Injection' },
-      { id: 'classConsumable',w: 25, label: 'Class Consumable' },
-      { id: 'ammo',           w: 30, label: 'Ammo' },
+      { id: 'classConsumable',w: 20, label: 'Class Consumable' },
+      { id: 'ammo',           w: 25, label: 'Ammo' },
+      { id: 'armorT1',        w: 15, label: 'Armor T1' },
     ],
     silver: [
-      { id: 'soda',           w: 20, label: 'Soda' },
+      { id: 'soda',           w: 15, label: 'Soda' },
       { id: 'stim',           w: 10, label: 'Stim Injection' },
-      { id: 'classConsumable',w: 20, label: 'Class Consumable' },
-      { id: 'jeep',           w: 30, label: 'Armored Jeep' },
-      { id: 'flag',           w: 20, label: 'Cool Flag' },
+      { id: 'classConsumable',w: 15, label: 'Class Consumable' },
+      { id: 'jeep',           w: 25, label: 'Armored Jeep' },
+      { id: 'flag',           w: 15, label: 'Cool Flag' },
+      { id: 'armorT2',        w: 20, label: 'Armor T2' },
     ],
     gold: [
-      { id: 'stim',           w: 20, label: 'Stim Injection' },
-      { id: 'tank',           w: 20, label: 'Tank' },
-      { id: 'jeep',           w: 30, label: 'Armored Jeep' },
+      { id: 'stim',           w: 15, label: 'Stim Injection' },
+      { id: 'tank',           w: 15, label: 'Tank' },
+      { id: 'jeep',           w: 20, label: 'Armored Jeep' },
       { id: 'legendary',      w: 30, label: 'Legendary Weapon' },
+      { id: 'armorT3',        w: 20, label: 'Armor T3' },
     ],
   };
   // how often each crate tier appears on the map

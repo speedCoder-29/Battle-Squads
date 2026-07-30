@@ -33,6 +33,10 @@ const DB = (() => {
       // loadout — all weapons unlocked in this prototype build
       weapon: Weapons.default,
       unlockedWeapons: Weapons.allIds(),
+      skins: [],                 // skin ids owned (account-wide)
+      weaponSkins: {},           // weaponId -> skin id
+      attachments: {},           // weaponId -> [attachment name]
+      ammo: {},                  // weaponId -> specialized ammo name
       // missions (regenerated daily)
       missions: null,
       missionsDate: null,

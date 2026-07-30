@@ -11,6 +11,20 @@ const Progression = (() => {
     let changed = false;
     if (!profile.unlockedWeapons || !profile.unlockedWeapons.length) { profile.unlockedWeapons = Weapons.allIds(); changed = true; }
     if (!WEAPONS[profile.weapon]) { profile.weapon = Weapons.default; changed = true; }
+    // skins / attachments / ammo arrived after the first profiles were written
+    for (const [key, init] of [['skins', []], ['weaponSkins', {}], ['attachments', {}], ['ammo', {}]]) {
+      if (!profile[key]) { profile[key] = init; changed = true; }
+    }
+    // drop anything that no longer exists in the roster
+    for (const id of Object.keys(profile.attachments)) {
+      const w = WEAPONS[id];
+      const kept = (profile.attachments[id] || []).filter(a => w && w.attachments.includes(a));
+      if (kept.length !== (profile.attachments[id] || []).length) { profile.attachments[id] = kept; changed = true; }
+    }
+    for (const id of Object.keys(profile.ammo)) {
+      const w = WEAPONS[id];
+      if (!w || !w.specialAmmo.includes(profile.ammo[id])) { delete profile.ammo[id]; changed = true; }
+    }
     if (changed) DB.saveProfile(profile);
     return profile;
   }

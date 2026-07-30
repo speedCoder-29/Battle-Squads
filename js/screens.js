@@ -171,7 +171,139 @@ const Screens = (() => {
     return typeof t === 'function' ? t(0.1) : t;
   }
 
+  /* ---- gunsmith: skin / attachments / ammo for the weapon you're carrying ---- */
+  function renderGunsmith() {
+    const p = DB.getProfile();
+    const host = document.getElementById('loadout-smith');
+    const base = Weapons.byId[p.weapon];
+    if (!host || !base) return;
+
+    const skinId = Skins.equipped(p, base.id);
+    const skin = Skins.get(skinId);
+    const chosen = p.attachments[base.id] || [];
+    const ammo = p.ammo[base.id] || null;
+    const built = Weapons.configure(base, { attachments: chosen, ammo });
+
+    // what the attachments/ammo actually did to the numbers
+    const delta = (label, now, was, lowerIsBetter, unit = '') => {
+      const d = now - was;
+      if (Math.abs(d) < 0.005) return `<span class="gs-stat">${label} <b>${fmt(now)}${unit}</b></span>`;
+      const good = lowerIsBetter ? d < 0 : d > 0;
+      return `<span class="gs-stat ${good ? 'is-up' : 'is-down'}">${label} <b>${fmt(now)}${unit}</b>
+        <i>${d > 0 ? '+' : ''}${fmt(d)}</i></span>`;
+    };
+    const fmt = (v) => (Math.abs(v) >= 10 ? Math.round(v) : Math.round(v * 100) / 100);
+
+    host.innerHTML = `
+      <div class="gs-head">
+        <div class="gs-title">
+          <span class="gs-icon" style="color:${skin.barrel}">${base.icon}</span>
+          <div>
+            <h3>${base.name}<span class="gs-skin-tag" style="background:${skin.accent};color:#0b1020">${skin.name}</span></h3>
+            <p>${base.type} · ${base.className} · <b>${built.dmgType.toUpperCase()}</b> rounds</p>
+          </div>
+        </div>
+        <div class="gs-preview" style="--barrel:${skin.barrel};--accent:${skin.accent}">
+          <span class="gs-barrel"></span><span class="gs-muzzle"></span>
+        </div>
+      </div>
+
+      <div class="gs-stats">
+        ${delta('DMG', built.damage * built.pellets, base.damage * base.pellets, false)}
+        ${delta('SPREAD', built.spreadBase, base.spreadBase, true)}
+        ${delta('RECOIL', built.recoilRaw, base.recoilRaw, true)}
+        ${delta('RELOAD', built.reloadMs / 1000, base.reloadMs / 1000, true, 's')}
+        ${delta('MOBIL', built.moveSpeed, base.moveSpeed, false)}
+        ${delta('HANDLING', built.handling, base.handling, true, 's')}
+        ${delta('PEN', (built.penetration || 0) * 100, 0, false, '%')}
+      </div>
+
+      <div class="gs-section">
+        <h4>Skin <span class="gs-hint">cosmetic only — never changes a stat</span></h4>
+        <div class="gs-row" id="gs-skins"></div>
+      </div>
+
+      ${base.attachments.length ? `
+      <div class="gs-section">
+        <h4>Attachments <span class="gs-hint">every buff costs you a debuff</span></h4>
+        <div class="gs-row" id="gs-attach"></div>
+      </div>` : ''}
+
+      ${base.specialAmmo.length ? `
+      <div class="gs-section">
+        <h4>Specialized Ammo <span class="gs-hint">one type at a time</span></h4>
+        <div class="gs-row" id="gs-ammo"></div>
+      </div>` : ''}
+    `;
+
+    // --- skins ---
+    const skinRow = host.querySelector('#gs-skins');
+    Skins.forWeapon(base).forEach(id => {
+      const s = Skins.get(id), owned = Skins.owns(p, id), on = id === skinId;
+      const b = document.createElement('button');
+      b.className = 'gs-skin' + (on ? ' is-on' : '') + (owned ? '' : ' is-locked');
+      b.style.setProperty('--barrel', s.barrel);
+      b.style.setProperty('--accent', s.accent);
+      b.innerHTML = `
+        <span class="gs-swatch"></span>
+        <span class="gs-skin-name">${s.name}</span>
+        <span class="gs-skin-meta" style="color:${Skins.rarityOf(id).color}">
+          ${owned ? (on ? 'EQUIPPED' : 'Equip') : '🪙 ' + Skins.priceOf(id)}
+        </span>`;
+      b.addEventListener('click', () => {
+        if (!owned) {
+          const r = Skins.purchase(p, id);
+          if (!r.ok) { Toast.show(r.error, 'warn'); SFX.lose(); return; }
+          Toast.show(`${s.name} unlocked for ${r.price} credits`, 'reward');
+        }
+        p.weaponSkins[base.id] = id;
+        DB.saveProfile(p); SFX.click();
+        renderAll(); renderLoadout();          // renderLoadout re-runs the gunsmith
+      });
+      skinRow.appendChild(b);
+    });
+
+    // --- attachments ---
+    const attachRow = host.querySelector('#gs-attach');
+    if (attachRow) base.attachments.forEach(name => {
+      const at = Weapons.ATTACHMENTS[name];
+      if (!at) return;
+      const on = chosen.includes(name);
+      const b = document.createElement('button');
+      b.className = 'gs-mod' + (on ? ' is-on' : '');
+      b.innerHTML = `
+        <span class="gs-mod-head">${at.icon} ${at.name}</span>
+        <span class="gs-mod-buff">${at.buffs.map(x => '▲ ' + x).join('<br>')}</span>
+        <span class="gs-mod-debuff">${at.debuffs.map(x => '▼ ' + x).join('<br>')}</span>`;
+      b.addEventListener('click', () => {
+        p.attachments[base.id] = on ? chosen.filter(x => x !== name) : chosen.concat(name);
+        DB.saveProfile(p); SFX.click(); renderGunsmith();
+      });
+      attachRow.appendChild(b);
+    });
+
+    // --- specialized ammo ---
+    const ammoRow = host.querySelector('#gs-ammo');
+    if (ammoRow) base.specialAmmo.forEach(name => {
+      const am = Weapons.AMMO_TYPES[name];
+      if (!am) return;
+      const on = ammo === name;
+      const b = document.createElement('button');
+      b.className = 'gs-mod' + (on ? ' is-on' : '');
+      b.innerHTML = `
+        <span class="gs-mod-head">${am.icon} ${am.name}</span>
+        <span class="gs-mod-buff">${am.buffs.map(x => '▲ ' + x).join('<br>')}</span>
+        <span class="gs-mod-debuff">${am.debuffs.map(x => '▼ ' + x).join('<br>')}</span>`;
+      b.addEventListener('click', () => {
+        if (on) delete p.ammo[base.id]; else p.ammo[base.id] = name;
+        DB.saveProfile(p); SFX.click(); renderGunsmith();
+      });
+      ammoRow.appendChild(b);
+    });
+  }
+
   function renderLoadout() {
+    renderGunsmith();
     const p = DB.getProfile();
     const host = document.getElementById('loadout-grid');
     host.innerHTML = '';
@@ -197,13 +329,16 @@ const Screens = (() => {
       weapons.forEach(w => {
         const unlocked = p.unlockedWeapons.includes(w.id);
         const equipped = p.weapon === w.id;
+        const wSkin = Skins.get(Skins.equipped(p, w.id));
         const card = document.createElement('button');
         card.className = 'weapon-card' + (equipped ? ' is-equipped' : '') + (unlocked ? '' : ' is-locked');
+        card.style.setProperty('--skin', wSkin.accent);
         card.innerHTML = `
           <div class="weapon-card__head">
-            <span class="weapon-card__icon">${w.icon}</span>
+            <span class="weapon-card__icon" style="color:${wSkin.barrel}">${w.icon}</span>
             <span class="ammo-chip" style="background:${w.ammoColor}" title="${w.ammoType} ammo"></span>
           </div>
+          ${wSkin.free ? '' : `<span class="weapon-card__skin" style="background:${wSkin.accent}">${wSkin.name}</span>`}
           <div class="weapon-card__name">${w.name}</div>
           <div class="weapon-card__type">${w.type}${w.burst > 1 ? ` · ${w.burst}-rnd burst` : ''}${w.pellets > 1 ? ` · ${w.pellets} pellets` : ''}${w.explosive ? ' · 💥 explosive' : ''}</div>
           <div class="weapon-card__stats">${statBars(w)}</div>

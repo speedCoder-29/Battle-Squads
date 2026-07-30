@@ -330,8 +330,65 @@ input, select { font-family: inherit; }
 .bp-tier.is-locked .bp-tier__reward { filter: grayscale(1) brightness(0.6); }
 .bp-tier__lock { font-size: 11px; color: var(--dim); margin-top: 4px; }
 
+/* ---------- gunsmith (skins / attachments / ammo) ---------- */
+.gunsmith {
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  padding: 20px; margin-bottom: 26px;
+}
+.gs-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.gs-title { display: flex; align-items: center; gap: 14px; }
+.gs-icon { font-size: 34px; }
+.gs-title h3 { font-size: 20px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gs-title p { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.gs-skin-tag { font-size: 9px; font-weight: 800; letter-spacing: 1px; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; }
+.gs-preview { display: flex; align-items: center; gap: 0; height: 26px; }
+.gs-barrel { width: 90px; height: 7px; border-radius: 4px; background: var(--barrel); box-shadow: 0 0 12px var(--accent); }
+.gs-muzzle { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); margin-left: -2px; }
+
+.gs-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.gs-stat { font-size: 11px; color: var(--muted); background: rgba(0,0,0,0.25); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; }
+.gs-stat b { color: var(--text); margin-left: 3px; }
+.gs-stat i { font-style: normal; margin-left: 5px; font-weight: 700; }
+.gs-stat.is-up { border-color: rgba(75,224,138,0.5); }
+.gs-stat.is-up i { color: var(--green); }
+.gs-stat.is-down { border-color: rgba(255,75,92,0.5); }
+.gs-stat.is-down i { color: var(--red); }
+
+.gs-section { margin-top: 16px; }
+.gs-section h4 { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+.gs-hint { text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--dim); font-weight: 400; margin-left: 8px; }
+.gs-row { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.gs-skin {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  border: 1px solid var(--line); background: rgba(0,0,0,0.25); border-radius: 10px;
+  padding: 9px 12px; min-width: 118px; transition: 0.16s; text-align: left;
+}
+.gs-skin:hover { transform: translateY(-2px); border-color: var(--line-strong); }
+.gs-skin.is-on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.gs-skin.is-locked { opacity: 0.72; }
+.gs-swatch { width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--barrel), var(--accent)); }
+.gs-skin-name { font-size: 12px; font-weight: 700; }
+.gs-skin-meta { font-size: 10px; font-weight: 800; letter-spacing: 0.5px; }
+
+.gs-mod {
+  display: flex; flex-direction: column; gap: 5px; text-align: left;
+  border: 1px solid var(--line); background: rgba(0,0,0,0.25); border-radius: 10px;
+  padding: 10px 12px; width: 232px; transition: 0.16s;
+}
+.gs-mod:hover { transform: translateY(-2px); border-color: var(--line-strong); }
+.gs-mod.is-on { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2); background: rgba(53,224,255,0.07); }
+.gs-mod-head { font-size: 12px; font-weight: 800; }
+.gs-mod-buff { font-size: 10px; color: var(--green); line-height: 1.5; }
+.gs-mod-debuff { font-size: 10px; color: var(--red); line-height: 1.5; }
+
 /* loadout */
 .loadout-grid { display: flex; flex-direction: column; gap: 24px; }
+.weapon-card__skin {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  font-size: 8px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase;
+  color: #0b1020; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+}
 .wclass { border-left: 2px solid transparent; padding-left: 14px; transition: 0.16s; }
 .wclass.is-active { border-left-color: var(--accent); }
 .wclass__title { font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
@@ -347,6 +404,7 @@ input, select { font-family: inherit; }
 .tool-badge { font-size: 10px; padding: 2px 8px; border-radius: 6px; background: rgba(120,160,255,0.10); border: 1px solid var(--line); color: var(--dim); }
 .wclass__row { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .weapon-card {
+  position: relative;
   border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--panel);
   cursor: pointer; transition: 0.16s; text-align: left; display: flex; flex-direction: column; gap: 8px;
 }
