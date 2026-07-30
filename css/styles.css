@@ -330,6 +330,53 @@ input, select { font-family: inherit; }
 .bp-tier.is-locked .bp-tier__reward { filter: grayscale(1) brightness(0.6); }
 .bp-tier__lock { font-size: 11px; color: var(--dim); margin-top: 4px; }
 
+/* multiplayer status chip */
+.net-chip {
+  display: inline-block; margin-top: 6px; font-size: 11px; color: var(--dim);
+  background: rgba(0,0,0,0.3); border: 1px solid var(--line);
+  padding: 3px 9px; border-radius: 999px; cursor: help;
+}
+.net-chip.is-online { color: var(--green); border-color: rgba(75,224,138,0.4); }
+
+/* ---------- shop ---------- */
+.shop-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.shop-tab {
+  border: 1px solid var(--line); background: rgba(0,0,0,0.25); color: var(--muted);
+  padding: 9px 16px; border-radius: 999px; font-weight: 700; font-size: 13px; transition: 0.16s;
+}
+.shop-tab:hover { color: var(--text); border-color: var(--line-strong); }
+.shop-tab.is-active { background: rgba(255,106,43,0.16); color: var(--text); border-color: var(--accent); }
+.shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+.shop-empty { color: var(--dim); font-size: 13px; }
+.shop-card {
+  border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--panel);
+  display: flex; flex-direction: column; gap: 7px; align-items: flex-start; transition: 0.16s;
+}
+.shop-card:hover { transform: translateY(-3px); border-color: var(--line-strong); }
+.shop-card.is-owned { border-color: var(--green); opacity: 0.75; }
+.shop-card.is-broke { opacity: 0.6; }
+.shop-card__icon { font-size: 30px; }
+.shop-card__name { font-weight: 800; font-size: 15px; }
+.shop-card__rarity { font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+.shop-swatch { width: 100%; height: 8px; border-radius: 4px; }
+.shop-card__desc { font-size: 11px; color: var(--dim); line-height: 1.5; min-height: 16px; }
+.shop-card__buy {
+  margin-top: auto; width: 100%; padding: 9px; border-radius: 8px; font-weight: 800; font-size: 13px;
+  border: 1px solid var(--line-strong); background: rgba(255,255,255,0.05); color: var(--text); transition: 0.16s;
+}
+.shop-card__buy:hover:not(:disabled) { background: var(--accent); color: #1a0e04; border-color: transparent; }
+.shop-card__buy:disabled { cursor: default; color: var(--green); border-color: transparent; background: transparent; }
+
+/* ---------- bot difficulty slider ---------- */
+.setting--wide { flex-direction: column; align-items: stretch; gap: 8px; }
+.setting__note { font-size: 11px; color: var(--dim); font-style: italic; }
+.diff-traits { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+.diff-trait { display: flex; align-items: center; gap: 9px; }
+.diff-trait__l { font-size: 10px; color: var(--muted); width: 58px; letter-spacing: 0.5px; text-transform: uppercase; }
+.diff-trait__bar { flex: 1; height: 5px; background: rgba(0,0,0,0.45); border-radius: 3px; overflow: hidden; max-width: 110px; }
+.diff-trait__fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--accent)); transition: width 0.2s; }
+.diff-trait__d { font-size: 10px; color: var(--dim); }
+
 /* ---------- gunsmith (skins / attachments / ammo) ---------- */
 .gunsmith {
   border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
@@ -489,7 +536,21 @@ input, select { font-family: inherit; }
 .hud__ammo { padding: 8px 14px; background: rgba(0,0,0,0.5); border: 1px solid var(--line); border-radius: 10px; }
 .hud__ammo b { font-size: 20px; font-weight: 900; }
 .hud__ammo span { color: var(--muted); }
-.hud__hint { position: absolute; bottom: 22px; right: 22px; color: var(--dim); font-size: 12px; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 8px; }
+/* control legend: grouped by what you're doing, fades out once you're playing */
+.hud__hint {
+  position: absolute; bottom: 22px; right: 22px;
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-end;
+  color: var(--dim); font-size: 11px; line-height: 1.5;
+  background: rgba(0,0,0,0.45); padding: 9px 13px; border-radius: 10px;
+  border: 1px solid var(--line);
+  transition: opacity 0.6s ease;
+}
+.hud__hint.is-faded { opacity: 0.18; }
+.hud__hint:hover { opacity: 1; }
+.hint-group b {
+  color: var(--muted); font-size: 9px; letter-spacing: 1px;
+  margin-right: 6px; font-weight: 800;
+}
 
 /* game menus (pause / results) */
 .game-menu { position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center; background: rgba(4,7,16,0.8); backdrop-filter: blur(3px); }

@@ -94,6 +94,7 @@ const DB = (() => {
     /* ---- device settings ---- */
     getSettings: () => read(KEY_SETTINGS, {
       volume: 70, sfx: true, sensitivity: 100, quality: 'medium', dmgNumbers: true,
+      botLevel: 5,        // 1-10, see js/botai.js
     }),
     saveSettings: (s) => write(KEY_SETTINGS, s),
     freshProfile,

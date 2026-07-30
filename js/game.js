@@ -16,6 +16,7 @@ const Game = (() => {
   // squad setup per mode
   const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
   let nTeams = 4;
+  let botLevel = BotAI.DEFAULT;      // 1-10 bot difficulty — see js/botai.js
 
   let canvas, ctx, W, H;
   let mode = 'domination';
@@ -147,6 +148,8 @@ const Game = (() => {
       vest: 0, helmet: 0,                                   // armour tiers 0-3
       weaponId: w.id, weapon: w,
       cls, tool: cls.tool, skin,                            // class kit + weapon skin
+      diff: BotAI.individual(botLevel),                     // aim / survival / teamwork
+      vx: 0, vy: 0, contactT: 0, healCd: 0,
       toolCd: 0, toolActive: false, swingT: 0, builds: 0, stillT: 0,
       ammo: w.mag, reloadTimer: 0, fireCd: 0,
       bloom: 0, burstLeft: 0, burstCd: 0, postBurstCd: 0,   // firing state
@@ -229,6 +232,8 @@ const Game = (() => {
     window.addEventListener('resize', resize);
 
     MAP_W = MAP_SIZES[mode].w; MAP_H = MAP_SIZES[mode].h;
+    botLevel = DB.getSettings().botLevel || BotAI.DEFAULT;
+    squadIntel = [];
     buildMap();
     setupTeams();
     bullets = []; fx = []; dmgNums = [];
@@ -244,7 +249,9 @@ const Game = (() => {
       tokens: [],
     };
     const kit = Items.CONSUMABLES[player.cls.consumable];
-    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: player.cls.startCount };
+    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls) };
+    // everyone also deploys with a couple of bandages so you're never stranded
+    if (kit && kit.cat !== 'heal') player.inv.heal = { id: 'bandage', n: 2 };
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
     matchStats = { kills: 0, captures: 0 };
@@ -253,7 +260,10 @@ const Game = (() => {
     document.getElementById('hud-gamemode').textContent = mode === 'domination' ? 'DOMINATION' : 'ELIMINATION';
     document.getElementById('game-pause').classList.remove('is-open');
     document.getElementById('game-results').classList.remove('is-open');
-    document.getElementById('hud-hint').style.display = '';
+    // legend is loud for the first few seconds, then fades back (hover to read)
+    const hint = document.getElementById('hud-hint');
+    hint.style.display = ''; hint.classList.remove('is-faded');
+    setTimeout(() => hint.classList.add('is-faded'), 12000);
     updateWeaponHud();
 
     lastTime = performance.now();
@@ -339,7 +349,7 @@ const Game = (() => {
   }
 
   /* ---------------- shooting ---------------- */
-  const FALLOFF_START = 170, FALLOFF_UNIT = 210, FALLOFF_MIN = 0.4;
+  const FALLOFF_UNIT = 210, FALLOFF_MIN = 0.4;   // falloff start is per-gun now
 
   function startReload(a) {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
@@ -374,10 +384,12 @@ const Game = (() => {
         y: a.y + Math.sin(ang) * (a.r + 4),
         vx: Math.cos(ang) * w.bulletSpeed, vy: Math.sin(ang) * w.bulletSpeed,
         sx: a.x, sy: a.y,
-        team: a.team, dmg: w.damage, falloff: w.falloff,
+        team: a.team, dmg: w.damage, falloff: w.falloff, range: w.range,
         splash: w.splashRadius, splashR: w.splashRadius,
         dmgType: w.dmgType, pen: w.penetration || 0,
-        life: 1.6, owner: a, color: (a.skin && a.skin.tracer) || w.ammoColor,
+        // a round dies at its gun's effective range, not on a shared timer
+        life: Math.min(2.4, (w.range * 1.15) / w.bulletSpeed),
+        owner: a, color: (a.skin && a.skin.tracer) || w.ammoColor,
         tracer: !!w.tracer,
       });
     }
@@ -933,6 +945,32 @@ const Game = (() => {
     return { enemy: best, d: Math.sqrt(bd) };
   }
 
+  /* ---------------- squad intel (teamwork trait) ----------------
+     High-teamwork bots share contacts and pile onto the same target. */
+  let squadIntel = [];                       // one entry per team
+  function shareContact(a, enemy) {
+    if (!a.diff.teamwork.sharesContacts) return;
+    squadIntel[a.team] = { target: enemy, x: enemy.x, y: enemy.y, t: a.diff.teamwork.intelMemory };
+  }
+  function squadTarget(a) {
+    const intel = squadIntel[a.team];
+    if (!intel || intel.t <= 0 || !intel.target || !intel.target.alive) return null;
+    return intel;
+  }
+  function updateSquadIntel(dt) {
+    for (const s of squadIntel) if (s && s.t > 0) s.t -= dt;
+  }
+  /* how far the nearest living squadmate is, and which way */
+  function nearestMate(a) {
+    let best = null, bd = Infinity;
+    for (const o of agents) {
+      if (o === a || !o.alive || o.team !== a.team || o.isVehicle) continue;
+      const d = dist2(a.x, a.y, o.x, o.y);
+      if (d < bd) { bd = d; best = o; }
+    }
+    return { mate: best, d: Math.sqrt(bd) };
+  }
+
   /* ---------------- bot AI ---------------- */
   function updateBot(a, dt) {
     // flashed: stumble blindly, can't fight
@@ -969,20 +1007,70 @@ const Game = (() => {
       swingTool(a);
     }
 
+    const D = a.diff, AIM = D.aim, SURV = D.survival, TEAM = D.teamwork;
     const range = botRange(a.weapon);
-    if (enemy && d < range && botCanSee(a, enemy)) {
-      // combat: face + shoot, keep preferred distance, strafe
-      const baseAng = Math.atan2(enemy.y - a.y, enemy.x - a.x);
-      const ideal = range * 0.55;
-      if (d > ideal + 40) { moveX += Math.cos(baseAng); moveY += Math.sin(baseAng); }
-      else if (d < ideal - 40) { moveX -= Math.cos(baseAng); moveY -= Math.sin(baseAng); }
+
+    // TEAMWORK — prefer whatever the squad is already shooting at
+    let target = enemy, td = d;
+    if (enemy && Math.random() < TEAM.focusFire * dt * 4) {
+      const intel = squadTarget(a);
+      if (intel && intel.target !== enemy) {
+        const id = Math.hypot(intel.target.x - a.x, intel.target.y - a.y);
+        if (id < range * 1.2) { target = intel.target; td = id; }
+      }
+    }
+
+    const canSee = target && botCanSee(a, target);
+    // AIM — reaction time: they must have held the contact before they shoot
+    if (canSee) { a.contactT = (a.contactT || 0) + dt; shareContact(a, target); }
+    else a.contactT = 0;
+    const reacted = a.contactT >= AIM.reaction;
+
+    // SURVIVAL — hurt bots use a heal, then break contact
+    const hpFrac = a.hp / a.maxHp;
+    if (SURV.usesHeals && hpFrac < SURV.healAt && !a.healCd) {
+      a.hp = Math.min(a.maxHp, a.hp + 35); a.healCd = 14;
+      spawnFx(a.x, a.y, '#4be08a', 8);
+    }
+    if (a.healCd > 0) a.healCd -= dt;
+    const retreating = hpFrac < SURV.retreatAt;
+
+    if (target && td < range * AIM.rangeDiscipline && canSee) {
+      const baseAng = Math.atan2(target.y - a.y, target.x - a.x);
+      // SURVIVAL — hold your weapon's preferred distance; back off entirely if hurt
+      const ideal = range * SURV.standoff;
+      if (retreating) { moveX -= Math.cos(baseAng); moveY -= Math.sin(baseAng); }
+      else if (td > ideal + 40) { moveX += Math.cos(baseAng); moveY += Math.sin(baseAng); }
+      else if (td < ideal - 40) { moveX -= Math.cos(baseAng); moveY -= Math.sin(baseAng); }
+      // SURVIVAL — strafing is a dodge skill
       a.strafeTimer -= dt;
       if (a.strafeTimer <= 0) { a.strafeDir *= -1; a.strafeTimer = rand(0.6, 1.6); }
-      moveX += Math.cos(baseAng + Math.PI / 2) * a.strafeDir * 0.8;
-      moveY += Math.sin(baseAng + Math.PI / 2) * a.strafeDir * 0.8;
-      // aim with a little human error, then pull the trigger
-      a.angle = baseAng + (Math.random() - 0.5) * 0.11;
-      if (d < range * 0.92) triggerFire(a);
+      moveX += Math.cos(baseAng + Math.PI / 2) * a.strafeDir * SURV.strafe;
+      moveY += Math.sin(baseAng + Math.PI / 2) * a.strafeDir * SURV.strafe;
+
+      // AIM — lead a moving target, then swing onto it at your turn rate
+      let wantAng = baseAng;
+      if (AIM.lead > 0) {
+        const flight = td / a.weapon.bulletSpeed;
+        const lx = target.x + (target.vx || 0) * flight * AIM.lead;
+        const ly = target.y + (target.vy || 0) * flight * AIM.lead;
+        wantAng = Math.atan2(ly - a.y, lx - a.x);
+      }
+      a.aimError = (a.aimError === undefined || Math.random() < dt * 2)
+        ? (Math.random() - 0.5) * 2 * AIM.error : a.aimError;
+      const goal = wantAng + a.aimError;
+      a.angle += angleDiff(goal, a.angle) * Math.min(1, AIM.turnRate * dt);
+
+      // AIM — only fire once aimed in, reacted, and inside your discipline range
+      const onTarget = Math.abs(angleDiff(goal, a.angle)) < 0.18;
+      if (reacted && onTarget && !retreating && td < range * AIM.rangeDiscipline * 0.95) {
+        if (a.weapon.action === 'auto' && Math.random() > AIM.triggerControl) {
+          // poor trigger discipline: keep holding it down and eat the bloom
+          triggerFire(a);
+        } else triggerFire(a);
+      }
+      // SURVIVAL — reload when you've broken off rather than mid-fight
+      if (SURV.reloadsInCover && retreating && a.ammo < a.weapon.mag) startReload(a);
     } else if (a.aiTargetPt) {
       const ang = Math.atan2(a.aiTargetPt.y - a.y, a.aiTargetPt.x - a.x);
       a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
@@ -991,6 +1079,16 @@ const Game = (() => {
       // roam toward enemy
       const ang = Math.atan2(enemy.y - a.y, enemy.x - a.x);
       a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
+    }
+
+    // TEAMWORK — stick with the squad, but not close enough to share a grenade
+    if (!a.isVehicle && TEAM.cohesion > 0) {
+      const { mate, d: md } = nearestMate(a);
+      if (mate) {
+        const ang = Math.atan2(mate.y - a.y, mate.x - a.x);
+        if (md > TEAM.spacing * 2.5) { moveX += Math.cos(ang) * TEAM.cohesion; moveY += Math.sin(ang) * TEAM.cohesion; }
+        else if (md < TEAM.spacing) { moveX -= Math.cos(ang) * TEAM.cohesion; moveY -= Math.sin(ang) * TEAM.cohesion; }
+      }
     }
 
     // shove open any door in the way, and sidestep if a wall has us pinned
@@ -1009,7 +1107,9 @@ const Game = (() => {
       a.x += (moveX / m) * spd; a.y += (moveY / m) * spd;
       resolveObstacles(a);
       trackStuck(a, px, py, spd, dt);
-    }
+      // velocity, so bots good enough to lead their shots have something to lead
+      a.vx = (a.x - px) / dt; a.vy = (a.y - py) / dt;
+    } else { a.vx = 0; a.vy = 0; }
     if (a.ammo <= 0) startReload(a);
   }
   /* Bots walk in straight lines, so a building corner can pin them. If a bot
@@ -1025,11 +1125,8 @@ const Game = (() => {
   }
   const obj_jitter = (o) => o.x + rand(-o.r * 0.5, o.r * 0.5);
   const obj_jitterY = (o) => o.y + rand(-o.r * 0.5, o.r * 0.5);
-  function botRange(w) {
-    const byType = { 'Shotgun': 280, 'SMG': 380, 'Pistol': 360, 'Assault Rifle': 540, 'Burst Rifle': 540,
-      'Carbine': 500, 'LMG': 580, 'DMR': 720, 'Sniper Rifle': 860, 'Launcher': 520 };
-    return byType[w.type] || 520;
-  }
+  // bots engage inside their own gun's effective range, clamped to something sane
+  const botRange = (w) => clamp(w.range * 0.85, 260, 900);
 
   /* ---------------- update ---------------- */
   function update(dt) {
@@ -1038,7 +1135,19 @@ const Game = (() => {
     if (input.dashCd > 0) input.dashCd -= dt;
 
     // player status timers
-    if (player.adrenaline > 0) player.adrenaline = Math.max(0, player.adrenaline - 5 * dt);
+    // adrenaline heals — but spends itself doing it, so it only drains while
+    // you're actually hurt. At full health it just sits there buffing you.
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle || !a.adrenaline) continue;
+      const adr = Combat.adrenaline(a.adrenaline);
+      if (a.hp < a.maxHp) {
+        a.hp = Math.min(a.maxHp, a.hp + adr.regen * dt);
+        a.adrenaline = Math.max(0, a.adrenaline - adr.burn * dt);
+        if (a.isPlayer && Math.random() < dt * 3) spawnFx(a.x, a.y, '#4be08a', 1);
+      } else {
+        a.adrenaline = Math.max(0, a.adrenaline - 1.5 * dt);   // slow idle decay
+      }
+    }
     if (player.channel) { player.channel.t -= dt; if (player.channel.t <= 0) { player.channel.onDone(); player.channel = null; } }
     if (flashOverlay > 0) flashOverlay -= dt;
     if (hudMessageT > 0) hudMessageT -= dt;
@@ -1062,8 +1171,10 @@ const Game = (() => {
         if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
         if (tool.shield && input.ads) base *= tool.slow;
         const spd = base * (player.wireSlow || 1) * dt;
+        const px = player.x, py = player.y;
         player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
-      }
+        player.vx = (player.x - px) / dt; player.vy = (player.y - py) / dt;
+      } else { player.vx = 0; player.vy = 0; }
       // aim toward cursor (world space, so it survives the binocular zoom)
       const psx = (player.x - camX) * zoom, psy = (player.y - camY) * zoom;
       player.angle = Math.atan2(input.my - psy, input.mx - psx);
@@ -1126,8 +1237,10 @@ const Game = (() => {
           if (!a.alive || a.team === b.team) continue;
           if (dist2(a.x, a.y, b.x, b.y) < a.r * a.r) {
             if (!b.splash) {   // explosives deal their damage via the blast below
+              // falloff starts partway into the gun's own effective range
               const travelled = Math.hypot(b.x - b.sx, b.y - b.sy);
-              const steps = Math.max(0, travelled - FALLOFF_START) / FALLOFF_UNIT;
+              const start = (b.range || FALLOFF_UNIT * 2) * 0.45;
+              const steps = Math.max(0, travelled - start) / FALLOFF_UNIT;
               const mult = Math.max(FALLOFF_MIN, 1 - b.falloff * steps);
               applyDamage(a, b.dmg * mult, b.owner, b.dmgType);
               spawnFx(b.x, b.y, TEAM_COLORS[a.team], 4);
@@ -1157,6 +1270,7 @@ const Game = (() => {
     if (mode === 'domination') updateObjectives(dt);
 
     // tactical layer
+    updateSquadIntel(dt);
     updateGrenades(dt);
     updateDeployables(dt);
     updateSmokes(dt);
@@ -1745,117 +1859,153 @@ const Game = (() => {
     ctx.fillStyle = col; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 14, hpw * (a.hp / a.maxHp), 5);
   }
 
-  /* on-canvas HUD for the tactical kit (inventory, adrenaline, channel, messages) */
+  /* ---------------- action HUD ----------------
+     Everything the player can *do* lives in one centred action bar, and
+     everything about their *state* lives in one left-hand stack, so the two
+     never interleave. Layout constants are here so the whole bar moves
+     together instead of each piece carrying its own magic offsets. */
+  const HUD = {
+    slotW: 72, slotH: 66, gap: 8,
+    barBottom: 26,        // gap from the bottom of the screen to the action bar
+    statusLeft: 22,
+    rowH: 18,
+  };
+  const hudBarY = () => H - HUD.barBottom - HUD.slotH;
+
   function drawTacticalHud() {
     const p = player; if (!p || !p.inv) return;
-    // adrenaline bar (above the HTML health bar area) with its current perks
-    const adr = Combat.adrenaline(p.adrenaline);
-    if (p.adrenaline > 0) {
-      const bx = 22, by = H - 66, bw = 220;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
-      ctx.fillStyle = '#ffcf4a'; roundRect(bx, by, bw * (adr.amount / 100), 8, 4); ctx.fill();
-      // tier marks at 25/50/75
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      for (const t of [25, 50, 75]) ctx.fillRect(bx + bw * (t / 100), by, 1, 8);
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#ffcf4a';
-      ctx.fillText(`ADR +${Math.round((adr.speed - 1) * 100)}% spd/rld/hnd · -${Math.round(adr.dr * 100)}% dmg`, bx + bw + 10, by + 4);
-    }
-    // armour readout
-    if (p.vest || p.helmet) {
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#9fd8ff';
-      const bits = [];
-      if (p.vest) bits.push(`🦺 T${p.vest} (${Math.round(Combat.vest(p.vest).body * 100)}% body)`);
-      if (p.helmet) bits.push(`⛑ T${p.helmet} (${Math.round(Combat.helmet(p.helmet).head * 100)}% head)`);
-      ctx.fillText(bits.join('  '), 22, H - 122);
-    }
-    // class chip (top-left, under the health bar area)
-    const cls = p.cls;
-    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = cls.color;
-    ctx.fillText(`${cls.icon} ${cls.name.toUpperCase()}`, 22, H - 106);
-    ctx.font = '11px Segoe UI'; ctx.fillStyle = '#8ea0c9';
-    ctx.fillText(`${cls.speed}× speed · ${p.tool.name}`, 22, H - 90);
-
-    // inventory slots bottom-center
-    const slots = [
-      { key: 'Q', s: p.inv.grenade }, { key: 'C', s: p.inv.tactical }, { key: 'F', s: p.inv.heal },
-    ];
-    const sw = 74, gap = 10;
-    const totalW = (slots.length + 1) * sw + slots.length * gap + (p.inv.tokens.length ? sw + gap : 0);
-    let x = W / 2 - totalW / 2; const y = H - 92;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    drawToolSlot(x, y, sw);
-    x += sw + gap;
-    for (const sl of slots) {
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, sw, 70, 10); ctx.fill();
-      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(120,160,255,0.3)'; ctx.stroke();
-      const it = sl.s && sl.s.id ? Items.CONSUMABLES[sl.s.id] : null;
-      ctx.font = '24px Segoe UI'; ctx.fillStyle = it ? '#fff' : '#3b4666';
-      ctx.fillText(it ? it.icon : '—', x + sw / 2, y + 28);
-      ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#8ea0c9';
-      ctx.fillText(it ? `${it.name}` : '', x + sw / 2, y + 52);
-      ctx.fillStyle = '#ffcf4a'; ctx.font = 'bold 11px Segoe UI';
-      ctx.textAlign = 'left'; ctx.fillText('[' + sl.key + ']', x + 6, y + 12);
-      if (it && sl.s.n) { ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.fillText('×' + sl.s.n, x + sw - 6, y + 12); }
-      ctx.textAlign = 'center';
-      x += sw + gap;
-    }
-    // token slot
-    if (p.inv.tokens.length) {
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, sw, 70, 10); ctx.fill();
-      ctx.lineWidth = 1; ctx.strokeStyle = '#ffcf4a'; ctx.stroke();
-      ctx.font = '24px Segoe UI'; ctx.fillStyle = '#fff';
-      ctx.fillText(Items.CONSUMABLES[p.inv.tokens[0]].icon, x + sw / 2, y + 28);
-      ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#8ea0c9'; ctx.fillText('Call-in', x + sw / 2, y + 52);
-      ctx.textAlign = 'left'; ctx.fillStyle = '#ffcf4a'; ctx.fillText('[B]', x + 6, y + 12);
-      ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.fillText('×' + p.inv.tokens.length, x + sw - 6, y + 12);
-      ctx.textAlign = 'center';
-    }
-    // channel ring (heal progress)
-    if (p.channel) {
-      const cx = W / 2, cy = H / 2 + 70, rad = 26;
-      ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 6; ctx.stroke();
-      ctx.beginPath(); ctx.arc(cx, cy, rad, -Math.PI / 2, -Math.PI / 2 + (1 - p.channel.t / p.channel.total) * Math.PI * 2);
-      ctx.strokeStyle = '#4be08a'; ctx.lineWidth = 6; ctx.stroke();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Segoe UI'; ctx.textAlign = 'center'; ctx.fillText(p.channel.label, cx, cy + rad + 16);
-    }
-    // transient message
-    if (hudMessageT > 0) {
-      ctx.globalAlpha = clamp(hudMessageT, 0, 1);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Segoe UI'; ctx.textAlign = 'center';
-      ctx.fillText(hudMessage, W / 2, H - 130);
-      ctx.globalAlpha = 1;
-    }
+    drawStatusStack(p);
+    drawActionBar(p);
+    drawChannelRing(p);
+    drawHudMessage();
   }
 
-  /* the [V] tool slot: cooldown sweep for melee tools, lit border when a gadget is on */
-  function drawToolSlot(x, y, sw) {
-    const p = player, t = p.tool;
-    const ready = p.toolCd <= 0;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, sw, 70, 10); ctx.fill();
-    ctx.lineWidth = p.toolActive ? 2 : 1;
-    ctx.strokeStyle = p.toolActive ? p.cls.color : 'rgba(120,160,255,0.3)';
+  /* left column: class → armour → adrenaline, one aligned stack */
+  function drawStatusStack(p) {
+    const adr = Combat.adrenaline(p.adrenaline);
+    const x = HUD.statusLeft;
+    // the HTML health bar occupies the bottom ~46px, so stack upward from there
+    let y = H - 78;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+
+    // adrenaline (only while you have some) — bar plus what it's currently giving
+    if (adr.amount > 0) {
+      const bw = 200;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y - 4, bw, 8, 4); ctx.fill();
+      ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';    // green while it's healing you
+      roundRect(x, y - 4, bw * (adr.amount / 100), 8, 4); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      for (const t of [25, 50, 75]) ctx.fillRect(x + bw * (t / 100), y - 4, 1, 8);
+      ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';
+      const healing = p.hp < p.maxHp ? ` · +${adr.regen.toFixed(1)} HP/s` : '';
+      ctx.fillText(`ADR ${Math.round(adr.amount)} · +${Math.round((adr.speed - 1) * 100)}% · -${Math.round(adr.dr * 100)}% dmg${healing}`, x + bw + 10, y);
+      y -= HUD.rowH;
+    }
+    // armour
+    if (p.vest || p.helmet) {
+      ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#9fd8ff';
+      const bits = [];
+      if (p.vest) bits.push(`🦺 T${p.vest} ${Math.round(Combat.vest(p.vest).body * 100)}% body`);
+      if (p.helmet) bits.push(`⛑ T${p.helmet} ${Math.round(Combat.helmet(p.helmet).head * 100)}% head`);
+      ctx.fillText(bits.join('   '), x, y);
+      y -= HUD.rowH;
+    }
+    // class + tool
+    ctx.font = 'bold 12px Segoe UI'; ctx.fillStyle = p.cls.color;
+    ctx.fillText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`, x, y);
+    ctx.font = '11px Segoe UI'; ctx.fillStyle = '#8ea0c9';
+    ctx.fillText(`${p.cls.speed}× · ${p.tool.name}`, x + ctx.measureText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`).width + 44, y);
+  }
+
+  /* one centred row of every action, in the order you use them */
+  function drawActionBar(p) {
+    const t = p.tool;
+    const slots = [
+      {
+        key: 'V', icon: t.icon, label: t.name,
+        cd: p.toolCd, cdMax: t.cooldown, active: p.toolActive, accent: p.cls.color,
+      },
+      slotFor('Q', p.inv.grenade), slotFor('C', p.inv.tactical), slotFor('F', p.inv.heal),
+    ];
+    if (p.inv.tokens.length) {
+      const tk = Items.CONSUMABLES[p.inv.tokens[0]];
+      slots.push({ key: 'B', icon: tk.icon, label: 'Call-in', n: p.inv.tokens.length, accent: '#ffcf4a' });
+    }
+
+    const { slotW: sw, slotH: sh, gap } = HUD;
+    const totalW = slots.length * sw + (slots.length - 1) * gap;
+    let x = W / 2 - totalW / 2;
+    const y = hudBarY();
+    for (const s of slots) { drawActionSlot(s, x, y, sw, sh); x += sw + gap; }
+  }
+  function slotFor(key, slot) {
+    const it = slot && slot.id ? Items.CONSUMABLES[slot.id] : null;
+    return { key, icon: it ? it.icon : '—', label: it ? it.name : '', n: it ? slot.n : 0, empty: !it };
+  }
+
+  function drawActionSlot(s, x, y, sw, sh) {
+    const ready = !s.cd || s.cd <= 0;
+    const usable = !s.empty && ready;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; roundRect(x, y, sw, sh, 10); ctx.fill();
+    ctx.lineWidth = s.active ? 2 : 1;
+    ctx.strokeStyle = s.active ? (s.accent || '#fff')
+      : s.empty ? 'rgba(120,160,255,0.15)' : 'rgba(120,160,255,0.35)';
     ctx.stroke();
-    if (!ready && t.cooldown) {   // dim overlay that drains as it recharges
-      ctx.save(); ctx.beginPath(); roundRect(x, y, sw, 70, 10); ctx.clip();
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(x, y, sw, 70 * clamp(p.toolCd / t.cooldown, 0, 1));
+
+    // cooldown drains from the bottom up
+    if (!ready && s.cdMax) {
+      ctx.save(); ctx.beginPath(); roundRect(x, y, sw, sh, 10); ctx.clip();
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(x, y, sw, sh * clamp(s.cd / s.cdMax, 0, 1));
       ctx.restore();
     }
-    ctx.textAlign = 'center';
-    ctx.font = '24px Segoe UI'; ctx.fillStyle = ready ? '#fff' : '#6a789c';
-    ctx.fillText(t.icon, x + sw / 2, y + 28);
-    ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#8ea0c9';
-    ctx.fillText(t.name.length > 13 ? t.name.slice(0, 12) + '…' : t.name, x + sw / 2, y + 52);
-    ctx.textAlign = 'left'; ctx.fillStyle = '#ffcf4a'; ctx.font = 'bold 11px Segoe UI';
-    ctx.fillText('[V]', x + 6, y + 12);
-    if (!ready && t.cooldown >= 5) {   // long cooldowns (defib) get a countdown
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '23px Segoe UI';
+    ctx.globalAlpha = usable ? 1 : 0.45;
+    ctx.fillStyle = s.empty ? '#3b4666' : '#fff';
+    ctx.fillText(s.icon, x + sw / 2, y + 27);
+    ctx.globalAlpha = 1;
+
+    ctx.font = 'bold 9px Segoe UI'; ctx.fillStyle = s.empty ? '#3b4666' : '#8ea0c9';
+    const label = s.label.length > 14 ? s.label.slice(0, 13) + '…' : s.label;
+    ctx.fillText(label, x + sw / 2, y + 50);
+
+    // keybind top-left, count top-right
+    ctx.textAlign = 'left'; ctx.font = 'bold 10px Segoe UI';
+    ctx.fillStyle = usable ? '#ffcf4a' : '#6a789c';
+    ctx.fillText(s.key, x + 7, y + 11);
+    if (s.n) {
       ctx.textAlign = 'right'; ctx.fillStyle = '#fff';
-      ctx.fillText(Math.ceil(p.toolCd) + 's', x + sw - 6, y + 12);
+      ctx.fillText('×' + s.n, x + sw - 7, y + 11);
+    } else if (!ready && s.cdMax >= 5) {
+      ctx.textAlign = 'right'; ctx.fillStyle = '#fff';
+      ctx.fillText(Math.ceil(s.cd) + 's', x + sw - 7, y + 11);
     }
     ctx.textAlign = 'center';
+  }
+
+  /* channel ring (heal progress) sits just above the action bar */
+  function drawChannelRing(p) {
+    if (!p.channel) return;
+    const cx = W / 2, cy = hudBarY() - 62, rad = 26;
+    ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 6; ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, -Math.PI / 2, -Math.PI / 2 + (1 - p.channel.t / p.channel.total) * Math.PI * 2);
+    ctx.strokeStyle = '#4be08a'; ctx.lineWidth = 6; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Segoe UI';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(p.channel.label, cx, cy + rad + 16);
+  }
+
+  function drawHudMessage() {
+    if (hudMessageT <= 0) return;
+    ctx.globalAlpha = clamp(hudMessageT, 0, 1);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 15px Segoe UI';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(hudMessage, W / 2, hudBarY() - 24);
+    ctx.globalAlpha = 1;
   }
 
   function drawMinimap() {

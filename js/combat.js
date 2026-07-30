@@ -72,11 +72,21 @@ const Combat = (() => {
   const ADREN_DR = [
     { at: 100, dr: 0.50 }, { at: 75, dr: 0.35 }, { at: 50, dr: 0.20 }, { at: 25, dr: 0.05 },
   ];
+  // adrenaline also burns itself off healing you: HP per second, scaled by how
+  // much you're running on. It is the fast, risky heal — it drains as it works.
+  const ADREN_REGEN_MAX = 6;      // HP/sec at 100 adrenaline
+  const ADREN_BURN = 5;           // adrenaline/sec spent while regenerating
+
   function adrenaline(amount) {
     const a = Math.max(0, Math.min(100, amount || 0));
     const boost = 1 + (a / 100) / 2;                 // Adren%/2 speedup
     const step = ADREN_DR.find(s => a >= s.at);
-    return { amount: a, speed: boost, reload: boost, handling: boost, dr: step ? step.dr : 0 };
+    return {
+      amount: a, speed: boost, reload: boost, handling: boost,
+      dr: step ? step.dr : 0,
+      regen: (a / 100) * ADREN_REGEN_MAX,            // HP/sec it heals you for
+      burn: ADREN_BURN,
+    };
   }
 
   /* ---------- the calculator ---------- */

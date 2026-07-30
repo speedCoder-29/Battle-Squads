@@ -44,6 +44,64 @@ const Screens = (() => {
     if (view === 'missions') renderMissions();
     if (view === 'battlepass') renderBattlePass();
     if (view === 'loadout') renderLoadout();
+    if (view === 'shop') renderShop();
+  }
+
+  /* ---- shop ---- */
+  let shopCat = 'skin';
+  function renderShop() {
+    const p = DB.getProfile();
+    const tabs = document.getElementById('shop-tabs');
+    const grid = document.getElementById('shop-grid');
+    if (!tabs || !grid) return;
+
+    tabs.innerHTML = '';
+    Shop.CATEGORIES.forEach(c => {
+      const b = document.createElement('button');
+      b.className = 'shop-tab' + (c.id === shopCat ? ' is-active' : '');
+      b.innerHTML = `${c.icon} ${c.name}`;
+      b.addEventListener('click', () => { shopCat = c.id; SFX.click(); renderShop(); });
+      tabs.appendChild(b);
+    });
+
+    grid.innerHTML = '';
+    const list = Shop.items(shopCat);
+    if (!list.length) { grid.innerHTML = '<p class="shop-empty">Nothing here yet.</p>'; return; }
+
+    list.forEach(item => {
+      const owned = Shop.isOwned(p, item);
+      const afford = Shop.wallet(p, item.cur) >= item.price;
+      const card = document.createElement('div');
+      card.className = 'shop-card' + (owned ? ' is-owned' : '') + (!owned && !afford ? ' is-broke' : '');
+      const swatch = item.cat === 'skin'
+        ? `<span class="shop-swatch" style="background:linear-gradient(90deg,${item.barrel},${item.accent})"></span>`
+        : item.color
+          ? `<span class="shop-swatch" style="background:${item.color}"></span>`
+          : '';
+      const rarity = item.rarity ? Skins.RARITIES[item.rarity] : null;
+      card.innerHTML = `
+        <div class="shop-card__icon">${item.icon}</div>
+        <div class="shop-card__name">${item.name}</div>
+        ${rarity ? `<div class="shop-card__rarity" style="color:${rarity.color}">${rarity.name}</div>` : ''}
+        ${swatch}
+        <div class="shop-card__desc">${item.desc || ''}</div>
+        <button class="shop-card__buy">${owned ? '✓ Owned'
+          : `${item.cur === 'gems' ? '💎' : '🪙'} ${item.price}`}</button>`;
+      const buy = card.querySelector('.shop-card__buy');
+      if (owned) buy.disabled = true;
+      else buy.addEventListener('click', () => {
+        const r = Shop.purchase(p, item);
+        if (!r.ok) { Toast.show(r.error); SFX.lose(); return; }
+        DB.saveProfile(p);
+        Toast.show(`${item.name} unlocked!`, 'reward');
+        // equipping is the natural next step for the cosmetic categories
+        if (item.cat === 'avatar') { p.avatar = item.icon; DB.saveProfile(p); }
+        if (item.cat === 'nametag') { p.nametag = item.id; DB.saveProfile(p); }
+        if (item.cat === 'tracer') { p.tracer = item.id; DB.saveProfile(p); }
+        renderAll(); renderShop();
+      });
+      grid.appendChild(card);
+    });
   }
 
   /* ---- render everything on the home screen ---- */
@@ -60,11 +118,23 @@ const Screens = (() => {
     document.getElementById('stat-wins').textContent = p.wins;
     document.getElementById('stat-matches').textContent = p.matches;
     document.getElementById('stat-kills').textContent = p.kills;
+    // multiplayer status — tells you plainly whether you're online or on bots
+    const chip = document.getElementById('net-chip');
+    if (chip) {
+      const url = Net.serverUrl();
+      chip.textContent = url ? `🟢 Multiplayer · ${shortHost(url)}` : '⚫ Offline vs bots';
+      chip.className = 'net-chip' + (url ? ' is-online' : '');
+      chip.title = url
+        ? `Connecting to ${url} when you deploy. Falls back to bots if it's unreachable.`
+        : 'No multiplayer server configured. See server/README.md, or add ?server=wss://your-host to the URL.';
+    }
     // reset timer(s)
     document.getElementById('missions-reset').textContent = Progression.timeUntilReset();
     document.querySelectorAll('.missions-reset').forEach(e => e.textContent = Progression.timeUntilReset());
     renderMiniMissions();
   }
+
+  const shortHost = (url) => String(url).replace(/^wss?:\/\//, '').split('/')[0];
 
   function missionItem(m, mini = false) {
     const li = document.createElement('li');
@@ -380,6 +450,8 @@ const Screens = (() => {
     document.getElementById('val-sens').textContent = (s.sensitivity / 100).toFixed(1) + '×';
     document.getElementById('set-quality').value = s.quality;
     document.getElementById('set-dmgnum').checked = s.dmgNumbers;
+    document.getElementById('set-botlevel').value = s.botLevel || BotAI.DEFAULT;
+    renderBotLevel(s.botLevel || BotAI.DEFAULT);
     // avatar picker
     const picker = document.getElementById('avatar-picker');
     picker.innerHTML = '';
@@ -399,8 +471,30 @@ const Screens = (() => {
   }
   function closeSettings() { document.getElementById('modal-settings').classList.remove('is-open'); }
 
+  /* difficulty slider readout: name, blurb, and the three trait bars */
+  function renderBotLevel(lvl) {
+    const d = BotAI.profile(+lvl);
+    document.getElementById('val-botlevel').textContent = `${d.level} · ${d.name}`;
+    document.getElementById('note-botlevel').textContent = d.blurb;
+    const host = document.getElementById('diff-traits');
+    // 0..1 per track, so the three bars show what the level actually buys you
+    const t = (d.level - 1) / 9;
+    const rows = [
+      { label: 'Aim', v: t, detail: `${Math.round(d.aim.reaction * 1000)}ms reaction · ${d.aim.lead > 0.05 ? 'leads shots' : 'no lead'}` },
+      { label: 'Survival', v: t, detail: d.survival.usesHeals ? `heals at ${Math.round(d.survival.healAt * 100)}% HP` : 'never heals' },
+      { label: 'Teamwork', v: t, detail: d.teamwork.sharesContacts ? 'shares contacts, focus-fires' : 'fights alone' },
+    ];
+    host.innerHTML = rows.map(r => `
+      <div class="diff-trait">
+        <span class="diff-trait__l">${r.label}</span>
+        <div class="diff-trait__bar"><div class="diff-trait__fill" style="width:${Math.round(r.v * 100)}%"></div></div>
+        <span class="diff-trait__d">${r.detail}</span>
+      </div>`).join('');
+  }
+
   function persistSettings() {
     const s = DB.getSettings();
+    s.botLevel = +document.getElementById('set-botlevel').value;
     s.volume = +document.getElementById('set-volume').value;
     s.sfx = document.getElementById('set-sfx').checked;
     s.sensitivity = +document.getElementById('set-sens').value;
@@ -426,6 +520,9 @@ const Screens = (() => {
     });
     document.getElementById('set-sens').addEventListener('input', e => {
       document.getElementById('val-sens').textContent = (e.target.value / 100).toFixed(1) + '×'; persistSettings();
+    });
+    document.getElementById('set-botlevel').addEventListener('input', e => {
+      renderBotLevel(e.target.value); persistSettings();
     });
     ['set-sfx', 'set-quality', 'set-dmgnum'].forEach(id =>
       document.getElementById(id).addEventListener('change', persistSettings));

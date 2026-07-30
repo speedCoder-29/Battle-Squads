@@ -79,6 +79,7 @@
         <button class="topnav__btn" data-nav="missions">Missions</button>
         <button class="topnav__btn" data-nav="battlepass">Battle Pass</button>
         <button class="topnav__btn" data-nav="loadout">Loadout</button>
+        <button class="topnav__btn" data-nav="shop">Shop</button>
       </nav>
 
       <div class="profile">
@@ -154,6 +155,7 @@
           <div class="queue-bar__info">
             <span class="queue-bar__mode" id="queue-mode-label">Domination</span>
             <span class="queue-bar__status" id="queue-status">Ready to deploy</span>
+            <span class="net-chip" id="net-chip" title="Multiplayer status">⚫ Offline vs bots</span>
           </div>
           <button class="btn btn--play" id="btn-queue">
             <span class="btn--play__label">DEPLOY</span>
@@ -211,6 +213,17 @@
         <div class="gunsmith" id="loadout-smith"></div>
         <div class="loadout-grid" id="loadout-grid"></div>
       </div>
+
+      <!-- ===== SHOP FULL PANEL ===== -->
+      <div class="subpage" data-panelgroup="shop">
+        <div class="subpage__head">
+          <h1>Shop</h1>
+          <p>Spend what you earn. Everything here is cosmetic or convenience — no item in this
+             shop changes a single combat stat.</p>
+        </div>
+        <div class="shop-tabs" id="shop-tabs"></div>
+        <div class="shop-grid" id="shop-grid"></div>
+      </div>
     </main>
   </section>
 
@@ -254,6 +267,12 @@
           <label>Show Damage Numbers</label>
           <label class="switch"><input type="checkbox" id="set-dmgnum" checked /><span></span></label>
         </div>
+        <div class="setting setting--wide">
+          <label>Bot Difficulty <span class="setting__val" id="val-botlevel">5 · Seasoned</span></label>
+          <input type="range" id="set-botlevel" min="1" max="10" step="1" value="5" />
+          <p class="setting__note" id="note-botlevel">Calls out contacts to its squad.</p>
+          <div class="diff-traits" id="diff-traits"></div>
+        </div>
       </div>
       <div class="modal__foot">
         <button class="btn btn--ghost" id="btn-reset-progress">Reset Progress</button>
@@ -291,7 +310,12 @@
         <div class="hud__weapon" id="hud-weapon">Rifle</div>
         <div class="hud__ammo"><b id="hud-ammo">30</b><span id="hud-ammomax">/30</span></div>
       </div>
-      <div class="hud__hint" id="hud-hint">WASD move · L-click shoot · R-click aim · Shift dash · R reload · Q grenade · C tactical · F heal · V class tool · B call-in · E open crate · Esc pause</div>
+      <div class="hud__hint" id="hud-hint">
+        <span class="hint-group"><b>MOVE</b> WASD · Shift dash</span>
+        <span class="hint-group"><b>FIGHT</b> L-click fire · R-click aim · R reload</span>
+        <span class="hint-group"><b>ACTIONS</b> V tool · Q grenade · C tactical · F heal · B call-in</span>
+        <span class="hint-group"><b>WORLD</b> E door/crate · Esc pause</span>
+      </div>
     </div>
 
     <!-- Pause menu -->
@@ -325,6 +349,9 @@
   <!-- Scripts (plain scripts, load order matters — no build step / no modules) -->
   <script src="js/weapons.js"></script>
   <script src="js/skins.js"></script>
+  <script src="js/shop.js"></script>
+  <script src="js/net.js"></script>
+  <script src="js/botai.js"></script>
   <script src="js/combat.js"></script>
   <script src="js/classes.js"></script>
   <script src="js/structures.js"></script>

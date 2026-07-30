@@ -118,12 +118,21 @@ const Classes = (() => {
     return c;
   });
 
-  const GENERIC_LIMIT = 3;   // cap on anything looted that isn't your class kit
+  /* Carry capacity. The design table's limits were tight enough that you ran
+     dry constantly, so both caps are scaled up: your class kit carries double
+     the table value, and looted odds and ends cap at 5 instead of 3. The table
+     ratios between classes are preserved — a Demolitionist still hauls far
+     more C4 than a Sniper does mines. */
+  const CARRY_MULT = 2;
+  const GENERIC_LIMIT = 5;   // cap on anything looted that isn't your class kit
 
   const byName = (name) => CLASSES[name] || CLASSES.Rifleman;
   const forWeapon = (w) => byName(w && w.className);
-  /* how many of `itemId` this class may carry (its own kit is capped by the table) */
-  const limitFor = (cls, itemId) => (cls.consumable === itemId ? cls.limit : GENERIC_LIMIT);
+  /* how many of `itemId` this class may carry */
+  const limitFor = (cls, itemId) =>
+    (cls.consumable === itemId ? Math.ceil(cls.limit * CARRY_MULT) : GENERIC_LIMIT);
+  /* what you actually spawn holding */
+  const startFor = (cls) => Math.min(Math.ceil(cls.startCount * CARRY_MULT), limitFor(cls, cls.consumable));
 
-  return { TOOLS, CLASSES, list, byName, forWeapon, limitFor, GENERIC_LIMIT, RANGE_UNIT };
+  return { TOOLS, CLASSES, list, byName, forWeapon, limitFor, startFor, GENERIC_LIMIT, CARRY_MULT, RANGE_UNIT };
 })();

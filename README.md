@@ -7,10 +7,10 @@ A fast-paced **2D browser team shooter** with two game modes:
 - **💀 Elimination** — 6 squads of 4 in a tighter 2400×1600 arena; last squad standing,
   no respawns (like Fortnite).
 
-This is a **baseline / prototype**: a complete front end (home page, accounts, settings,
-daily missions, battle pass, loadout, matchmaking flow) plus a genuinely playable
-single-player-vs-bots game for both modes. It is a **static site** with zero build step,
-so it runs anywhere.
+A complete front end (home page, accounts, settings, daily missions, battle pass,
+loadout, gunsmith, shop, matchmaking) plus a genuinely playable game for both modes —
+offline against ten levels of bot, or online through the authoritative server in
+[`server/`](server/). The game itself is a **static site** with zero build step.
 
 ---
 
@@ -71,7 +71,10 @@ battle-squads/
 ├── js/
 │   ├── weapons.js      # 30-weapon roster + ballistics + attachments + ammo
 │   ├── combat.js       # the damage calculator (types, zones, armour, adrenaline)
-│   ├── skins.js        # cosmetic weapon skins + the credit shop
+│   ├── skins.js        # cosmetic weapon skins
+│   ├── shop.js         # what coins buy: skins, avatars, tags, tracers, utility
+│   ├── botai.js        # 10 bot difficulty levels (aim / survival / teamwork)
+│   ├── net.js          # multiplayer client: transports + snapshot interpolation
 │   ├── classes.js      # 10 classes: base speed, tool, consumable + carry limit
 │   ├── structures.js   # wall types (HP/toughness/ballistics) + building blueprints
 │   ├── items.js        # consumables, loot-crate tables, legendary weapons
@@ -83,6 +86,10 @@ battle-squads/
 │   ├── matchmaking.js  # queue flow + "match found" overlay (simulated)
 │   ├── game.js         # the 2D shooter: both modes, bots, HUD, scoring
 │   └── main.js         # bootstrap + animated background particles
+├── server/             # authoritative multiplayer server (deploy separately)
+│   ├── server.js
+│   ├── package.json
+│   └── README.md       # how to run and where to host it
 └── README.md
 ```
 
@@ -93,13 +100,10 @@ battle-squads/
 This baseline runs **entirely in the browser** so you can ship it immediately:
 
 - **Accounts & progression** are stored in `localStorage` (per browser/device).
-- **Matchmaking** is simulated — it fakes a short search then starts a match **vs. bots**.
-- **Multiplayer is single-player-vs-AI** for now.
+- **Multiplayer is real** but needs the server in `server/` running somewhere — see
+  [Multiplayer](#multiplayer). With no server configured you play offline against bots.
 
-### Making it truly online / multiplayer
-
-To turn this into a real online game with shared accounts and live PvP, add a backend.
-The code is structured so each piece swaps in cleanly:
+### Still to do for a full online game
 
 1. **Real accounts** — replace the functions in `js/storage.js`
    (`createUser`, `verifyUser`, `getProfile`, `saveProfile`) with calls to your API.
@@ -107,12 +111,9 @@ The code is structured so each piece swaps in cleanly:
    (Postgres, Supabase, Firebase, etc.). Never store plain-text passwords server-side —
    hash them (bcrypt/argon2). The local version is for prototyping only.
 
-2. **Real matchmaking + multiplayer** — replace `js/matchmaking.js` with a **WebSocket**
-   connection (e.g. `socket.io`, or a service like Colyseus / PlayFab / Nakama). The
-   server owns the authoritative game state; clients send inputs and render snapshots.
-   In `js/game.js`, the `agents` array would be driven by server updates instead of local AI.
-
-3. **Anti-cheat** — keep authoritative logic (damage, scoring, captures) on the server.
+2. **Move the rest of the sim server-side** — grenades, deployables, class tools,
+   structures/doors and objective capture still run on the client. Weapons, the damage
+   calculator and classes are already shared with the server.
 
 ---
 
@@ -139,6 +140,49 @@ that class's carry limit — crates top you back up to it, never past it).
 Melee tools have **damage, reach, structure damage, pierce and a cooldown**
 ([js/classes.js](js/classes.js)). Swing a hammer or spade at open ground and you **build**
 or **dig in** instead of striking.
+
+## Multiplayer
+
+There is a real authoritative server in [`server/`](server/). Clients send inputs;
+the server owns movement, firing, damage and respawns, and broadcasts snapshots at
+20Hz. Clients render ~100ms behind and interpolate. The server loads the game's own
+`weapons.js`, `combat.js` and `classes.js`, so ballistics and the damage calculator
+are the same code on both ends rather than two copies that drift.
+
+```bash
+cd server && npm install && npm start      # :8080
+# then open the game with  ?server=ws://localhost:8080
+```
+
+> **The server cannot run on Vercel.** Vercel Functions cap at 300 seconds and
+> can't hold a WebSocket open, so <https://battle-squads.vercel.app> serves the
+> static game only and plays offline against bots. Deploy `server/` to any host
+> that keeps a process alive — Render, Railway, Fly.io, a VPS — and put the URL in
+> `SERVER_URL` at the top of [js/net.js](js/net.js). Full instructions and a host
+> comparison are in [server/README.md](server/README.md).
+
+With no server configured the game is exactly what it was: single-player vs bots.
+The home screen shows which mode you're in.
+
+Movement, shooting, damage and deaths are authoritative — a modified client can't
+teleport or claim kills. Not yet moved server-side: the tactical layer (grenades,
+deployables, tools), structures/doors, and objective capture.
+
+## Bot difficulty
+
+Ten levels ([js/botai.js](js/botai.js)), set in Settings. Each level blends three
+independent traits, and every bot gets a little individual jitter so a squad isn't
+nine identical robots.
+
+| Trait | What it controls |
+|---|---|
+| **Aim** | Aim error (0.30 → 0.012 rad), reaction time (850ms → 90ms), turn rate, whether they lead moving targets, and range discipline |
+| **Survival** | Retreating when hurt, using heals, preferred standoff distance, strafing/dodging, reloading in cover |
+| **Teamwork** | Squad cohesion and spacing, focus-firing whatever a squadmate is shooting, sharing contacts, pushing objectives together |
+
+Level 1 is a distracted rookie who never retreats and fights alone. Level 10 reacts
+in 90ms, leads every shot, breaks contact at 45% HP, heals, and focus-fires with its
+squad. Contact-sharing unlocks at level 5; heals at level 3.
 
 ## Damage calculator
 
@@ -209,14 +253,23 @@ what its roster row allows.
 **Penetration** is a wall-punching stat: it cuts how much damage a round loses
 passing through cover (see the wall table below). It does nothing against armour.
 
-## Skins
+## Shop & skins
 
-Purely cosmetic — no skin touches a stat, and there's a test asserting that.
-15 skins across four rarities repaint your weapon barrel, muzzle flash and
-tracers in-match, and restyle the card in the Loadout screen. They're bought
-with credits (the wallet missions already pay into) and are account-wide, so a
-skin you own can go on any gun it fits. A couple are type-restricted — Cold Bore
-only mounts on a Sniper Rifle or DMR.
+The **Shop** tab spends what you earn. Nothing in it changes a combat stat —
+there's a test asserting that.
+
+| Category | What's in it |
+|---|---|
+| Weapon Skins | 15 skins over four rarities. Repaint your barrel, muzzle flash and tracers in-match. Account-wide, so a skin goes on any gun it fits. |
+| Avatars | Profile icons, credits or squad coins. |
+| Name Tags | Coloured callsign in the HUD and scoreboard. |
+| Tracers | Bullet trail colours, independent of your skin. |
+| Utility | A second loadout preset slot, XP boosts, callsign changes. |
+
+Skins are also equippable from the gunsmith panel in the Loadout screen, which
+previews the paint on the weapon and shows live stat deltas for attachments and
+ammo. A couple of skins are type-restricted — Cold Bore only mounts on a Sniper
+Rifle or DMR.
 
 ## Walls & buildings
 
