@@ -49,15 +49,15 @@ const Combat = (() => {
      Penetration buffs deliberately do NOT help against armour. */
   const VESTS = [
     { tier: 0, name: 'No Vest',  body: 1.00, speed: 0 },
-    { tier: 1, name: 'Vest T1',  body: 0.70, speed: -0.15 },
-    { tier: 2, name: 'Vest T2',  body: 0.40, speed: -0.30 },
-    { tier: 3, name: 'Vest T3',  body: 0.10, speed: -0.45 },
+    { tier: 1, name: 'Vest T1',  body: 0.70, speed: -0.05 },
+    { tier: 2, name: 'Vest T2',  body: 0.40, speed: -0.10 },
+    { tier: 3, name: 'Vest T3',  body: 0.10, speed: -0.15 },
   ];
   const HELMETS = [
     { tier: 0, name: 'No Helmet', head: 2.00, speed: 0 },
-    { tier: 1, name: 'Helmet T1', head: 1.50, speed: -0.07 },
-    { tier: 2, name: 'Helmet T2', head: 1.00, speed: -0.14 },
-    { tier: 3, name: 'Helmet T3', head: 0.50, speed: -0.21 },
+    { tier: 1, name: 'Helmet T1', head: 1.50, speed: -0.03 },
+    { tier: 2, name: 'Helmet T2', head: 1.00, speed: -0.06 },
+    { tier: 3, name: 'Helmet T3', head: 0.50, speed: -0.09 },
   ];
   const vest   = (t) => VESTS[clampTier(t)];
   const helmet = (t) => HELMETS[clampTier(t)];

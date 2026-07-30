@@ -2,9 +2,9 @@
 
 A fast-paced **2D browser team shooter** with two game modes:
 
-- **🚩 Domination** — 3 squads of 3 on a large 3400×2300 map; capture and hold three objectives,
+- **🚩 Domination** — squads on a large 4600×3100 map; capture and hold three objectives,
   first squad to the score cap wins (like Delta Force).
-- **💀 Elimination** — 6 squads of 4 in a tighter 2400×1600 arena; last squad standing,
+- **💀 Elimination** — 6 squads of 4 across a 3200×2200 arena; last squad standing,
   no respawns (like Fortnite).
 
 A complete front end (home page, accounts, settings, daily missions, battle pass,
@@ -44,7 +44,8 @@ Then create an account (or hit **Play as Guest**), pick a mode, and **Deploy**.
 | Use heal / boost | `F` |
 | Class tool (swing / toggle) | `V` |
 | Call in vehicle token | `B` |
-| Open door / crate / grab ammo | `E` |
+| Pick up loot / open door / crate | `E` |
+| Call airstrike (Flare Launcher) | `G` |
 | Pause | `Esc` |
 
 ---
@@ -361,8 +362,15 @@ it play differently:
 | **Shanty row** | Wood 0.2 | Four flimsy shacks; make your own door anywhere |
 | **Fuel depot** | Metal tanks + sandbags | Open ground, all low cover — plays unlike a building |
 | **Camp** | Barricade tents | Low cover behind wire |
+| **Apartments** | Wood 0.45 | A corridor with eight doored rooms — the densest CQB on the map |
+| **Hangar** | Metal 0.65 | Enormous open shed with a blast door; all about the approach |
+| **Farm** | Wood 0.35 + fences | Barn and yard, flimsy throughout — a Breacher's map |
+| **Checkpoint** | Sandbags + reinforced post | A chicane that breaks up open ground |
 
-Domination's larger board carries fourteen of them (~125 wall pieces), Elimination eight.
+Domination's board carries twenty of them (~190 wall pieces), Elimination twelve. With that
+many segments, walls are bucketed into a **uniform spatial grid** so line-of-sight, collision
+and bullet checks only test the cells they actually touch — without it the per-frame cost
+scaled with the whole map.
 Doors open and close with `E`, and bots shove them open as they push through.
 
 **Buildings are three times tougher than the raw design table.** `HP_SCALE` went from 10
@@ -370,6 +378,18 @@ to 30: a wood 0.3 wall is 90 HP instead of 30, metal 0.6 is 360, reinforced is 3
 old values a single fire-axe swing dropped a wall and buildings disintegrated before a
 fight got going — a full match now ends with most of the map still standing. The table's
 ratios between materials are untouched.
+
+## Inventory & loot
+
+You carry **3× the design table's counts** with a generic cap of 8 for anything outside your
+class kit, and loot is dense — 30 crates on the domination map, 20 on elimination.
+
+**Nothing is ever silently destroyed.** Picking up an item that doesn't fit drops the excess
+at your feet instead of binning it, and swapping to a different item in an occupied slot puts
+the old stack on the ground rather than deleting it. Drops bob, merge with identical nearby
+piles, time out after 90s, and are picked back up with `E`. There's a test asserting the
+invariant directly: *what you end up carrying plus what hits the floor always equals what you
+were given.*
 
 ## Shadows & decor
 
@@ -410,9 +430,12 @@ growing out of a wall. There are tests holding them to that.
 > every class tool and consumable, the full wall table (penetration, ricochet, destruction,
 > doors), buildings, every grenade/tactical/heal, crates, legendary weapons, and AI-driven
 > call-in vehicles. Bots use their class speed, open doors and melee you at point-blank range.
-> **Not yet wired:** the Flare Launcher airstrike and Grenade Launcher fire mode are declared
-> and carried onto the weapon but don't yet fire; suppressor audio is a stat with no sound
-> model behind it; and vehicles are still AI-driven rather than drivable.
+> Every attachment and tool now does something: the **Flare Launcher** calls a real
+> once-per-match airstrike on `G`, the **Grenade Launcher** nearly doubles your throw range,
+> the **Suppressor** genuinely keeps you quiet (unsuppressed shots make nearby bots turn and
+> investigate), and the **vision gadgets** sweep for contacts and mark them for the whole
+> squad for six seconds when you switch them on — heat sees through walls, the others need
+> line of sight. **Still not wired:** vehicles are AI-driven rather than drivable.
 
 ## Tuning knobs
 

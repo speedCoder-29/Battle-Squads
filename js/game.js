@@ -7,7 +7,7 @@
    ============================================================ */
 const Game = (() => {
   // domination is fought over a much bigger board than the elimination arena
-  const MAP_SIZES = { domination: { w: 3400, h: 2300 }, elimination: { w: 2400, h: 1600 } };
+  const MAP_SIZES = { domination: { w: 4600, h: 3100 }, elimination: { w: 3200, h: 2200 } };
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
   const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
@@ -26,7 +26,7 @@ const Game = (() => {
   let timeLeft = MATCH_SECONDS;
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
-  let grenades = [], deployables = [], smokes = [], crates = [];   // tactical layer
+  let grenades = [], deployables = [], smokes = [], crates = [], drops = [], airstrikes = [];
   let grass = [], trenches = [], decor = [];                       // terrain + dressing
   let flashOverlay = 0;                                            // player blind timer (s)
   let zoom = 1, zoomTarget = 1;                                    // binoculars pull the camera back
@@ -60,89 +60,114 @@ const Game = (() => {
     // between the buildings — see OBJECTIVE_SPOTS and spawnPoint().
     if (mode === 'domination') {
       obstacles.push(
-        ...S.place('camp',      220, 280),
-        ...S.place('mansion',  1320, 200),
-        ...S.place('house',    2740, 320),
-        ...S.place('tower',    2400, 700),
-        ...S.place('house',     260, 1320),
-        ...S.place('warehouse', 1700, 640),
-        ...S.place('shanty',    640, 700),
-        ...S.place('camp',     2840, 1060),
-        ...S.place('mansion',  1160, 1480),
-        ...S.place('bunker',   2560, 1180),
-        ...S.place('base',     2400, 1560),
-        ...S.place('depot',     900, 2000),
-        ...S.place('house',    1900, 1920),
-        ...S.place('tower',     140, 2020),
+        ...S.place('camp',        260, 320),
+        ...S.place('mansion',    1360, 240),
+        ...S.place('apartments', 2560, 260),
+        ...S.place('house',      3880, 380),
+        ...S.place('tower',      3300, 900),
+        ...S.place('shanty',      700, 800),
+        ...S.place('warehouse',  1780, 780),
+        ...S.place('farm',       3760, 1120),
+        ...S.place('house',       300, 1500),
+        ...S.place('checkpoint', 1420, 1420),
+        ...S.place('hangar',     2500, 1180),
+        ...S.place('camp',       3880, 1900),
+        ...S.place('mansion',    1120, 1900),
+        ...S.place('bunker',     2280, 1880),
+        ...S.place('depot',       520, 2500),
+        ...S.place('base',       3040, 2380),
+        ...S.place('apartments', 1500, 2560),
+        ...S.place('tower',       180, 2760),
+        ...S.place('checkpoint', 2500, 2700),
+        ...S.place('house',      4060, 2620),
       );
       obstacles.push(
-        S.seg('sandbag',   900, 900,  4, 'h', 0.5),
-        S.seg('sandbag',  2200, 480,  4, 'v', 0.5),
-        S.seg('sandbag',  1000, 1900, 4, 'h', 0.5),
-        S.seg('sandbag',  2350, 1150, 3, 'h', 0.5),
-        S.seg('barricade', 780, 1080, 5, 'h', 0.3),
-        S.seg('barricade', 2140, 1300, 5, 'v', 0.3),
-        S.seg('barricade', 1500, 2080, 6, 'h', 0.3),
-        S.seg('wire',      940, 700, 10, 'h', 0.4),
-        S.seg('wire',     2280, 760,  8, 'v', 0.4),
-        S.seg('wire',      440, 2100, 11, 'h', 0.4),
-        S.seg('wood',     3080, 1500, 8, 'v', 0.3),
-        S.seg('wood',      560, 760,  6, 'v', 0.3),
-        S.seg('metal',    1720, 1300, 7, 'h', 0.6),
-        S.seg('metal',     300, 1800, 6, 'h', 0.6),
+        S.seg('sandbag',   1120, 1180, 5, 'h', 0.5),
+        S.seg('sandbag',   2280, 620,  5, 'v', 0.5),
+        S.seg('sandbag',   3400, 1720, 4, 'h', 0.5),
+        S.seg('sandbag',    900, 2260, 4, 'h', 0.5),
+        S.seg('sandbag',   4200, 1640, 4, 'v', 0.5),
+        S.seg('barricade',  980, 1560, 6, 'h', 0.3),
+        S.seg('barricade', 2880, 800,  6, 'v', 0.3),
+        S.seg('barricade', 1980, 2320, 7, 'h', 0.3),
+        S.seg('barricade', 3560, 2140, 6, 'h', 0.3),
+        S.seg('wire',      1180, 700, 11, 'h', 0.4),
+        S.seg('wire',      2960, 1560, 9, 'v', 0.4),
+        S.seg('wire',       600, 2260, 12, 'h', 0.4),
+        S.seg('wire',      3540, 2860, 10, 'h', 0.4),
+        S.seg('wood',      4260, 1780, 9, 'v', 0.3),
+        S.seg('wood',       760, 1240, 7, 'v', 0.3),
+        S.seg('wood',      2140, 2780, 8, 'h', 0.3),
+        S.seg('metal',     2020, 1660, 8, 'h', 0.6),
+        S.seg('metal',      340, 2140, 7, 'h', 0.6),
+        S.seg('metal',     3720, 700,  6, 'v', 0.6),
       );
       grass = [
-        { x: 240, y: 780, w: 300, h: 260 }, { x: 2900, y: 700, w: 320, h: 260 },
-        { x: 800, y: 1240, w: 340, h: 200 }, { x: 1400, y: 900, w: 320, h: 200 },
-        { x: 700, y: 320, w: 220, h: 200 }, { x: 1900, y: 1900, w: 380, h: 240 },
-        { x: 2500, y: 1000, w: 260, h: 220 }, { x: 2200, y: 2000, w: 300, h: 200 },
+        { x: 280, y: 900, w: 340, h: 300 }, { x: 3980, y: 760, w: 360, h: 300 },
+        { x: 860, y: 1420, w: 380, h: 240 }, { x: 1520, y: 1020, w: 340, h: 240 },
+        { x: 740, y: 380, w: 260, h: 220 }, { x: 2020, y: 2500, w: 400, h: 280 },
+        { x: 2760, y: 1000, w: 300, h: 260 }, { x: 2380, y: 2700, w: 340, h: 240 },
+        { x: 4180, y: 2200, w: 340, h: 300 }, { x: 1180, y: 2760, w: 320, h: 240 },
+        { x: 3260, y: 1580, w: 300, h: 280 },
       ];
       decor = [
-        ...S.scatter(['tree', 'bush', 'rock'], 100, 700, 700, 500, 26),
-        ...S.scatter(['tree', 'bush'], 2650, 620, 700, 480, 24),
-        ...S.scatter(['crate', 'barrel', 'pallet', 'tyre'], 1660, 600, 740, 500, 22),
-        ...S.scatter(['rubble', 'rock', 'tyre'], 560, 640, 460, 400, 18),
-        ...S.scatter(['barrel', 'cone', 'sign'], 840, 1900, 560, 340, 16),
-        ...S.scatter(['crate', 'barrel'], 2340, 1520, 700, 460, 18),
-        ...S.scatter(['bush', 'tree'], 1300, 1880, 700, 380, 20),
-        ...S.scatter(['antenna', 'crate'], 2380, 660, 260, 260, 6),
-        ...S.scatter(['tree', 'bush', 'rock'], 100, 1900, 520, 360, 16),
+        ...S.scatter(['tree', 'bush', 'rock'], 120, 780, 760, 560, 34),
+        ...S.scatter(['tree', 'bush'], 3760, 660, 780, 520, 30),
+        ...S.scatter(['crate', 'barrel', 'pallet', 'tyre'], 1740, 740, 800, 540, 28),
+        ...S.scatter(['rubble', 'rock', 'tyre'], 620, 760, 500, 440, 22),
+        ...S.scatter(['barrel', 'cone', 'sign'], 480, 2440, 620, 420, 22),
+        ...S.scatter(['crate', 'barrel'], 2980, 2320, 760, 500, 24),
+        ...S.scatter(['bush', 'tree'], 1420, 2480, 760, 440, 26),
+        ...S.scatter(['antenna', 'crate'], 3260, 860, 300, 300, 8),
+        ...S.scatter(['tree', 'bush', 'rock'], 140, 2680, 560, 380, 20),
+        ...S.scatter(['crate', 'pallet', 'tyre'], 2440, 1140, 820, 480, 26),
+        ...S.scatter(['rubble', 'rock'], 3960, 1800, 560, 480, 20),
+        ...S.scatter(['bush', 'rock', 'tree'], 2200, 400, 700, 400, 22),
       ];
     } else {
       obstacles.push(
-        ...S.place('camp',      140, 170),
-        ...S.place('mansion',   800, 130),
-        ...S.place('house',    1900, 200),
-        ...S.place('shanty',   1380, 640),
-        ...S.place('house',     180, 1090),
-        ...S.place('bunker',    760, 1180),
-        ...S.place('tower',    2180, 900),
-        ...S.place('base',     1620, 1110),
+        ...S.place('camp',        180, 200),
+        ...S.place('mansion',     900, 160),
+        ...S.place('house',      2520, 240),
+        ...S.place('apartments', 1760, 700),
+        ...S.place('shanty',      420, 760),
+        ...S.place('farm',       2380, 900),
+        ...S.place('house',       220, 1420),
+        ...S.place('bunker',     1020, 1500),
+        ...S.place('tower',      2900, 1560),
+        ...S.place('checkpoint', 1500, 1300),
+        ...S.place('base',       1960, 1680),
+        ...S.place('depot',       560, 1820),
       );
       obstacles.push(
-        S.seg('sandbag',   980, 900,  4, 'h', 0.5),
-        S.seg('sandbag',  1400, 780,  4, 'v', 0.5),
-        S.seg('sandbag',   640, 1010, 3, 'h', 0.5),
-        S.seg('barricade', 1180, 1260, 5, 'h', 0.3),
-        S.seg('barricade', 700, 560,  4, 'v', 0.3),
-        S.seg('wire',      880, 760,  9, 'h', 0.4),
-        S.seg('wire',      1520, 320, 8, 'v', 0.4),
-        S.seg('wire',      420, 1480, 10, 'h', 0.4),
-        S.seg('wood',      2180, 760, 7, 'v', 0.3),
-        S.seg('metal',     1180, 1480, 6, 'h', 0.6),
+        S.seg('sandbag',   1320, 1000, 4, 'h', 0.5),
+        S.seg('sandbag',    880, 1180, 4, 'v', 0.5),
+        S.seg('sandbag',   2400, 1420, 4, 'h', 0.5),
+        S.seg('barricade', 1560, 1900, 6, 'h', 0.3),
+        S.seg('barricade',  760, 560,  5, 'v', 0.3),
+        S.seg('barricade', 2760, 620,  5, 'h', 0.3),
+        S.seg('wire',      1000, 880, 10, 'h', 0.4),
+        S.seg('wire',      1680, 320,  8, 'v', 0.4),
+        S.seg('wire',       420, 2060, 11, 'h', 0.4),
+        S.seg('wood',      2980, 1000, 8, 'v', 0.3),
+        S.seg('metal',     1240, 2060, 7, 'h', 0.6),
+        S.seg('metal',     2260, 480,  6, 'v', 0.6),
       );
       grass = [
-        { x: 180, y: 620, w: 320, h: 240 }, { x: 2000, y: 700, w: 300, h: 260 },
-        { x: 700, y: 1200, w: 380, h: 220 }, { x: 1300, y: 620, w: 300, h: 180 },
-        { x: 620, y: 240, w: 200, h: 180 }, { x: 1280, y: 1330, w: 280, h: 200 },
+        { x: 200, y: 1080, w: 340, h: 260 }, { x: 2660, y: 620, w: 320, h: 260 },
+        { x: 740, y: 1300, w: 380, h: 240 }, { x: 1380, y: 640, w: 320, h: 200 },
+        { x: 640, y: 260, w: 220, h: 200 }, { x: 1320, y: 1660, w: 300, h: 240 },
+        { x: 2760, y: 1900, w: 340, h: 240 }, { x: 2180, y: 1200, w: 280, h: 220 },
       ];
       decor = [
-        ...S.scatter(['tree', 'bush', 'rock'], 120, 560, 560, 400, 20),
-        ...S.scatter(['tree', 'bush'], 1950, 620, 420, 420, 16),
-        ...S.scatter(['crate', 'barrel', 'pallet'], 1560, 1060, 660, 460, 18),
-        ...S.scatter(['rubble', 'tyre', 'cone'], 1340, 600, 460, 340, 14),
-        ...S.scatter(['bush', 'tree'], 620, 1160, 520, 340, 16),
-        ...S.scatter(['crate', 'barrel', 'sign'], 700, 1140, 260, 260, 6),
+        ...S.scatter(['tree', 'bush', 'rock'], 140, 1020, 600, 460, 26),
+        ...S.scatter(['tree', 'bush'], 2600, 560, 500, 460, 22),
+        ...S.scatter(['crate', 'barrel', 'pallet'], 1700, 1620, 700, 480, 24),
+        ...S.scatter(['rubble', 'tyre', 'cone'], 1400, 620, 480, 360, 18),
+        ...S.scatter(['bush', 'tree'], 500, 1300, 560, 360, 20),
+        ...S.scatter(['crate', 'barrel', 'sign'], 540, 1780, 380, 340, 14),
+        ...S.scatter(['antenna', 'crate'], 2880, 1520, 260, 240, 6),
+        ...S.scatter(['rock', 'bush'], 2000, 2000, 600, 360, 18),
       ];
     }
     // keep props on the board, and never inside a wall — it would look like
@@ -217,9 +242,9 @@ const Game = (() => {
       // objectives A/B/C
       // placed in the open ground between the buildings so squads fight over the approaches
       objectives = [
-        { name: 'A', x: 760,  y: 1620, r: 130, owner: -1, progress: 0, capTeam: -1 },
-        { name: 'B', x: 1700, y: 1120, r: 140, owner: -1, progress: 0, capTeam: -1 },
-        { name: 'C', x: 2560, y: 780,  r: 130, owner: -1, progress: 0, capTeam: -1 },
+        { name: 'A', x: 1000, y: 2200, r: 150, owner: -1, progress: 0, capTeam: -1 },
+        { name: 'B', x: 2280, y: 1560, r: 160, owner: -1, progress: 0, capTeam: -1 },
+        { name: 'C', x: 3480, y: 1420, r: 150, owner: -1, progress: 0, capTeam: -1 },
       ];
     } else {
       teamScores = new Array(nTeams).fill(0);
@@ -270,10 +295,10 @@ const Game = (() => {
     buildMap();
     setupTeams();
     bullets = []; fx = []; dmgNums = [];
-    grenades = []; deployables = []; smokes = []; flashOverlay = 0;
+    grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; flashOverlay = 0;
     zoom = zoomTarget = 1;
     hudMessage = ''; hudMessageT = 0;
-    spawnCrates(mode === 'domination' ? 14 : 10);   // scaled to the board size
+    spawnCrates(mode === 'domination' ? 30 : 20);   // scaled to the board size
     // starting tactical kit = whatever your class deploys with
     player.inv = {
       grenade:  { id: null, n: 0 },
@@ -333,6 +358,7 @@ const Game = (() => {
         case 'KeyB': useToken(); break;
         case 'KeyE': interact(); break;
         case 'KeyV': useTool(); break;
+        case 'KeyG': callAirstrike(); break;
         case 'Escape': togglePause(); break;
       }
     });
@@ -434,7 +460,21 @@ const Game = (() => {
     }
     a.bloom = Math.min(w.bloomMax, a.bloom + w.recoilKick);
     spawnFx(a.x + Math.cos(a.angle) * a.r, a.y + Math.sin(a.angle) * a.r, '#ffd36a', pellets > 1 ? 5 : 3);
+    // a suppressor really does keep you quiet: bots only "hear" loud shots
+    if (!w.audio || w.audio > 0.5) alertNearbyBots(a);
     if (a.isPlayer) { SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud(); }
+  }
+
+  /* Gunfire is a giveaway: bots within earshot of an unsuppressed shot look
+     your way. A Suppressor drops the report below that threshold entirely. */
+  function alertNearbyBots(shooter) {
+    const earshot = 700 * 700;
+    for (const o of agents) {
+      if (!o.alive || o.isPlayer || o.team === shooter.team || o.isVehicle) continue;
+      if (dist2(o.x, o.y, shooter.x, shooter.y) > earshot) continue;
+      o.aiTargetPt = { x: shooter.x + rand(-60, 60), y: shooter.y + rand(-60, 60) };
+      o.aiRepath = rand(1.5, 3);
+    }
   }
 
   /* Explosion from launcher rounds — AoE damage that falls off with distance. */
@@ -470,13 +510,72 @@ const Game = (() => {
   const worldMouse = () => ({ x: input.mx / zoom + camX, y: input.my / zoom + camY });
   const near2 = (a, b, r) => dist2(a.x, a.y, b.x, b.y) < r * r;
 
-  function addItem(cat, id, n) {
+  /* Add to a slot. Nothing is ever silently destroyed: if the slot already
+     holds something else, that stack is dropped at your feet, and anything
+     over the carry limit drops too. Walk over a drop and press E to take it. */
+  function addItem(cat, id, n, at) {
     const slot = player.inv[cat];
-    if (!slot) return;
-    const cap = Classes.limitFor(player.cls, id);            // your class kit has its own cap
-    const have = (slot.id === id) ? (slot.n || 0) : 0;        // anything else gets replaced
+    if (!slot) return 0;
+    const cap = Classes.limitFor(player.cls, id);
+    const where = at || player;
+
+    // a different item in this slot? put the old one on the ground, don't bin it
+    if (slot.id && slot.id !== id && slot.n > 0) {
+      dropItem(cat, slot.id, slot.n, where);
+      slot.n = 0;
+    }
     slot.id = id;
-    slot.n = Math.min(cap, have + n);
+    const room = Math.max(0, cap - (slot.n || 0));
+    const taken = Math.min(room, n);
+    slot.n = (slot.n || 0) + taken;
+    const overflow = n - taken;
+    if (overflow > 0) dropItem(cat, id, overflow, where);     // full — the rest hits the floor
+    return overflow;
+  }
+
+  /* ---------------- ground drops ---------------- */
+  function dropItem(cat, id, n, at) {
+    if (!id || n <= 0) return;
+    const a = Math.random() * Math.PI * 2, d = rand(18, 40);
+    const x = clamp((at.x || 0) + Math.cos(a) * d, 20, MAP_W - 20);
+    const y = clamp((at.y || 0) + Math.sin(a) * d, 20, MAP_H - 20);
+    // merge into a nearby identical pile rather than littering. The radius has
+    // to comfortably exceed the scatter above, or two drops from the same spot
+    // can land far enough apart to stay separate.
+    for (const dr of drops) {
+      if (dr.id === id && dist2(dr.x, dr.y, x, y) < 100 * 100) { dr.n += n; dr.life = DROP_LIFE; return; }
+    }
+    drops.push({ x, y, cat, id, n, life: DROP_LIFE, bob: Math.random() * Math.PI * 2 });
+  }
+  const DROP_LIFE = 90;              // seconds a dropped stack survives
+
+  function updateDrops(dt) {
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      d.life -= dt; d.bob += dt * 2.5;
+      if (d.life <= 0) drops.splice(i, 1);
+    }
+  }
+
+  /* pick up the nearest drop; returns true if we took something */
+  function grabDrop() {
+    let best = null, bd = 78 * 78, bi = -1;
+    for (let i = 0; i < drops.length; i++) {
+      const d = drops[i];
+      const dd = dist2(player.x, player.y, d.x, d.y);
+      if (dd < bd) { bd = dd; best = d; bi = i; }
+    }
+    if (!best) return false;
+    const it = Items.CONSUMABLES[best.id];
+    const slot = player.inv[best.cat];
+    const cap = Classes.limitFor(player.cls, best.id);
+    // already full of this exact item? leave it where it is
+    if (slot && slot.id === best.id && slot.n >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
+    drops.splice(bi, 1);
+    const left = addItem(best.cat, best.id, best.n);
+    hudMsg(`Picked up ${it.name} ×${best.n - left}`);
+    SFX.click();
+    return true;
   }
   function equipWeapon(a, w) {
     a.weapon = w; a.weaponId = w.id; a.ammo = w.mag;
@@ -491,12 +590,59 @@ const Game = (() => {
     const t = player.tool;
     if (t.passive) {
       player.toolActive = !player.toolActive;
+      // gadgets aren't just a toggle: switching one on sweeps for contacts and
+      // marks what it finds for the whole squad
+      if (player.toolActive) markContacts(player);
       hudMsg(t.name + (player.toolActive ? ' — ON' : ' — off'));
       SFX.click();
       return;
     }
     if (player.toolCd > 0) return;
     swingTool(player);
+  }
+
+  /* Each vision gadget spots at a different range and through different things,
+     and every spot is shared with the squad for a few seconds. */
+  function markContacts(a) {
+    const t = a.tool;
+    const range = t.heat ? t.heat : t.zoom ? 1500 : t.nightFov ? 620 * (1 + t.nightFov) : 0;
+    if (!range) return;
+    let found = 0;
+    for (const o of agents) {
+      if (!o.alive || o.team === a.team) continue;
+      if (dist2(o.x, o.y, a.x, a.y) > range * range) continue;
+      // heat sees through walls; the others need line of sight
+      if (!t.heat && !hasLOS(a.x, a.y, o.x, o.y)) continue;
+      o.markedUntil = Math.max(o.markedUntil || 0, 6);
+      found++;
+    }
+    if (a.isPlayer) hudMsg(found ? `${found} contact${found > 1 ? 's' : ''} marked for the squad` : 'No contacts');
+  }
+
+  /* Flare Launcher: one airstrike per match, called in on your cursor. */
+  function callAirstrike() {
+    if (!canAct()) return false;
+    if (!player.weapon.airstrike) return false;
+    if (player.airstrikeUsed) { hudMsg('Flare already spent'); return true; }
+    player.airstrikeUsed = true;
+    const p = worldMouse();
+    airstrikes.push({ x: p.x, y: p.y, team: player.team, owner: player, delay: 3.5, hits: 6 });
+    hudMsg('Flare away — airstrike inbound');
+    SFX.win();
+    return true;
+  }
+  function updateAirstrikes(dt) {
+    for (let i = airstrikes.length - 1; i >= 0; i--) {
+      const s = airstrikes[i];
+      s.delay -= dt;
+      if (s.delay > 0) continue;
+      // walk a line of blasts across the marked point
+      const a = Math.random() * Math.PI * 2;
+      const off = rand(0, 150);
+      explode(s.x + Math.cos(a) * off, s.y + Math.sin(a) * off, 90, 150, s.team, s.owner, 'explosive');
+      if (--s.hits <= 0) airstrikes.splice(i, 1);
+      else s.delay = 0.35;
+    }
   }
 
   /* One swing: hits enemies in a forward arc, then chews structures. */
@@ -548,7 +694,49 @@ const Game = (() => {
      A map full of buildings is a few hundred segments and these lists are hit
      per bullet and per bot, so they're rebuilt once per frame, not per call. */
   let rectCache = null, solidCache = null, sightCache = null;
-  const invalidateRects = () => { rectCache = solidCache = sightCache = null; };
+  let solidGrid = null, sightGrid = null, bulletGrid = null;
+  const invalidateRects = () => { rectCache = solidCache = sightCache = solidGrid = sightGrid = bulletGrid = null; };
+
+  /* ---------------- spatial index ----------------
+     A map is 300+ wall segments now, and line of sight samples 16 points per
+     check, per bot, per frame. Scanning every rect each time was the single
+     hottest thing in the frame, so rects are bucketed into a coarse grid and
+     each query only looks at the cells it actually touches. */
+  const CELL = 220;
+  function buildGrid(rects) {
+    const g = { cols: Math.ceil(MAP_W / CELL) + 1, rows: Math.ceil(MAP_H / CELL) + 1, cells: new Map() };
+    for (const s of rects) {
+      const x0 = Math.max(0, Math.floor(s.x / CELL)), x1 = Math.floor((s.x + s.w) / CELL);
+      const y0 = Math.max(0, Math.floor(s.y / CELL)), y1 = Math.floor((s.y + s.h) / CELL);
+      for (let cy = y0; cy <= y1; cy++) {
+        for (let cx = x0; cx <= x1; cx++) {
+          const k = cy * g.cols + cx;
+          let arr = g.cells.get(k);
+          if (!arr) { arr = []; g.cells.set(k, arr); }
+          arr.push(s);
+        }
+      }
+    }
+    return g;
+  }
+  const gridAt = (g, x, y) => g.cells.get(Math.floor(y / CELL) * g.cols + Math.floor(x / CELL));
+  const solidIndex = () => (solidGrid || (solidGrid = buildGrid(solidRects())));
+  const sightIndex = () => (sightGrid || (sightGrid = buildGrid(sightRects())));
+  // bullets care about every wall that isn't underground or an open door
+  const bulletIndex = () => (bulletGrid || (bulletGrid = buildGrid(structureRects())));
+  /* every rect in the cells a circle overlaps */
+  function nearRects(g, x, y, r) {
+    const out = [];
+    const x0 = Math.max(0, Math.floor((x - r) / CELL)), x1 = Math.floor((x + r) / CELL);
+    const y0 = Math.max(0, Math.floor((y - r) / CELL)), y1 = Math.floor((y + r) / CELL);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const arr = g.cells.get(cy * g.cols + cx);
+        if (arr) for (const s of arr) if (!out.includes(s)) out.push(s);
+      }
+    }
+    return out;
+  }
   function structureRects() {
     if (!rectCache) {
       rectCache = obstacles.slice();
@@ -635,7 +823,10 @@ const Game = (() => {
     const it = Items.CONSUMABLES[slot.id];
     const t = worldMouse();
     let dx = t.x - player.x, dy = t.y - player.y; const d = Math.hypot(dx, dy) || 1;
-    const range = it.throwRange || 520; const dist = Math.min(d, range);
+    // a Grenade Launcher launches them: further, faster, and flat instead of lobbed
+    const gl = !!player.weapon.launchGrenades;
+    const range = (it.throwRange || 520) * (gl ? 1.9 : 1);
+    const dist = Math.min(d, range);
     grenades.push({
       x: player.x, y: player.y, tx: player.x + dx / d * dist, ty: player.y + dy / d * dist,
       vx: dx / d * 660, vy: dy / d * 660, mode: it.mode, item: it,
@@ -747,6 +938,8 @@ const Game = (() => {
   /* --- interact (E): doors, crates, ammo boxes --- */
   function interact() {
     if (!canAct()) return;
+    // dropped kit first — it's what you most often want when you press E
+    if (grabDrop()) return;
     const door = nearestDoor(player.x, player.y, 70);
     if (door) { toggleDoor(door, player); return; }
     let best = null, bd = 95 * 95;
@@ -934,7 +1127,7 @@ const Game = (() => {
   function resolveObstacles(a) {
     a.x = clamp(a.x, a.r, MAP_W - a.r);
     a.y = clamp(a.y, a.r, MAP_H - a.r);
-    for (const o of solidRects()) {
+    for (const o of nearRects(solidIndex(), a.x, a.y, a.r + 4)) {
       const cx = clamp(a.x, o.x, o.x + o.w);
       const cy = clamp(a.y, o.y, o.y + o.h);
       const dx = a.x - cx, dy = a.y - cy;
@@ -957,19 +1150,24 @@ const Game = (() => {
   }
 
   function pointInObstacle(x, y) {
-    for (const o of solidRects()) if (inRect(x, y, o)) return true;
+    const arr = gridAt(solidIndex(), x, y);
+    if (!arr) return false;
+    for (const o of arr) if (inRect(x, y, o)) return true;
     return false;
   }
 
-  /* only "high" walls block sight — you can see (and shoot) over sandbags and wire */
+  /* only "high" walls block sight — you can see (and shoot) over sandbags and wire.
+     Walks the line and only tests walls in the cell each sample lands in. */
   function hasLOS(ax, ay, bx, by) {
-    const rects = sightRects();
-    if (!rects.length) return true;
+    const g = sightIndex();
+    if (!g.cells.size) return true;
     const steps = 16;
     for (let i = 1; i < steps; i++) {
       const t = i / steps;
       const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
-      for (const o of rects) if (inRect(x, y, o)) return false;
+      const arr = gridAt(g, x, y);
+      if (!arr) continue;
+      for (const o of arr) if (inRect(x, y, o)) return false;
     }
     return true;
   }
@@ -1245,6 +1443,7 @@ const Game = (() => {
       if (a.postBurstCd > 0) a.postBurstCd -= ms;
       if (a.blindTimer > 0) a.blindTimer -= dt;
       if (a.toolCd > 0) a.toolCd -= dt;
+      if (a.markedUntil > 0) a.markedUntil -= dt;
       if (a.swingT > 0) a.swingT -= dt;
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
       a.wireSlow = (a.alive && !a.isVehicle) ? wireAt(a, dt) : 1;
@@ -1311,6 +1510,8 @@ const Game = (() => {
     // tactical layer
     updateSquadIntel(dt);
     updateGrenades(dt);
+    updateDrops(dt);
+    updateAirstrikes(dt);
     updateDeployables(dt);
     updateSmokes(dt);
 
@@ -1332,11 +1533,14 @@ const Game = (() => {
      Wall type decides what happens: absorbed, punched through for a slice of
      the damage, or bounced back off at 50%. Returns true if the round dies. */
   function bulletVsWall(b) {
-    const rects = structureRects();
+    // only the walls in this bullet's own cell, not all 300 of them
+    const arr = gridAt(bulletIndex(), b.x, b.y);
     let wall = null;
-    for (const s of rects) {
-      if (kindOf(s).height === 'under' || s.open) continue;
-      if (inRect(b.x, b.y, s)) { wall = s; break; }
+    if (arr) {
+      for (const s of arr) {
+        if (kindOf(s).height === 'under' || s.open) continue;
+        if (inRect(b.x, b.y, s)) { wall = s; break; }
+      }
     }
     if (!wall) { b.inWall = null; return false; }
     if (b.inWall === wall) return false;        // already resolved on the way in
@@ -1571,16 +1775,21 @@ const Game = (() => {
     ctx.translate(-camX, -camY);
 
     // ground
-    ctx.fillStyle = '#0a1020';
+    // brighter ground: a lit gradient rather than a flat near-black field
+    const gnd = ctx.createLinearGradient(0, 0, MAP_W, MAP_H);
+    gnd.addColorStop(0, '#2b3a5e');
+    gnd.addColorStop(0.5, '#243350');
+    gnd.addColorStop(1, '#1e2b45');
+    ctx.fillStyle = gnd;
     ctx.fillRect(0, 0, MAP_W, MAP_H);
     // grid
-    ctx.strokeStyle = 'rgba(120,160,255,0.06)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(170,205,255,0.10)'; ctx.lineWidth = 1;
     ctx.beginPath();
     for (let x = 0; x <= MAP_W; x += 80) { ctx.moveTo(x, 0); ctx.lineTo(x, MAP_H); }
     for (let y = 0; y <= MAP_H; y += 80) { ctx.moveTo(0, y); ctx.lineTo(MAP_W, y); }
     ctx.stroke();
     // border
-    ctx.strokeStyle = 'rgba(120,160,255,0.25)'; ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(180,215,255,0.45)'; ctx.lineWidth = 4;
     ctx.strokeRect(0, 0, MAP_W, MAP_H);
 
     drawTerrain();
@@ -1608,6 +1817,7 @@ const Game = (() => {
     for (const o of obstacles) drawStructure(o);
 
     drawCratesAndDeployables();
+    drawDrops();
 
     // fx under agents
     for (const f of fx) { ctx.globalAlpha = clamp(f.life * 2.5, 0, 1); ctx.fillStyle = f.color; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill(); }
@@ -1685,6 +1895,18 @@ const Game = (() => {
       ctx.globalAlpha = 1;
     }
 
+    // contacts a squadmate's gadget has marked — visible to the whole team
+    for (const a of agents) {
+      if (!a.alive || a.team === player.team || !(a.markedUntil > 0)) continue;
+      const pulse = 0.5 + 0.5 * Math.sin(a.markedUntil * 6);
+      ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 12 + pulse * 3, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,120,60,${clamp(a.markedUntil / 3, 0.2, 0.9)})`;
+      ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = `rgba(255,150,90,${clamp(a.markedUntil / 3, 0.2, 0.9)})`;
+      ctx.font = 'bold 13px Segoe UI'; ctx.textAlign = 'center';
+      ctx.fillText('▼', a.x, a.y - a.r - 24);
+    }
+
     drawVisionTools();   // heat / night vision markers sit over the units
 
     // damage numbers
@@ -1726,8 +1948,8 @@ const Game = (() => {
     // grass (ghillie cover)
     for (const g of grass) {
       roundRect(g.x, g.y, g.w, g.h, 18);
-      ctx.fillStyle = 'rgba(75,224,138,0.07)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(75,224,138,0.16)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = 'rgba(96,214,132,0.16)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(110,230,150,0.30)'; ctx.lineWidth = 1; ctx.stroke();
     }
     // dug trenches
     for (const t of trenches) {
@@ -1855,6 +2077,31 @@ const Game = (() => {
     }
   }
 
+  /* dropped stacks: bob gently, fade as they time out, prompt when you're close */
+  function drawDrops() {
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const d of drops) {
+      const it = Items.CONSUMABLES[d.id]; if (!it) continue;
+      const lift = Math.sin(d.bob) * 3;
+      ctx.globalAlpha = d.life < 8 ? clamp(d.life / 8, 0.15, 1) : 1;
+      drawUnitShadow(d.x, d.y + 6, 11);
+      // little pedestal so it reads as loot rather than scenery
+      ctx.beginPath(); ctx.arc(d.x, d.y + lift, 14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(20,28,48,0.8)'; ctx.fill();
+      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(120,200,255,0.6)'; ctx.stroke();
+      ctx.font = '17px Segoe UI'; ctx.fillText(it.icon, d.x, d.y + lift + 1);
+      if (d.n > 1) {
+        ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#fff';
+        ctx.fillText('×' + d.n, d.x + 13, d.y + lift - 10);
+      }
+      if (player && player.alive && near2(d, player, 78)) {
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI';
+        ctx.fillText(`[E] ${it.name}`, d.x, d.y - 26);
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
   /* ---------------- tactical rendering helpers ---------------- */
   function drawCratesAndDeployables() {
     // crates
@@ -1862,7 +2109,7 @@ const Game = (() => {
       const st = Items.CRATE_STYLE[c.tier];
       ctx.globalAlpha = c.opened ? 0.3 : 1;
       roundRect(c.x - 15, c.y - 15, 30, 30, 6);
-      ctx.fillStyle = c.opened ? '#20283f' : hexA(st.color, 0.9); ctx.fill();
+      ctx.fillStyle = c.opened ? '#37456b' : hexA(st.color, 0.95); ctx.fill();
       ctx.lineWidth = 2; ctx.strokeStyle = st.color; ctx.stroke();
       if (!c.opened) {
         ctx.font = '18px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1998,7 +2245,7 @@ const Game = (() => {
     // adrenaline (only while you have some) — bar plus what it's currently giving
     if (adr.amount > 0) {
       const bw = 200;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y - 4, bw, 8, 4); ctx.fill();
+      ctx.fillStyle = 'rgba(20,30,55,0.8)'; roundRect(x, y - 4, bw, 8, 4); ctx.fill();
       ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';    // green while it's healing you
       roundRect(x, y - 4, bw * (adr.amount / 100), 8, 4); ctx.fill();
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -2053,10 +2300,10 @@ const Game = (() => {
   function drawActionSlot(s, x, y, sw, sh) {
     const ready = !s.cd || s.cd <= 0;
     const usable = !s.empty && ready;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'; roundRect(x, y, sw, sh, 10); ctx.fill();
+    ctx.fillStyle = 'rgba(28,40,70,0.82)'; roundRect(x, y, sw, sh, 10); ctx.fill();
     ctx.lineWidth = s.active ? 2 : 1;
     ctx.strokeStyle = s.active ? (s.accent || '#fff')
-      : s.empty ? 'rgba(120,160,255,0.15)' : 'rgba(120,160,255,0.35)';
+      : s.empty ? 'rgba(160,200,255,0.25)' : 'rgba(170,210,255,0.55)';
     ctx.stroke();
 
     // cooldown drains from the bottom up
@@ -2119,11 +2366,11 @@ const Game = (() => {
     const mw = 180, mh = mw * (MAP_H / MAP_W), pad = 16;
     const ox = W - mw - pad, oy = pad + 40;
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
-    ctx.strokeStyle = 'rgba(120,160,255,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = 'rgba(26,38,66,0.78)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
+    ctx.strokeStyle = 'rgba(175,210,255,0.55)'; ctx.lineWidth = 1; ctx.stroke();
     const sx = mw / MAP_W, sy = mh / MAP_H;
     // building footprints, so you can read the map at a glance
-    ctx.fillStyle = 'rgba(180,205,255,0.22)';
+    ctx.fillStyle = 'rgba(205,225,255,0.38)';
     for (const s of structureRects()) {
       if (kindOf(s).height !== 'high') continue;
       ctx.fillRect(ox + s.x * sx, oy + s.y * sy, Math.max(1, s.w * sx), Math.max(1, s.h * sy));

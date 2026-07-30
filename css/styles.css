@@ -1,17 +1,21 @@
 /* ============================================================
    BATTLE SQUADS — stylesheet
    ============================================================ */
+/* Brightened theme: the old palette bottomed out near-black (#070b16), which
+   made panels and text sit in a very narrow band. Everything is lifted a few
+   stops — lighter grounds, stronger panel contrast, brighter body and muted
+   text — while keeping the same blue/orange identity. */
 :root {
-  --bg-0: #070b16;
-  --bg-1: #0c1224;
-  --bg-2: #131c38;
-  --panel: rgba(18, 26, 51, 0.72);
-  --panel-solid: #111a33;
-  --line: rgba(120, 160, 255, 0.14);
-  --line-strong: rgba(120, 160, 255, 0.30);
-  --text: #eaf0ff;
-  --muted: #8ea0c9;
-  --dim: #5b6a92;
+  --bg-0: #16203c;
+  --bg-1: #1e2a4c;
+  --bg-2: #33436e;
+  --panel: rgba(44, 60, 100, 0.78);
+  --panel-solid: #26345c;
+  --line: rgba(150, 190, 255, 0.24);
+  --line-strong: rgba(150, 190, 255, 0.46);
+  --text: #f4f8ff;
+  --muted: #b6c6ea;
+  --dim: #8496c0;
   --accent: #ff6a2b;      /* orange — energy / deploy */
   --accent-2: #35e0ff;    /* cyan — team blue */
   --blue: #3d7bff;

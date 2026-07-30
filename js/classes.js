@@ -123,8 +123,8 @@ const Classes = (() => {
      the table value, and looted odds and ends cap at 5 instead of 3. The table
      ratios between classes are preserved — a Demolitionist still hauls far
      more C4 than a Sniper does mines. */
-  const CARRY_MULT = 2;
-  const GENERIC_LIMIT = 5;   // cap on anything looted that isn't your class kit
+  const CARRY_MULT = 3;
+  const GENERIC_LIMIT = 8;   // cap on anything looted that isn't your class kit
 
   const byName = (name) => CLASSES[name] || CLASSES.Rifleman;
   const forWeapon = (w) => byName(w && w.className);

@@ -121,7 +121,7 @@ const Weapons = (() => {
     ['M4','Carbine','14',12.2,'30','3.1s',3.17,0.18,'0.24s',1,7,'Purple','Automatic','9%','None','Scope, Suppressor','AP, Tracer, HP','Medic','A,Rc,H','M,Rd,W','D,F,S',980,165,'The all-rounder: nothing bad, nothing exceptional',4],
     ['AKS-74U','Carbine','13.5',11,'30','2.4s',4.76,0.24,'0.22s',1.35,6,'Purple','Automatic','10%','None','Scope, Suppressor','AP, Tracer, HP','Medic','D,H,W','F,M,Rd','A,Rc,S',920,140,'Cut-down AK: quickest handling, wanders when you run',7.5],
     ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',1180,200,'Bullpup: wide from the hip but rock-steady on the move',0.5],
-    ['M79','Launcher','80','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',560,160,'Lobbed HE round - arcs into cover',3],
+    ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',560,160,'Lobbed HE round - arcs into cover',3],
     ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',620,200,'The only HEAT weapon: the answer to a tank',5],
     ['QLZ-87','Launcher','40',4,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',600,180,'Automatic grenade launcher - area denial on a tripod',6],
   ];

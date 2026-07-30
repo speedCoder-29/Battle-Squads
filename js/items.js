@@ -13,15 +13,15 @@ const Items = (() => {
   /* ---------- CONSUMABLES ---------- */
   const CONSUMABLES = {
     // grenades (thrown) ---------------------------------------------------
-    frag:      { name: 'Frag',       cat: 'grenade', mode: 'fuze',   icon: '💣', fuze: 5, damage: 100, falloff: 0.25, radius: 130 },
+    frag:      { name: 'Frag',       cat: 'grenade', mode: 'fuze',   icon: '💣', fuze: 3, damage: 125, falloff: 0.25, radius: 150 },
     impact:    { name: 'Impact Gren',cat: 'grenade', mode: 'impact', icon: '💥', damage: 50,  falloff: 0.25, radius: 105 },
-    c4:        { name: 'C4',         cat: 'grenade', mode: 'c4',     icon: '🧿', fuze: 3, damage: 60,  falloff: 0.50, radius: 120, throwRange: 170 },
+    c4:        { name: 'C4',         cat: 'grenade', mode: 'c4',     icon: '🧿', fuze: 3, damage: 90,  falloff: 0.50, radius: 120, throwRange: 170 },
     smoke:     { name: 'Smoke',      cat: 'grenade', mode: 'smoke',  icon: '🌫️', fuze: 3, duration: 18, radius: 140 },
     flashbang: { name: 'Flashbang',  cat: 'grenade', mode: 'flash',  icon: '⚡', fuze: 5, radius: 280, blind: 3 },
 
     // tactical (deployed at your position) --------------------------------
-    mine:      { name: 'Mine',       cat: 'tactical', mode: 'mine',  icon: '🔺', damage: 100, falloff: 1.0, radius: 95, trigger: 70, arm: 1 },
-    barricade: { name: 'Barricade',  cat: 'tactical', mode: 'wall',  icon: '🧱', place: 5, life: 30, w: 120, h: 22 },
+    mine:      { name: 'Mine',       cat: 'tactical', mode: 'mine',  icon: '🔺', damage: 125, falloff: 1.0, radius: 105, trigger: 70, arm: 1 },
+    barricade: { name: 'Barricade',  cat: 'tactical', mode: 'wall',  icon: '🧱', place: 5, life: 60, w: 120, h: 22 },
     ammobox:   { name: 'Ammo Box',   cat: 'tactical', mode: 'ammo',  icon: '📦', supply: 200, life: 45 },
     flag:      { name: 'Cool Flag',  cat: 'tactical', mode: 'flag',  icon: '🚩', radius: 250, adr: 10, speed: 0.25, life: 40 },
     sentry:    { name: 'Sentry Gun', cat: 'tactical', mode: 'sentry',icon: '🔫', hp: 180, range: 430, damage: 11, rof: 7, life: 75 },

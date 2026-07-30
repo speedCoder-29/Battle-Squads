@@ -34,56 +34,56 @@ const Structures = (() => {
     wood: {
       name: 'Wood', height: 'high', hpPerThickness: 10, toughness: (t) => (t <= 0.2 ? 1 : t <= 0.4 ? 2 : 3),
       bullets: 'pen', lossPerM: 1.0,            // 10% per 0.1 thickness
-      fill: '#3b2c1b', stroke: 'rgba(214,164,94,0.55)',
+      fill: '#6d5334', stroke: 'rgba(240,198,132,0.85)',
       effect: 'Bullets lose 10% damage per 0.1 thickness',
     },
     metal: {
       name: 'Metal', height: 'high', hpPerThickness: 20, toughness: 4,
       bullets: 'pen', lossPerM: 1.0, reflectAbove: 0.5,
-      fill: '#2b3444', stroke: 'rgba(180,200,230,0.6)',
+      fill: '#546480', stroke: 'rgba(210,228,255,0.85)',
       effect: 'Penetrable up to 0.5 thickness, then ricochets for 50%',
     },
     door: {
       name: 'Door', height: 'high', hp: 90, toughness: 1, door: true,
       bullets: 'pen', lossPerM: 1.0,            // it's wood, 0.3 thick
       defThickness: 0.3, defLength: 1.5,
-      fill: '#4a3620', stroke: 'rgba(226,180,110,0.7)',
+      fill: '#7d5c31', stroke: 'rgba(255,210,140,0.9)',
       effect: 'Opens and closes',
     },
     rdoor: {
       name: 'Reinforced Door', height: 'high', hp: 300, toughness: 5, door: true,
       bullets: 'reflect', defThickness: 0.35, defLength: 1.5,
-      fill: '#37404f', stroke: 'rgba(200,215,240,0.75)',
+      fill: '#5d6b82', stroke: 'rgba(225,238,255,0.9)',
       effect: 'Opens and closes · bullets ricochet for 50%',
     },
     rwall: {
       name: 'Reinforced Wall', height: 'high', hp: 300, toughness: 5,
       bullets: 'reflect',
-      fill: '#333c4a', stroke: 'rgba(200,215,240,0.7)',
+      fill: '#58657d', stroke: 'rgba(220,235,255,0.85)',
       effect: 'Bullets ricochet for 50%',
     },
     wire: {
       name: 'Barbed Wire', height: 'low', hp: 60, toughness: 5,
       bullets: 'through', passable: true, slow: 0.1, dps: 2,
-      fill: 'rgba(150,165,195,0.10)', stroke: 'rgba(210,220,240,0.55)',
+      fill: 'rgba(190,205,235,0.14)', stroke: 'rgba(235,245,255,0.8)',
       effect: '90% movement slowdown · 2 damage/s',
     },
     sandbag: {
       name: 'Sand Bags', height: 'low', hp: 300, toughness: 6,
       bullets: 'stop',
-      fill: '#3a3520', stroke: 'rgba(220,200,120,0.45)',
+      fill: '#6b6236', stroke: 'rgba(240,224,150,0.8)',
       effect: 'Stops bullets outright',
     },
     barricade: {
       name: 'Barricade', height: 'low', hp: 150, toughness: 1,
       bullets: 'pen', flatLoss: 0.5,
-      fill: '#3a3040', stroke: 'rgba(196,107,255,0.4)',
+      fill: '#63526f', stroke: 'rgba(214,150,255,0.75)',
       effect: 'Bullets lose 50% damage passing through',
     },
     trench: {
       name: 'Trench', height: 'under', hp: 1, toughness: 6,
       bullets: 'through', passable: true, dodge: 0.5,
-      fill: 'rgba(90,66,40,0.45)', stroke: 'rgba(176,138,90,0.5)',
+      fill: 'rgba(132,100,62,0.55)', stroke: 'rgba(205,168,116,0.75)',
       effect: 'Infantry inside dodge 50% of incoming fire',
     },
   };
@@ -290,6 +290,68 @@ const Structures = (() => {
       out.push(seg('sandbag', ox - 50, oy - 40, 8, 'h', 0.5));
       out.push(seg('sandbag', ox - 50, oy + 260, 8, 'h', 0.5));
       out.push(seg('wire', ox + 330, oy - 20, 7, 'v', 0.4));
+      return out;
+    },
+
+    /* apartment block: a long spine of rooms off a central corridor.
+       The densest close-quarters fight on any map. */
+    apartments(ox, oy) {
+      const w = 780, h = 400;
+      const out = shell(ox, oy, w, h, 'wood', 0.45, [
+        { side: 'w', at: 170 }, { side: 'e', at: 170 }, { side: 'n', at: 360 },
+      ]);
+      // corridor walls with doors into each room
+      out.push(seg('wood', ox + 14, oy + 150, 19, 'h', 0.3));
+      out.push(seg('wood', ox + 14, oy + 250, 19, 'h', 0.3));
+      for (const dx of [120, 320, 520, 660]) {
+        out.push(seg('door', ox + dx, oy + 150, 1.5, 'h'));
+        out.push(seg('door', ox + dx - 40, oy + 250, 1.5, 'h'));
+      }
+      // room dividers above and below the corridor
+      for (const dx of [200, 400, 600]) {
+        out.push(seg('wood', ox + dx, oy + 14, 3.4, 'v', 0.25));
+        out.push(seg('wood', ox + dx, oy + 250, 3.4, 'v', 0.25));
+      }
+      return out;
+    },
+
+    /* hangar: one enormous metal shed with a blast door. Wide open inside,
+       so it is all about the approach. */
+    hangar(ox, oy) {
+      const w = 820, h = 480;
+      const out = shell(ox, oy, w, h, 'metal', 0.65, [
+        { side: 's', at: 330, type: 'rdoor', len: 4 },
+        { side: 'w', at: 200, type: 'rdoor' },
+      ]);
+      out.push(seg('sandbag', ox + 120, oy + 120, 5, 'h', 0.5));
+      out.push(seg('sandbag', ox + 500, oy + 340, 5, 'h', 0.5));
+      out.push(seg('barricade', ox + 380, oy + 60, 6, 'v', 0.3));
+      return out;
+    },
+
+    /* farm: a big barn plus a fenced yard. Wood everywhere — a Breacher's map. */
+    farm(ox, oy) {
+      const out = shell(ox, oy, 420, 300, 'wood', 0.35, [
+        { side: 's', at: 170, len: 3 }, { side: 'n', at: 60 },
+      ]);
+      out.push(seg('wood', ox + 200, oy + 14, 2.4, 'v', 0.25));
+      // yard fence, deliberately flimsy
+      out.push(seg('barricade', ox + 470, oy + 40, 8, 'v', 0.25));
+      out.push(seg('barricade', ox + 470, oy + 40, 7, 'h', 0.25));
+      out.push(seg('barricade', ox + 470, oy + 360, 7, 'h', 0.25));
+      out.push(seg('wire', ox - 60, oy + 340, 8, 'h', 0.4));
+      return out;
+    },
+
+    /* checkpoint: sandbag chicane across a lane, with a hard reinforced post.
+       Cheap, low, and it breaks up open ground. */
+    checkpoint(ox, oy) {
+      const out = [];
+      out.push(seg('sandbag', ox, oy, 5, 'h', 0.5));
+      out.push(seg('sandbag', ox + 120, oy + 110, 5, 'h', 0.5));
+      out.push(seg('sandbag', ox, oy + 220, 5, 'h', 0.5));
+      out.push(...shell(ox + 250, oy + 60, 130, 110, 'rwall', 0.4, [{ side: 'w', at: 40, type: 'rdoor' }]));
+      out.push(seg('wire', ox - 40, oy - 40, 5, 'v', 0.4));
       return out;
     },
 
