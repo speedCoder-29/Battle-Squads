@@ -7,7 +7,7 @@
    ============================================================ */
 const Game = (() => {
   // domination is fought over a much bigger board than the elimination arena
-  const MAP_SIZES = { domination: { w: 6400, h: 4300 }, elimination: { w: 4400, h: 3000 } };
+  const MAP_SIZES = { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
   const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
