@@ -7,7 +7,7 @@
    ============================================================ */
 const Game = (() => {
   // domination is fought over a much bigger board than the elimination arena
-  const MAP_SIZES = { domination: { w: 4600, h: 3100 }, elimination: { w: 3200, h: 2200 } };
+  const MAP_SIZES = { domination: { w: 6400, h: 4300 }, elimination: { w: 4400, h: 3000 } };
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
   const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
@@ -53,132 +53,212 @@ const Game = (() => {
     H = canvas.height = window.innerHeight;
   }
 
+  /* Where the domination objectives sit. Needed before the map is built so the
+     generator can keep those approaches clear, and again when teams are set up. */
+  function objectiveAnchors() {
+    return [
+      { name: 'A', x: MAP_W * 0.24, y: MAP_H * 0.70, r: 165 },
+      { name: 'B', x: MAP_W * 0.50, y: MAP_H * 0.44, r: 175 },
+      { name: 'C', x: MAP_W * 0.77, y: MAP_H * 0.30, r: 165 },
+    ];
+  }
+  let objectiveSpotsCache = [];
+  const objectiveSpots = () => objectiveSpotsCache;
+
+  /* Objectives are positioned *after* the map exists, by walking out from each
+     anchor until the disc is clear of walls and out of the water. Reserving
+     ground up front and filtering afterwards meant every new placer had to
+     remember the rule; this way an objective simply cannot be inside a wall. */
+  function placeObjectives() {
+    const clearAt = (x, y, r) => {
+      if (!Terrain.isSpawnable(terrain, x, y)) return false;
+      if (x < r + 60 || y < r + 60 || x > MAP_W - r - 60 || y > MAP_H - r - 60) return false;
+      const disc = { x: x - r, y: y - r, w: r * 2, h: r * 2 };
+      return !structureRects().some(o => padOverlap(disc, o, 0));
+    };
+    objectiveSpotsCache = objectiveAnchors().map(a => {
+      if (clearAt(a.x, a.y, a.r)) return a;
+      // spiral outward from the anchor for the nearest spot that works
+      for (let ring = 1; ring <= 40; ring++) {
+        for (let k = 0; k < 16; k++) {
+          const ang = (k / 16) * Math.PI * 2 + ring * 0.3;
+          const d = ring * 90;
+          const x = a.x + Math.cos(ang) * d, y = a.y + Math.sin(ang) * d;
+          if (clearAt(x, y, a.r)) return { ...a, x, y };
+        }
+      }
+      return a;                                  // map is impossibly dense; fall back
+    });
+    return objectiveSpotsCache;
+  }
+
+  /* How much of everything a map gets, per million pixels of playable ground.
+     Everything scales from the board size, so making the map bigger fills it
+     instead of stretching it thin. */
+  const DENSITY = {
+    buildings: 3.2,
+    cover: 11.0,
+    crates: 4.2,
+    props: 120,
+    grassPatches: 2.4,
+  };
+  /* the buildings that can be rolled, and how common each is */
+  const BUILDING_MIX = [
+    ['house', 16], ['shanty', 12], ['camp', 10], ['checkpoint', 10],
+    ['farm', 9], ['tower', 9], ['apartments', 7], ['warehouse', 7],
+    ['depot', 7], ['bunker', 6], ['mansion', 5], ['hangar', 4], ['base', 4],
+  ];
+  const COVER_MIX = [
+    ['sandbag', 26], ['barricade', 22], ['wire', 20], ['wood', 16], ['metal', 10], ['rwall', 6],
+  ];
+
   function buildMap() {
-    obstacles = []; trenches = [];
+    obstacles = []; trenches = []; decor = []; grass = [];
     invalidateRects();
     terrain = Terrain.generate(MAP_W, MAP_H, mode === 'domination' ? 20260730 : 90210);
-    const S = Structures;
-    // Each mode gets its own board. Objectives/spawns live in the open ground
-    // between the buildings — see OBJECTIVE_SPOTS and spawnPoint().
-    if (mode === 'domination') {
-      obstacles.push(
-        ...tryPlace('camp', 260, 320),
-        ...tryPlace('mansion', 1360, 240),
-        ...tryPlace('apartments', 2560, 260),
-        ...tryPlace('house', 3880, 380),
-        ...tryPlace('tower', 3300, 900),
-        ...tryPlace('shanty', 700, 800),
-        ...tryPlace('warehouse', 1780, 780),
-        ...tryPlace('farm', 3760, 1120),
-        ...tryPlace('house', 300, 1500),
-        ...tryPlace('checkpoint', 1420, 1420),
-        ...tryPlace('hangar', 2500, 1180),
-        ...tryPlace('camp', 3880, 1900),
-        ...tryPlace('mansion', 1120, 1900),
-        ...tryPlace('bunker', 2280, 1880),
-        ...tryPlace('depot', 520, 2500),
-        ...tryPlace('base', 3040, 2380),
-        ...tryPlace('apartments', 1500, 2560),
-        ...tryPlace('tower', 180, 2760),
-        ...tryPlace('checkpoint', 2500, 2700),
-        ...tryPlace('house', 4060, 2620),
-      );
-      obstacles.push(
-        S.seg('sandbag',   1120, 1180, 5, 'h', 0.5),
-        S.seg('sandbag',   2280, 620,  5, 'v', 0.5),
-        S.seg('sandbag',   3400, 1720, 4, 'h', 0.5),
-        S.seg('sandbag',    900, 2260, 4, 'h', 0.5),
-        S.seg('sandbag',   4200, 1640, 4, 'v', 0.5),
-        S.seg('barricade',  980, 1560, 6, 'h', 0.3),
-        S.seg('barricade', 2880, 800,  6, 'v', 0.3),
-        S.seg('barricade', 1980, 2320, 7, 'h', 0.3),
-        S.seg('barricade', 3560, 2140, 6, 'h', 0.3),
-        S.seg('wire',      1180, 700, 11, 'h', 0.4),
-        S.seg('wire',      2960, 1560, 9, 'v', 0.4),
-        S.seg('wire',       600, 2260, 12, 'h', 0.4),
-        S.seg('wire',      3540, 2860, 10, 'h', 0.4),
-        S.seg('wood',      4260, 1780, 9, 'v', 0.3),
-        S.seg('wood',       760, 1240, 7, 'v', 0.3),
-        S.seg('wood',      2140, 2780, 8, 'h', 0.3),
-        S.seg('metal',     2020, 1660, 8, 'h', 0.6),
-        S.seg('metal',      340, 2140, 7, 'h', 0.6),
-        S.seg('metal',     3720, 700,  6, 'v', 0.6),
-      );
-      grass = [
-        { x: 280, y: 900, w: 340, h: 300 }, { x: 3980, y: 760, w: 360, h: 300 },
-        { x: 860, y: 1420, w: 380, h: 240 }, { x: 1520, y: 1020, w: 340, h: 240 },
-        { x: 740, y: 380, w: 260, h: 220 }, { x: 2020, y: 2500, w: 400, h: 280 },
-        { x: 2760, y: 1000, w: 300, h: 260 }, { x: 2380, y: 2700, w: 340, h: 240 },
-        { x: 4180, y: 2200, w: 340, h: 300 }, { x: 1180, y: 2760, w: 320, h: 240 },
-        { x: 3260, y: 1580, w: 300, h: 280 },
-      ];
-      decor = [
-        ...S.scatter(['tree', 'bush', 'rock'], 120, 780, 760, 560, 34),
-        ...S.scatter(['tree', 'bush'], 3760, 660, 780, 520, 30),
-        ...S.scatter(['crate', 'barrel', 'pallet', 'tyre'], 1740, 740, 800, 540, 28),
-        ...S.scatter(['rubble', 'rock', 'tyre'], 620, 760, 500, 440, 22),
-        ...S.scatter(['barrel', 'cone', 'sign'], 480, 2440, 620, 420, 22),
-        ...S.scatter(['crate', 'barrel'], 2980, 2320, 760, 500, 24),
-        ...S.scatter(['bush', 'tree'], 1420, 2480, 760, 440, 26),
-        ...S.scatter(['antenna', 'crate'], 3260, 860, 300, 300, 8),
-        ...S.scatter(['tree', 'bush', 'rock'], 140, 2680, 560, 380, 20),
-        ...S.scatter(['crate', 'pallet', 'tyre'], 2440, 1140, 820, 480, 26),
-        ...S.scatter(['rubble', 'rock'], 3960, 1800, 560, 480, 20),
-        ...S.scatter(['bush', 'rock', 'tree'], 2200, 400, 700, 400, 22),
-      ];
-    } else {
-      obstacles.push(
-        ...tryPlace('camp', 180, 200),
-        ...tryPlace('mansion', 900, 160),
-        ...tryPlace('house', 2520, 240),
-        ...tryPlace('apartments', 1760, 700),
-        ...tryPlace('shanty', 420, 760),
-        ...tryPlace('farm', 2380, 900),
-        ...tryPlace('house', 220, 1420),
-        ...tryPlace('bunker', 1020, 1500),
-        ...tryPlace('tower', 2900, 1560),
-        ...tryPlace('checkpoint', 1500, 1300),
-        ...tryPlace('base', 1960, 1680),
-        ...tryPlace('depot', 560, 1820),
-      );
-      obstacles.push(
-        S.seg('sandbag',   1320, 1000, 4, 'h', 0.5),
-        S.seg('sandbag',    880, 1180, 4, 'v', 0.5),
-        S.seg('sandbag',   2400, 1420, 4, 'h', 0.5),
-        S.seg('barricade', 1560, 1900, 6, 'h', 0.3),
-        S.seg('barricade',  760, 560,  5, 'v', 0.3),
-        S.seg('barricade', 2760, 620,  5, 'h', 0.3),
-        S.seg('wire',      1000, 880, 10, 'h', 0.4),
-        S.seg('wire',      1680, 320,  8, 'v', 0.4),
-        S.seg('wire',       420, 2060, 11, 'h', 0.4),
-        S.seg('wood',      2980, 1000, 8, 'v', 0.3),
-        S.seg('metal',     1240, 2060, 7, 'h', 0.6),
-        S.seg('metal',     2260, 480,  6, 'v', 0.6),
-      );
-      grass = [
-        { x: 200, y: 1080, w: 340, h: 260 }, { x: 2660, y: 620, w: 320, h: 260 },
-        { x: 740, y: 1300, w: 380, h: 240 }, { x: 1380, y: 640, w: 320, h: 200 },
-        { x: 640, y: 260, w: 220, h: 200 }, { x: 1320, y: 1660, w: 300, h: 240 },
-        { x: 2760, y: 1900, w: 340, h: 240 }, { x: 2180, y: 1200, w: 280, h: 220 },
-      ];
-      decor = [
-        ...S.scatter(['tree', 'bush', 'rock'], 140, 1020, 600, 460, 26),
-        ...S.scatter(['tree', 'bush'], 2600, 560, 500, 460, 22),
-        ...S.scatter(['crate', 'barrel', 'pallet'], 1700, 1620, 700, 480, 24),
-        ...S.scatter(['rubble', 'tyre', 'cone'], 1400, 620, 480, 360, 18),
-        ...S.scatter(['bush', 'tree'], 500, 1300, 560, 360, 20),
-        ...S.scatter(['crate', 'barrel', 'sign'], 540, 1780, 380, 340, 14),
-        ...S.scatter(['antenna', 'crate'], 2880, 1520, 260, 240, 6),
-        ...S.scatter(['rock', 'bush'], 2000, 2000, 600, 360, 18),
-      ];
-    }
-    // Loose cover isn't part of a building, so a piece that landed in the water
-    // can just be dropped — buildings go through tryPlace() and stay whole.
+
+    // playable ground is the grass interior, not the whole rectangle
+    const playW = MAP_W - Terrain.BEACH_INSET * 2;
+    const playH = MAP_H - Terrain.BEACH_INSET * 2;
+    const area = (playW * playH) / 1e6;                  // in millions of px
+
+    placeBuildingsProcedural(Math.round(area * DENSITY.buildings));
+    placeCover(Math.round(area * DENSITY.cover));
+    placeGrass(Math.round(area * DENSITY.grassPatches));
+    placeProps(Math.round(area * DENSITY.props));
+
+    // Loose cover isn't part of a building, so a piece that landed somewhere it
+    // shouldn't can just be dropped — buildings go through placeBuilding() and
+    // stay whole. Two things disqualify a loose piece: standing in water, or
+    // sitting on an objective. The placers already reject both, but this is the
+    // backstop that makes it true by construction rather than by argument.
+    // loose cover that landed in the water can just be dropped; buildings go
+    // through placeBuilding() and are already verified whole
     obstacles = obstacles.filter(o =>
       o.building || Terrain.isSpawnable(terrain, o.x + o.w / 2, o.y + o.h / 2));
     invalidateRects();
 
-    // scatter beach dressing too, so the shoreline isn't bare
+    // now that the walls exist, put the objectives somewhere clear
+    placeObjectives();
+  }
+
+  /* pick from a [name, weight] list */
+  function rollMix(mix) {
+    const total = mix.reduce((n, m) => n + m[1], 0);
+    let r = Math.random() * total;
+    for (const m of mix) { if ((r -= m[1]) <= 0) return m[0]; }
+    return mix[0][0];
+  }
+  const boundsOf = (parts) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of parts) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x + p.w); y1 = Math.max(y1, p.y + p.h);
+    }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
+  const padOverlap = (a, b, pad) =>
+    a.x - pad < b.x + b.w && a.x + a.w + pad > b.x &&
+    a.y - pad < b.y + b.h && a.y + a.h + pad > b.y;
+
+  /* Place a building only where the terrain allows it, and keep it whole.
+     Filtering segment-by-segment would carve holes in anything straddling the
+     river, so a placement either lands entirely or is rejected. */
+  function placeBuilding(name, x, y) {
+    const parts = Structures.place(name, x, y);
+    if (!parts.length) return [];
+    const bb = boundsOf(parts);
+    if (bb.x < 40 || bb.y < 40 || bb.x + bb.w > MAP_W - 40 || bb.y + bb.h > MAP_H - 40) return [];
+    // Check every segment, not just the bounding box: a river bending through
+    // the middle of a large building passes between the corners unnoticed, and
+    // half a warehouse standing in the water is worse than not placing it.
+    for (const s of parts) {
+      if (!Terrain.isBuildable(terrain, s.x + s.w / 2, s.y + s.h / 2, 8)) return [];
+      if (!Terrain.isBuildable(terrain, s.x, s.y, 4)) return [];
+      if (!Terrain.isBuildable(terrain, s.x + s.w, s.y + s.h, 4)) return [];
+    }
+    return parts;
+  }
+
+  /* Scatter buildings across the island: valid terrain, clear of each other,
+     clear of the objectives, and never sliced by the river. */
+  function placeBuildingsProcedural(count) {
+    const placed = [];
+    const seen = {};
+    let guard = count * 60;
+    while (placed.length < count && guard-- > 0) {
+      // Early on, favour a type that hasn't appeared yet. Pure weighted rolling
+      // leaves a small map with only three or four kinds on it; this guarantees
+      // variety without flattening the weights once every type is represented.
+      const missing = BUILDING_MIX.filter(m => !seen[m[0]]);
+      const name = (missing.length && placed.length < count * 0.7)
+        ? missing[Math.floor(Math.random() * missing.length)][0]
+        : rollMix(BUILDING_MIX);
+      const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+      const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+      const parts = placeBuilding(name, x, y);
+      if (!parts.length) continue;
+      const bb = boundsOf(parts);
+      if (placed.some(b => padOverlap(bb, b, 130))) continue;          // breathing room
+      placed.push(bb);
+      seen[name] = (seen[name] || 0) + 1;
+      const pid = 'p' + placed.length;
+      for (const part of parts) part.placement = pid;
+      obstacles.push(...parts);
+    }
+  }
+
+  /* loose walls, sandbag lines and wire in the gaps between buildings */
+  function placeCover(count) {
+    let guard = count * 40;
+    let made = 0;
+    while (made < count && guard-- > 0) {
+      const type = rollMix(COVER_MIX);
+      const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+      const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+      if (!Terrain.isSpawnable(terrain, x, y)) continue;
+      const len = 3 + Math.random() * 6;
+      const axis = Math.random() < 0.5 ? 'h' : 'v';
+      const th = type === 'metal' ? 0.6 : type === 'wire' ? 0.4 : type === 'sandbag' ? 0.5 : 0.3;
+      const seg = Structures.seg(type, x, y, len, axis, th);
+      // A run is up to 9m long, so test the whole rect, not the origin: it can
+      // otherwise reach off the map edge or into an objective from a valid start.
+      if (seg.x < 20 || seg.y < 20 || seg.x + seg.w > MAP_W - 20 || seg.y + seg.h > MAP_H - 20) continue;
+      if (!Terrain.isSpawnable(terrain, seg.x + seg.w / 2, seg.y + seg.h / 2)) continue;
+      // don't drop a wall on top of a building
+      if (structureRects().some(o => padOverlap(seg, o, 24))) continue;
+      obstacles.push(seg);
+      invalidateRects();
+      made++;
+    }
+  }
+
+  /* grass the ghillie suit hides in */
+  function placeGrass(count) {
+    for (let i = 0; i < count; i++) {
+      const w = 240 + Math.random() * 240, h = 200 + Math.random() * 220;
+      const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET - w);
+      const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET - h);
+      if (!Terrain.isSpawnable(terrain, x + w / 2, y + h / 2)) continue;
+      grass.push({ x, y, w, h });
+    }
+  }
+
+  /* dressing: woodland inland, driftwood and palms along the sand */
+  function placeProps(count) {
+    const inland = ['tree', 'tree', 'bush', 'bush', 'rock', 'stump',
+                    'crate', 'barrel', 'pallet', 'tyre', 'rubble', 'sign', 'cone',
+                    'container', 'antenna', 'tent', 'sandpile'];
+    for (let i = 0; i < count; i++) {
+      const kind = inland[Math.floor(Math.random() * inland.length)];
+      decor.push({
+        kind,
+        x: rand(Terrain.BEACH_INSET - 40, MAP_W - Terrain.BEACH_INSET + 40),
+        y: rand(Terrain.BEACH_INSET - 40, MAP_H - Terrain.BEACH_INSET + 40),
+        rot: Math.random() * Math.PI * 2,
+        scale: 0.75 + Math.random() * 0.5,
+      });
+    }
     decor.push(...beachDecor());
     // keep props on the board and out of walls, water and the road
     const edge = 30;
@@ -188,40 +268,6 @@ const Game = (() => {
       .filter(d => !pointInObstacle(d.x, d.y))
       .filter(d => Terrain.isSpawnable(terrain, d.x, d.y))
       .filter(d => !Terrain.onRoad(terrain, d.x, d.y));
-
-  }
-
-  /* Place a building only where the terrain allows it, and keep it whole.
-     Filtering segment-by-segment would carve holes in anything straddling the
-     river, so a placement either lands entirely or is skipped and nudged. */
-  function placeBuilding(name, x, y) {
-    const parts = Structures.place(name, x, y);
-    if (!parts.length) return [];
-    // bounding box of the whole thing
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const p of parts) {
-      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
-      x1 = Math.max(x1, p.x + p.w); y1 = Math.max(y1, p.y + p.h);
-    }
-    // every corner and the centre must be dry, inland ground
-    const probes = [[x0, y0], [x1, y0], [x0, y1], [x1, y1], [(x0 + x1) / 2, (y0 + y1) / 2]];
-    for (const [px, py] of probes) {
-      if (!Terrain.isBuildable(terrain, px, py, 10)) return [];
-      if (px < 40 || py < 40 || px > MAP_W - 40 || py > MAP_H - 40) return [];
-    }
-    return parts;
-  }
-
-  /* Try a building at its intended spot, then at a few nearby offsets, so a
-     river crossing its footprint moves it rather than deleting it. */
-  function tryPlace(name, x, y) {
-    const offsets = [[0, 0], [220, 0], [-220, 0], [0, 220], [0, -220],
-                     [320, 320], [-320, 320], [320, -320], [-320, -320], [520, 0], [-520, 0]];
-    for (const [ox, oy] of offsets) {
-      const parts = placeBuilding(name, x + ox, y + oy);
-      if (parts.length) return parts;
-    }
-    return [];
   }
 
   /* palms and driftwood along the sand ring */
@@ -304,13 +350,9 @@ const Game = (() => {
           agents.push(a);
         }
       }
-      // objectives A/B/C
-      // placed in the open ground between the buildings so squads fight over the approaches
-      objectives = [
-        { name: 'A', x: 1000, y: 2200, r: 150, owner: -1, progress: 0, capTeam: -1 },
-        { name: 'B', x: 2280, y: 1560, r: 160, owner: -1, progress: 0, capTeam: -1 },
-        { name: 'C', x: 3480, y: 1420, r: 150, owner: -1, progress: 0, capTeam: -1 },
-      ];
+      // objectives sit in the open ground the map generator kept clear
+      objectives = objectiveSpots().map(o =>
+        ({ ...o, owner: -1, progress: 0, capTeam: -1 }));
     } else {
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
@@ -363,7 +405,7 @@ const Game = (() => {
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; flashOverlay = 0;
     zoom = zoomTarget = 1;
     hudMessage = ''; hudMessageT = 0;
-    spawnCrates(mode === 'domination' ? 30 : 20);   // scaled to the board size
+    spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
     // starting tactical kit = whatever your class deploys with
     player.inv = {
       grenade:  { id: null, n: 0 },
@@ -1841,6 +1883,7 @@ const Game = (() => {
     ctx.scale(zoom, zoom);          // binoculars pull the whole world back
     ctx.translate(-camX, -camY);
 
+    updateViewBounds();
     drawIsland();      // ocean, beach, grass, river, bridges, roads
     drawTerrain();     // grass patches the ghillie uses, and dug trenches
 
@@ -1864,7 +1907,7 @@ const Game = (() => {
     drawDecor();
     // every shadow in one pass, then the things that cast them
     drawStructureShadows();
-    for (const o of obstacles) drawStructure(o);
+    for (const o of obstacles) if (rectOnScreen(o)) drawStructure(o);
 
     drawCratesAndDeployables();
     drawDrops();
@@ -2079,6 +2122,7 @@ const Game = (() => {
   function drawTerrain() {
     // grass (ghillie cover)
     for (const g of grass) {
+      if (!rectOnScreen(g)) continue;
       roundRect(g.x, g.y, g.w, g.h, 18);
       ctx.fillStyle = 'rgba(96,214,132,0.16)'; ctx.fill();
       ctx.strokeStyle = 'rgba(110,230,150,0.30)'; ctx.lineWidth = 1; ctx.stroke();
@@ -2098,12 +2142,31 @@ const Game = (() => {
   const SUN = { dx: 0.55, dy: 0.38 };          // direction shadows are thrown
   const SHADOW = 'rgba(0,0,0,0.34)';
 
+  /* ---------------- viewport culling ----------------
+     A domination map carries ~700 wall pieces and ~2000 props. Only a fraction
+     is on screen at any moment, so everything world-space checks the view
+     bounds first — without this the draw cost scales with the map, not the
+     screen. Recomputed once per frame in render(). */
+  let viewX0 = 0, viewY0 = 0, viewX1 = 0, viewY1 = 0;
+  function updateViewBounds() {
+    const vw = W / zoom, vh = H / zoom;
+    const pad = 80;
+    viewX0 = camX - pad; viewY0 = camY - pad;
+    viewX1 = camX + vw + pad; viewY1 = camY + vh + pad;
+  }
+  const onScreen = (x, y, r) =>
+    x + (r || 0) >= viewX0 && x - (r || 0) <= viewX1 &&
+    y + (r || 0) >= viewY0 && y - (r || 0) <= viewY1;
+  const rectOnScreen = (s) =>
+    s.x + s.w >= viewX0 && s.x <= viewX1 && s.y + s.h >= viewY0 && s.y <= viewY1;
+
   /* offset silhouettes of every solid wall, drawn before the walls themselves */
   function drawStructureShadows() {
     ctx.fillStyle = SHADOW;
     for (const s of structureRects()) {
       const k = kindOf(s);
       if (k.height !== 'high' || s.open) continue;         // only tall things cast
+      if (!rectOnScreen(s)) continue;
       const lift = (s.thickness || 0.3) * 26;              // thicker wall, longer shadow
       roundRect(s.x + SUN.dx * lift, s.y + SUN.dy * lift, s.w, s.h, 5);
       ctx.fill();
@@ -2113,6 +2176,7 @@ const Game = (() => {
     for (const s of structureRects()) {
       const k = kindOf(s);
       if (k.height !== 'low' || k.passable) continue;
+      if (!rectOnScreen(s)) continue;
       roundRect(s.x + SUN.dx * 6, s.y + SUN.dy * 6, s.w, s.h, 3);
       ctx.fill();
     }
@@ -2125,6 +2189,7 @@ const Game = (() => {
     for (const d of decor) {
       const m = Sprites.META[d.kind]; if (!m) continue;
       const r = m.r * d.scale;
+      if (!onScreen(d.x, d.y, r + m.shadow)) continue;
       ctx.save();
       ctx.fillStyle = SHADOW;
       ctx.translate(d.x + SUN.dx * m.shadow, d.y + SUN.dy * m.shadow);
@@ -2134,7 +2199,8 @@ const Game = (() => {
     }
     // the props themselves, drawn as vector sprites
     for (const d of decor) {
-      if (!Sprites.has(d.kind)) continue;
+      const m = Sprites.META[d.kind]; if (!m) continue;
+      if (!onScreen(d.x, d.y, m.r * d.scale)) continue;
       Sprites.draw(ctx, d.kind, d.x, d.y, d.scale, d.rot * 0.25);
     }
   }
@@ -2232,6 +2298,7 @@ const Game = (() => {
   function drawCratesAndDeployables() {
     // crates
     for (const c of crates) {
+      if (!onScreen(c.x, c.y, 40)) continue;
       const st = Items.CRATE_STYLE[c.tier];
       ctx.globalAlpha = c.opened ? 0.3 : 1;
       roundRect(c.x - 15, c.y - 15, 30, 30, 6);
