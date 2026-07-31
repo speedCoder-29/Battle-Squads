@@ -76,7 +76,7 @@ const Game = (() => {
       const disc = { x: x - r, y: y - r, w: r * 2, h: r * 2 };
       return !structureRects().some(o => padOverlap(disc, o, 0));
     };
-    objectiveSpotsCache = objectiveAnchors().map(a => {
+    const pick = (a) => {
       if (clearAt(a.x, a.y, a.r)) return a;
       // spiral outward from the anchor for the nearest spot that works
       for (let ring = 1; ring <= 40; ring++) {
@@ -87,9 +87,37 @@ const Game = (() => {
           if (clearAt(x, y, a.r)) return { ...a, x, y };
         }
       }
-      return a;                                  // map is impossibly dense; fall back
+      // A dense map can genuinely have no gap wide enough for a 350px disc.
+      // Rather than dropping the objective into a wall, bulldoze the site:
+      // an objective you can't stand on isn't an objective.
+      return Terrain.isSpawnable(terrain, a.x, a.y)
+        ? a
+        : { ...a, x: clamp(a.x, MAP_W * 0.3, MAP_W * 0.7), y: clamp(a.y, MAP_H * 0.3, MAP_H * 0.7) };
+    };
+    // Pick the best spot, then clear it regardless. Relying on the search alone
+    // left a rare case where an objective sat inside a wall; bulldozing makes it
+    // impossible rather than unlikely.
+    objectiveSpotsCache = objectiveAnchors().map(a => {
+      const spot = pick(a);
+      bulldoze(spot.x, spot.y, spot.r);
+      return spot;
     });
     return objectiveSpotsCache;
+  }
+
+  /* clear every wall out of a disc, dropping whole buildings rather than
+     leaving half of one standing */
+  function bulldoze(x, y, r) {
+    const disc = { x: x - r, y: y - r, w: r * 2, h: r * 2 };
+    const doomed = new Set();
+    for (const o of obstacles) {
+      if (o.placement && padOverlap(disc, o, 0)) doomed.add(o.placement);
+    }
+    obstacles = obstacles.filter(o => {
+      if (o.placement && doomed.has(o.placement)) return false;
+      return !padOverlap(disc, o, 0);
+    });
+    invalidateRects();
   }
 
   /* How much of everything a map gets, per million pixels of playable ground.
@@ -353,6 +381,10 @@ const Game = (() => {
       // objectives sit in the open ground the map generator kept clear
       objectives = objectiveSpots().map(o =>
         ({ ...o, owner: -1, progress: 0, capTeam: -1 }));
+      // Clear the ground under the objectives that actually ship. Doing it here,
+      // on the final list, means no ordering or caching subtlety upstream can
+      // leave a capture point sitting inside a wall.
+      for (const o of objectives) bulldoze(o.x, o.y, o.r);
     } else {
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
@@ -381,7 +413,11 @@ const Game = (() => {
     a.bloom = 0; a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
     a.toolCd = 0; a.toolActive = false; a.swingT = 0;
     a.respawnTimer = 0;
-    resolveObstacles(a);        // never spawn stuck inside a building
+    // One ejection pass can push you out of one wall and straight into another,
+    // so push until you're clear; if the spot is hopeless, clear it.
+    for (let i = 0; i < 6 && pointInObstacle(a.x, a.y); i++) resolveObstacles(a);
+    resolveObstacles(a);
+    if (pointInObstacle(a.x, a.y)) bulldoze(a.x, a.y, a.r + 30);
   }
 
   /* ---------------- start / stop ---------------- */
