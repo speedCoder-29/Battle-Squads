@@ -342,6 +342,41 @@ input, select { font-family: inherit; }
 }
 .net-chip.is-online { color: var(--green); border-color: rgba(75,224,138,0.4); }
 
+/* ---------- party ---------- */
+.party {
+  margin-top: 18px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); padding: 16px 18px;
+}
+.party__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.party__head h3 { font-size: 14px; letter-spacing: 1.5px; text-transform: uppercase; }
+.party__hint { font-size: 11px; color: var(--dim); }
+.party__idle { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.party__joinrow { display: flex; gap: 8px; }
+#party-code-in {
+  width: 96px; padding: 10px 12px; border-radius: 10px; text-align: center;
+  border: 1px solid var(--line-strong); background: rgba(0,0,0,0.28); color: var(--text);
+  font-weight: 800; letter-spacing: 3px; font-size: 15px;
+}
+#party-code-in:focus { outline: none; border-color: var(--accent); }
+.party__code { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.party__code span { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+.party__code b { font-size: 22px; letter-spacing: 5px; color: var(--accent); font-weight: 900; }
+.btn--tiny { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
+.party__list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.party__member {
+  display: flex; align-items: center; gap: 9px; font-size: 13px;
+  background: rgba(0,0,0,0.22); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px;
+}
+.party__member.is-you { border-color: var(--accent-2); }
+.party__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+.party__name { flex: 1; font-weight: 700; }
+.party__tag { font-size: 9px; font-weight: 800; letter-spacing: 1px; color: var(--accent); }
+.party__actions { display: flex; gap: 10px; }
+.party__actions .btn { flex: 1; }
+.party__actions .btn:disabled { opacity: 0.5; cursor: default; }
+.party__error { font-size: 12px; color: var(--danger); margin-top: 10px; min-height: 14px; }
+.party__error:empty { min-height: 0; margin-top: 0; }
+
 /* ---------- shop ---------- */
 .shop-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
 .shop-tab {

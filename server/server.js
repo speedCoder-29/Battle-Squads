@@ -71,15 +71,29 @@ class Room {
 
   get full() { return this.players.size >= ROOM_MAX; }
 
-  join(ws, info) {
+  /* the emptiest team that can seat a whole party together */
+  freeTeam(size) {
+    const counts = [0, 0, 0, 0];
+    for (const p of this.players.values()) counts[p.team]++;
+    let best = 0;
+    for (let t = 1; t < counts.length; t++) if (counts[t] < counts[best]) best = t;
+    return best;
+  }
+
+  join(ws, info, forceTeam) {
     const id = nextId++;
     const weapon = Weapons.byId[info.weapon] || Weapons.byId[Weapons.default];
     const cls = Classes.forWeapon(weapon);
-    // smallest team wins the new player, so squads stay even
-    const counts = {};
-    for (const p of this.players.values()) counts[p.team] = (counts[p.team] || 0) + 1;
-    let team = 0, best = Infinity;
-    for (let t = 0; t < 4; t++) { const c = counts[t] || 0; if (c < best) { best = c; team = t; } }
+    // a party is handed a team so it stays together; otherwise the smallest
+    // team wins the new player, keeping squads even
+    let team = forceTeam;
+    if (team === undefined) {
+      const counts = {};
+      for (const p of this.players.values()) counts[p.team] = (counts[p.team] || 0) + 1;
+      team = 0;
+      let best = Infinity;
+      for (let t = 0; t < 4; t++) { const c = counts[t] || 0; if (c < best) { best = c; team = t; } }
+    }
 
     const spawn = this.spawnPoint(team);
     const p = {
@@ -268,10 +282,68 @@ class Room {
   }
 }
 
+/* ---------- parties ----------
+   A party is a lobby with a short code you can share. Everyone in it queues
+   together and lands on the same team in the same room. Parties live only as
+   long as someone is in them. */
+const parties = new Map();          // code -> party
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no I/O/0/1 to read aloud
+
+function makeCode() {
+  let code;
+  do {
+    code = Array.from({ length: 5 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
+  } while (parties.has(code));
+  return code;
+}
+
+class Party {
+  constructor(leader) {
+    this.code = makeCode();
+    this.members = [leader];        // connections, leader first
+    this.mode = 'domination';
+    this.launching = false;
+  }
+  get leader() { return this.members[0]; }
+  has(conn) { return this.members.includes(conn); }
+  add(conn) { if (!this.has(conn)) this.members.push(conn); }
+  remove(conn) {
+    const i = this.members.indexOf(conn);
+    if (i >= 0) this.members.splice(i, 1);
+  }
+  state() {
+    return {
+      code: this.code, mode: this.mode,
+      leader: this.leader ? this.leader.pname : null,
+      members: this.members.map(c => ({ name: c.pname, ready: !!c.pready, leader: c === this.leader })),
+    };
+  }
+  broadcast(msg) {
+    const raw = JSON.stringify(msg);
+    for (const c of this.members) if (c.readyState === 1) c.send(raw);
+  }
+  sync() { this.broadcast({ t: 'party', ...this.state() }); }
+}
+
+function partyOf(conn) {
+  for (const p of parties.values()) if (p.has(conn)) return p;
+  return null;
+}
+function leaveParty(conn) {
+  const p = partyOf(conn);
+  if (!p) return;
+  p.remove(conn);
+  if (!p.members.length) { parties.delete(p.code); console.log(`[party] ${p.code} closed`); }
+  else p.sync();
+}
+
 /* ---------- matchmaking ---------- */
 const rooms = new Map();
-function findRoom(mode) {
-  for (const r of rooms.values()) if (r.mode === mode && !r.full && !r.over) return r;
+function findRoom(mode, needSeats) {
+  const seats = needSeats || 1;
+  for (const r of rooms.values()) {
+    if (r.mode === mode && !r.over && r.players.size + seats <= ROOM_MAX) return r;
+  }
   const r = new Room('room-' + (rooms.size + 1), mode);
   rooms.set(r.id, r);
   console.log(`[room] created ${r.id} (${mode})`);
@@ -296,6 +368,54 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
+
+    /* ---- party lobby ---- */
+    if (msg.t === 'party') {
+      ws.pname = (msg.name || 'Operator').slice(0, 16);
+      ws.pinfo = msg;                                // remembered for the launch
+      const existing = partyOf(ws);
+
+      if (msg.do === 'create') {
+        leaveParty(ws);
+        const p = new Party(ws);
+        parties.set(p.code, p);
+        console.log(`[party] ${p.code} created by ${ws.pname}`);
+        p.sync();
+      } else if (msg.do === 'join') {
+        const code = String(msg.code || '').toUpperCase().trim();
+        const p = parties.get(code);
+        if (!p) return ws.send(JSON.stringify({ t: 'partyError', error: 'No party with that code.' }));
+        if (p.members.length >= 4) return ws.send(JSON.stringify({ t: 'partyError', error: 'That party is full.' }));
+        if (p.launching) return ws.send(JSON.stringify({ t: 'partyError', error: 'That party is already deploying.' }));
+        leaveParty(ws);
+        p.add(ws);
+        console.log(`[party] ${ws.pname} joined ${p.code} (${p.members.length})`);
+        p.sync();
+      } else if (msg.do === 'leave') {
+        leaveParty(ws);
+        ws.send(JSON.stringify({ t: 'party', code: null, members: [] }));
+      } else if (msg.do === 'ready' && existing) {
+        ws.pready = !!msg.ready;
+        existing.sync();
+      } else if (msg.do === 'mode' && existing && existing.leader === ws) {
+        existing.mode = msg.mode === 'elimination' ? 'elimination' : 'domination';
+        existing.sync();
+      } else if (msg.do === 'start' && existing && existing.leader === ws) {
+        // the whole party drops into one room, on one team
+        existing.launching = true;
+        const squad = existing.members.slice();
+        const r = findRoom(existing.mode, squad.length);
+        const team = r.freeTeam(squad.length);
+        for (const c of squad) {
+          const info = { ...(c.pinfo || {}), mode: existing.mode, name: c.pname };
+          const p = r.join(c, info, team);
+          c.send(JSON.stringify({ t: 'partyLaunch', room: r.id, mode: existing.mode }));
+          console.log(`[join] ${p.name} -> ${r.id} (party ${existing.code}, team ${p.team})`);
+        }
+        parties.delete(existing.code);
+      }
+      return;
+    }
 
     if (msg.t === 'join' && !me) {
       room = findRoom(msg.mode);
@@ -324,6 +444,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    leaveParty(ws);
     if (room && me) {
       console.log(`[left] ${me.name} from ${room.id}`);
       room.leave(me.id);

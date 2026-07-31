@@ -274,11 +274,29 @@ const Game = (() => {
 
   /* dressing: woodland inland, driftwood and palms along the sand */
   function placeProps(count) {
-    const inland = ['tree', 'tree', 'bush', 'bush', 'rock', 'stump',
-                    'crate', 'barrel', 'pallet', 'tyre', 'rubble', 'sign', 'cone',
-                    'container', 'antenna', 'tent', 'sandpile'];
-    for (let i = 0; i < count; i++) {
-      const kind = inland[Math.floor(Math.random() * inland.length)];
+    // Interactive props (crates, barrels, trees, rocks, containers, bushes) are
+    // real obstacles you can shoot, break and hide behind. The rest — pallets,
+    // tyres, cones, signs, rubble, stumps — stay pure dressing.
+    const live = ['tree', 'tree', 'bush', 'bush', 'rock', 'crate', 'crate', 'barrel', 'container'];
+    const dressing = ['stump', 'pallet', 'tyre', 'rubble', 'sign', 'cone', 'antenna', 'tent', 'sandpile'];
+
+    const liveCount = Math.round(count * 0.45);
+    for (let i = 0; i < liveCount; i++) {
+      const type = live[Math.floor(Math.random() * live.length)];
+      const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+      const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+      if (!Terrain.isSpawnable(terrain, x, y)) continue;
+      if (Terrain.onRoad(terrain, x, y)) continue;
+      const scale = 0.8 + Math.random() * 0.45;
+      const size = type === 'tree' ? 46 : type === 'container' ? 54 : type === 'bush' ? 40 : 32;
+      const pr = Structures.prop(type, x, y, size, scale);
+      if (structureRects().some(o => padOverlap(pr, o, 12))) continue;
+      obstacles.push(pr);
+      invalidateRects();
+    }
+
+    for (let i = 0; i < count - liveCount; i++) {
+      const kind = dressing[Math.floor(Math.random() * dressing.length)];
       decor.push({
         kind,
         x: rand(Terrain.BEACH_INSET - 40, MAP_W - Terrain.BEACH_INSET + 40),
@@ -438,9 +456,10 @@ const Game = (() => {
     buildMap();
     setupTeams();
     bullets = []; fx = []; dmgNums = [];
-    grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; flashOverlay = 0;
+    grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     zoom = zoomTarget = 1;
     hudMessage = ''; hudMessageT = 0;
+    online = null;
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
     // starting tactical kit = whatever your class deploys with
     player.inv = {
@@ -917,10 +936,76 @@ const Game = (() => {
     if (s.hp <= 0) destroyStructure(s);
   }
   function destroyStructure(s) {
-    spawnFx(s.x + s.w / 2, s.y + s.h / 2, '#8ea0c9', 14);
+    const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+    const k = kindOf(s);
+    spawnFx(cx, cy, k.stroke && k.stroke[0] === '#' ? k.stroke : '#8ea0c9', s.isProp ? 18 : 14);
     invalidateRects();
     if (s.dp) { const i = deployables.indexOf(s.dp); if (i >= 0) deployables.splice(i, 1); return; }
     const i = obstacles.indexOf(s); if (i >= 0) obstacles.splice(i, 1);
+
+    // survev-style props do something on the way out
+    if (k.drops) spillLoot(cx, cy, k.drops);
+    if (k.explodes) cookOff(s, cx, cy, k.explodes);
+  }
+
+  /* a broken crate scatters what a crate of that tier would have held */
+  function spillLoot(x, y, tier) {
+    const n = 1 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < n; i++) {
+      const entry = Items.rollLoot(tier);
+      let id = entry.id;
+      if (id === 'classConsumable') id = Items.classConsumableFor(player.cls.name);
+      if (id === 'ammo' || id === 'legendary' || id === 'jeep' || id === 'tank' ||
+          id.startsWith('armor')) id = 'bandage';        // ground drops are consumables only
+      const it = Items.CONSUMABLES[id];
+      if (it) dropItem(it.cat, id, 1, { x, y });
+    }
+    SFX.reward();
+  }
+
+  /* a barrel cooks off, and the blast sets off any barrel next to it */
+  function cookOff(source, x, y, conf) {
+    if (source.cooking) return;
+    source.cooking = true;
+
+    // Claim the neighbours *before* the blast goes off. The explosion itself
+    // destroys nearby barrels, so gathering them afterwards found nothing and
+    // they vanished silently instead of chaining.
+    for (const o of structureRects()) {
+      if (o === source || o.cooking) continue;
+      const ok = kindOf(o);
+      if (!ok.explodes) continue;
+      const ox = o.x + o.w / 2, oy = o.y + o.h / 2;
+      if (dist2(ox, oy, x, y) > conf.radius * conf.radius) continue;
+      o.cooking = true;                       // stops destroyStructure double-firing it
+      chainQueue.push({ s: o, x: ox, y: oy, conf: ok.explodes, t: 0.12 + Math.random() * 0.18 });
+    }
+
+    explode(x, y, conf.damage, conf.radius, -1, source.lastAttacker || null, 'explosive');
+  }
+  let chainQueue = [];
+  function updateChains(dt) {
+    for (let i = chainQueue.length - 1; i >= 0; i--) {
+      const c = chainQueue[i];
+      c.t -= dt;
+      if (c.t > 0) continue;
+      chainQueue.splice(i, 1);
+      const idx = obstacles.indexOf(c.s);
+      if (idx >= 0) { obstacles.splice(idx, 1); invalidateRects(); }
+      c.s.cooking = false;                 // let destroyStructure's guard pass
+      c.s.cooking = true;
+      explode(c.x, c.y, c.conf.damage, c.conf.radius, -1, null, 'explosive');
+      spawnFx(c.x, c.y, '#ff9d3b', 18);
+    }
+  }
+
+  /* Bushes hide you the way the ghillie suit does, but for anyone: stand still
+     inside one and bots lose you. */
+  function inConcealment(a) {
+    if (a.stillT === undefined || a.stillT < 0.35) return false;
+    const arr = gridAt(bulletIndex(), a.x, a.y);
+    if (!arr) return false;
+    return arr.some(o => kindOf(o).conceals && inRect(a.x, a.y, o));
   }
 
   /* Engineer: hammer up a wall section where you're facing. */
@@ -1264,7 +1349,8 @@ const Game = (() => {
   }
   // a ghillied target sitting still in grass simply isn't there as far as bots are concerned
   const botCanSee = (a, b) =>
-    !camouflaged(b) && hasLOS(a.x, a.y, b.x, b.y) && !smokeBlocks(a.x, a.y, b.x, b.y);
+    !camouflaged(b) && !inConcealment(b) &&
+    hasLOS(a.x, a.y, b.x, b.y) && !smokeBlocks(a.x, a.y, b.x, b.y);
 
   /* ---------------- collision helpers ---------------- */
   function resolveObstacles(a) {
@@ -1592,6 +1678,7 @@ const Game = (() => {
       if (a.swingT > 0) a.swingT -= dt;
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
       a.wireSlow = (a.alive && !a.isVehicle) ? wireAt(a, dt) : 1;
+      if (!a.isPlayer) a.stillT = Math.hypot(a.vx || 0, a.vy || 0) < 12 ? (a.stillT || 0) + dt : 0;
       if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { a.ammo = a.weapon.mag; if (a.isPlayer) updateWeaponHud(); } }
       // drive an in-progress burst
       if (a.burstLeft > 0) {
@@ -1656,6 +1743,7 @@ const Game = (() => {
     updateSquadIntel(dt);
     updateGrenades(dt);
     updateDrops(dt);
+    updateChains(dt);
     updateAirstrikes(dt);
     updateDeployables(dt);
     updateSmokes(dt);
@@ -1670,7 +1758,8 @@ const Game = (() => {
     camX = clamp(focus.x - vw / 2, 0, Math.max(0, MAP_W - vw));
     camY = clamp(focus.y - vh / 2, 0, Math.max(0, MAP_H - vh));
 
-    checkWinConditions();
+    onlineTick(dt);
+    if (!online) checkWinConditions();
     updateHud();
   }
 
@@ -1696,7 +1785,10 @@ const Game = (() => {
 
     // a round only chews the wall if its damage type out-ranks the toughness
     const src = { kind: b.dmgType === 'heat' ? 'heat' : b.splash ? 'explosive' : 'bullet', ap: b.dmgType === 'ap' };
-    if (!b.splash && Combat.canDamageStructure(wall, src)) damageStructure(wall, b.dmg, b.x, b.y);
+    if (!b.splash && Combat.canDamageStructure(wall, src)) {
+      wall.lastAttacker = b.owner;
+      damageStructure(wall, b.dmg, b.x, b.y);
+    }
 
     if (bal.mode === 'stop') { if (!b.splash) spawnFx(b.x, b.y, '#8ea0c9', 3); return true; }
 
@@ -2036,6 +2128,7 @@ const Game = (() => {
       ctx.fillText('▼', a.x, a.y - a.r - 24);
     }
 
+    drawRemotePlayers();  // server-owned players in an online match
     drawVisionTools();   // heat / night vision markers sit over the units
 
     // damage numbers
@@ -2253,6 +2346,26 @@ const Game = (() => {
 
   function drawStructure(s) {
     const k = kindOf(s);
+
+    // world props draw as their sprite, with damage shown by shrinking and
+    // reddening rather than a bar across a crate
+    if (s.isProp) {
+      const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+      const hurt = s.maxHp ? clamp(1 - s.hp / s.maxHp, 0, 1) : 0;
+      ctx.save();
+      if (hurt > 0.02) ctx.globalAlpha = 1 - hurt * 0.35;
+      Sprites.draw(ctx, k.prop, cx, cy, (s.scale || 1) * (1 - hurt * 0.12), s.rot * 0.25);
+      ctx.restore();
+      if (hurt > 0.35) {                       // cracks show before it goes
+        ctx.strokeStyle = `rgba(255,90,70,${hurt * 0.7})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx - s.w * 0.25, cy - s.h * 0.2);
+        ctx.lineTo(cx + s.w * 0.15, cy + s.h * 0.25);
+        ctx.stroke();
+      }
+      return;
+    }
     const dmg = s.maxHp ? clamp(1 - s.hp / s.maxHp, 0, 1) : 0;
     const along = s.w >= s.h;
 
@@ -2644,5 +2757,130 @@ const Game = (() => {
     requestAnimationFrame(loop);
   }
 
-  return { start, setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination };
+  /* ================= ONLINE MATCH =================
+     The server owns the world here. We keep our own map (both sides generate
+     from the same seed), send inputs at a fixed rate, and draw the agents the
+     server tells us about, interpolated ~100ms behind so movement is smooth
+     between the 20 snapshots a second. Local simulation of other players is
+     off entirely — no prediction of anyone but ourselves. */
+  let online = null;
+
+  function startOnline(socket, selectedMode) {
+    start(selectedMode);                    // build the world and HUD as usual
+    agents = agents.filter(a => a.isPlayer); // the server supplies everyone else
+    online = {
+      socket,
+      transport: new Net.SocketTransport(Net.serverUrl()),
+      id: null, roster: [], lastSend: 0, ping: 0, lastPingAt: 0,
+      remote: [],
+    };
+    online.transport.ws = socket;
+    online.transport.connected = true;
+    socket.onmessage = (ev) => onlineMessage(ev.data);
+    socket.onclose = () => {
+      if (!online) return;
+      hudMsg('Disconnected — finishing offline');
+      online = null;
+    };
+    hudMsg('Online match — squad up');
+  }
+
+  function onlineMessage(raw) {
+    if (!online) return;
+    let msg;
+    try { msg = JSON.parse(raw); } catch (e) { return; }
+    if (msg.t === 'welcome') {
+      online.id = msg.id;
+      online.roster = msg.roster || [];
+      if (player) player.team = msg.team;
+    } else if (msg.t === 'snapshot') {
+      online.transport.snapshots.push({ at: performance.now(), data: msg });
+      while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
+      timeLeft = msg.timeLeft;
+      for (const e of msg.events || []) {
+        if (e.e === 'kill') hudMsg(`${e.by} eliminated ${e.victim}${e.zone === 'head' ? ' (headshot)' : ''}`);
+        else if (e.e === 'join') hudMsg(`${e.name} joined`);
+        else if (e.e === 'leave') hudMsg(`${e.name} left`);
+      }
+    } else if (msg.t === 'pong') {
+      online.ping = Math.round(performance.now() - msg.c);
+    } else if (msg.t === 'end') {
+      const mine = (msg.scores || {})[player.team] || 0;
+      const best = Math.max(0, ...Object.values(msg.scores || {}));
+      online = null;
+      endMatch(mine >= best);
+    }
+  }
+
+  /* push our intent to the server, and pull the interpolated world back */
+  function onlineTick(dt) {
+    if (!online) return;
+    const t = performance.now();
+
+    if (t - online.lastSend > 1000 / Net.SEND_RATE) {
+      online.lastSend = t;
+      const i = input;
+      online.transport.send('input', {
+        up: i.up, down: i.down, left: i.left, right: i.right,
+        shooting: i.shooting, ads: i.ads, angle: player.angle,
+        fire: i.fireEdge,
+      });
+    }
+    if (t - online.lastPingAt > 2000) {
+      online.lastPingAt = t;
+      online.transport.send('ping', { c: t });
+    }
+
+    // rebuild the visible roster from the two snapshots straddling render time
+    const pair = online.transport.interpolated();
+    if (!pair) return;
+    const lerped = Net.lerpAgents(pair.a, pair.b, pair.t);
+    online.remote = lerped.filter(a => a.id !== online.id);
+
+    // our own agent is authoritative on the server too: take its HP and ammo,
+    // but keep our locally-predicted position so aiming stays responsive
+    const mine = lerped.find(a => a.id === online.id);
+    if (mine && player) {
+      player.hp = mine.hp;
+      player.alive = mine.alive;
+      player.ammo = mine.ammo;
+      player.adrenaline = mine.adrenaline;
+      player.vest = mine.vest; player.helmet = mine.helmet;
+      // if we've drifted far from the server, snap back
+      if (dist2(player.x, player.y, mine.x, mine.y) > 140 * 140) {
+        player.x = mine.x; player.y = mine.y;
+      }
+    }
+  }
+
+  /* remote players, drawn from the server's snapshot */
+  function drawRemotePlayers() {
+    if (!online) return;
+    for (const a of online.remote) {
+      if (!a.alive || !onScreen(a.x, a.y, 40)) continue;
+      const col = TEAM_COLORS[a.team % TEAM_COLORS.length];
+      drawUnitShadow(a.x, a.y, 16);
+      ctx.strokeStyle = '#e9f0ff'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(a.x, a.y);
+      ctx.lineTo(a.x + Math.cos(a.angle) * 28, a.y + Math.sin(a.angle) * 28); ctx.stroke();
+      ctx.beginPath(); ctx.arc(a.x, a.y, 16, 0, Math.PI * 2);
+      ctx.fillStyle = col; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.stroke();
+      const hpw = 34;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - 28, hpw, 5);
+      ctx.fillStyle = a.hp > 50 ? '#4be08a' : a.hp > 25 ? '#ffcf4a' : '#ff4b5c';
+      ctx.fillRect(a.x - hpw / 2, a.y - 28, hpw * clamp(a.hp / 100, 0, 1), 5);
+      // name tag, so you can tell your squad apart
+      ctx.fillStyle = a.team === player.team ? '#9fe8b4' : '#ffd0d4';
+      ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center';
+      ctx.fillText(a.name || '', a.x, a.y - 34);
+    }
+  }
+
+  const isOnline = () => !!online;
+
+  return {
+    start, startOnline, isOnline,
+    setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
+  };
 })();

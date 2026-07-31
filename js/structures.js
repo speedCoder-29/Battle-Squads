@@ -86,7 +86,52 @@ const Structures = (() => {
       fill: 'rgba(132,100,62,0.55)', stroke: 'rgba(205,168,116,0.75)',
       effect: 'Infantry inside dodge 50% of incoming fire',
     },
+
+    /* ---------- PROPS ----------
+       survev's world objects aren't scenery: crates break open and spill
+       loot, barrels cook off and chain, trees block your shot, bushes hide
+       you. These are wall types like any other, so they inherit HP,
+       toughness, the spatial index and tool breaching for free — the extras
+       are `drops`, `explodes` and `conceals`, handled in game.js. */
+    crate: {
+      name: 'Crate', height: 'low', hp: 90, toughness: 1, prop: 'crate',
+      bullets: 'stop', drops: 'regular',
+      fill: '#8a6234', stroke: '#5e4222',
+      effect: 'Breaks open and spills loot',
+    },
+    barrel: {
+      name: 'Barrel', height: 'low', hp: 70, toughness: 1, prop: 'barrel',
+      bullets: 'stop', explodes: { damage: 85, radius: 165 },
+      fill: '#a2542e', stroke: '#6f3719',
+      effect: 'Cooks off when destroyed — and sets off its neighbours',
+    },
+    tree: {
+      name: 'Tree', height: 'high', hp: 160, toughness: 2, prop: 'tree',
+      bullets: 'stop', round: true, drops: null,
+      fill: '#4a8f3c', stroke: '#33682a',
+      effect: 'Blocks sight and gunfire until it comes down',
+    },
+    rock: {
+      name: 'Boulder', height: 'low', hp: 400, toughness: 4, prop: 'rock',
+      bullets: 'stop', round: true,
+      fill: '#8792a5', stroke: '#5d6675',
+      effect: 'Hard cover — takes HEAT or a hammer',
+    },
+    container: {
+      name: 'Container', height: 'high', hp: 500, toughness: 4, prop: 'container',
+      bullets: 'reflect',
+      fill: '#3f7ea8', stroke: '#28536f',
+      effect: 'Steel box: bullets ricochet off it',
+    },
+    bush: {
+      name: 'Bush', height: 'low', hp: 40, toughness: 1, prop: 'bush',
+      bullets: 'through', passable: true, conceals: true, round: true,
+      fill: 'rgba(74,143,60,0.35)', stroke: 'rgba(51,104,42,0.6)',
+      effect: 'Hides anyone standing still inside it',
+    },
   };
+  /* wall types that are really world props, drawn with a sprite */
+  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush'];
 
   /* ---------- derived stats ---------- */
   const def = (type) => WALL_TYPES[type] || WALL_TYPES.wood;
@@ -132,6 +177,21 @@ const Structures = (() => {
     s.maxHp = maxHp(type, th); s.hp = s.maxHp;
     s.toughness = toughness(type, th);
     if (d.door) s.open = false;
+    return s;
+  }
+
+  /* Build a prop as a square wall segment centred on (x, y). Props are square,
+     so `seg`'s run-length model doesn't fit them. */
+  function prop(type, x, y, size, scale) {
+    const d = def(type);
+    const half = (size || 34) * (scale || 1) / 2;
+    const s = { x: x - half, y: y - half, w: half * 2, h: half * 2 };
+    s.type = type; s.thickness = 0.4; s.axis = 'h';
+    s.maxHp = maxHp(type, 0.4); s.hp = s.maxHp;
+    s.toughness = toughness(type, 0.4);
+    s.isProp = true;
+    s.scale = scale || 1;
+    s.rot = Math.random() * Math.PI * 2;
     return s;
   }
 
@@ -393,7 +453,7 @@ const Structures = (() => {
   }
 
   return {
-    WALL_TYPES, BUILDINGS, scatter, PX_PER_M, HP_SCALE,
+    WALL_TYPES, PROP_TYPES, BUILDINGS, scatter, prop, PX_PER_M, HP_SCALE,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
     /* place a named building and tag every piece with it */
     place(name, ox, oy) {

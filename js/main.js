@@ -34,6 +34,7 @@
   Auth.init();
   Screens.init();
   Matchmaking.init();
+  Party.init();
 
   // ----- restore session -----
   const session = DB.getSession();

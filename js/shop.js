@@ -42,6 +42,50 @@ const Shop = (() => {
     { id: 'ut-rename',  cat: 'utility', name: 'Callsign Change',      icon: '📝', price: 10,   cur: 'gems',
       desc: 'Rename your operator from the settings panel.', repeatable: true,
       apply: (p) => { p.renameTokens = (p.renameTokens || 0) + 1; } },
+    { id: 'ut-preset3', cat: 'utility', name: 'Third Loadout Slot',   icon: '🎒', price: 3000, cur: 'credits',
+      desc: 'One more saved loadout to swap between.',
+      apply: (p) => { p.presetSlots = (p.presetSlots || 1) + 1; } },
+    { id: 'ut-credits', cat: 'utility', name: 'Credit Bundle',        icon: '🪙', price: 30,   cur: 'gems',
+      desc: 'Trade squad coins for 4000 credits.', repeatable: true,
+      apply: (p) => { p.credits += 4000; } },
+
+    /* --- more avatars --- */
+    { id: 'av-shark',   cat: 'avatar', name: 'Shark',       icon: '🦈', price: 600,  cur: 'credits' },
+    { id: 'av-ghost',   cat: 'avatar', name: 'Ghost',       icon: '👻', price: 600,  cur: 'credits' },
+    { id: 'av-robot',   cat: 'avatar', name: 'Unit-7',      icon: '🤖', price: 900,  cur: 'credits' },
+    { id: 'av-ninja',   cat: 'avatar', name: 'Shadow',      icon: '🥷', price: 900,  cur: 'credits' },
+    { id: 'av-lion',    cat: 'avatar', name: 'Lion',        icon: '🦁', price: 1500, cur: 'credits' },
+    { id: 'av-phoenix', cat: 'avatar', name: 'Phoenix',     icon: '🔥', price: 1800, cur: 'credits' },
+    { id: 'av-octo',    cat: 'avatar', name: 'Kraken',      icon: '🐙', price: 35,   cur: 'gems' },
+    { id: 'av-star',    cat: 'avatar', name: 'Nova',        icon: '🌟', price: 40,   cur: 'gems' },
+
+    /* --- more name tags --- */
+    { id: 'nc-steel',   cat: 'nametag', name: 'Steel Tag',   icon: '⚙️', price: 700,  cur: 'credits', color: '#b6c6ea' },
+    { id: 'nc-sand',    cat: 'nametag', name: 'Desert Tag',  icon: '🏜️', price: 700,  cur: 'credits', color: '#d9b878' },
+    { id: 'nc-void',    cat: 'nametag', name: 'Void Tag',    icon: '🌑', price: 1400, cur: 'credits', color: '#8a6aff' },
+    { id: 'nc-gold',    cat: 'nametag', name: 'Gilded Tag',  icon: '👑', price: 25,   cur: 'gems',    color: '#ffcf4a' },
+
+    /* --- more tracers --- */
+    { id: 'tr-emerald', cat: 'tracer', name: 'Emerald Rounds', icon: '💚', price: 900,  cur: 'credits', color: '#4be08a' },
+    { id: 'tr-violet',  cat: 'tracer', name: 'Violet Rounds',  icon: '💜', price: 900,  cur: 'credits', color: '#c46bff' },
+    { id: 'tr-frost',   cat: 'tracer', name: 'Frost Rounds',   icon: '🧊', price: 1200, cur: 'credits', color: '#9fd8ff' },
+    { id: 'tr-void',    cat: 'tracer', name: 'Void Rounds',    icon: '🕳️', price: 30,   cur: 'gems',    color: '#7a5cff' },
+
+    /* --- emotes: a quick signal to your squad, bound to 1-4 --- */
+    { id: 'em-thumbs',  cat: 'emote', name: 'Thumbs Up',   icon: '👍', price: 200, cur: 'credits' },
+    { id: 'em-help',    cat: 'emote', name: 'Need Help',   icon: '🆘', price: 200, cur: 'credits' },
+    { id: 'em-here',    cat: 'emote', name: 'Rally Here',  icon: '📍', price: 400, cur: 'credits' },
+    { id: 'em-enemy',   cat: 'emote', name: 'Enemy Spotted', icon: '⚠️', price: 400, cur: 'credits' },
+    { id: 'em-gg',      cat: 'emote', name: 'Good Game',   icon: '🤝', price: 600, cur: 'credits' },
+    { id: 'em-laugh',   cat: 'emote', name: 'Laugh',       icon: '😂', price: 800, cur: 'credits' },
+    { id: 'em-salute',  cat: 'emote', name: 'Salute',      icon: '🫡', price: 20,  cur: 'gems' },
+
+    /* --- squad banners: shown on your party card --- */
+    { id: 'bn-wolves',  cat: 'banner', name: 'Wolfpack',    icon: '🐺', price: 1000, cur: 'credits', color: '#8ea0c9' },
+    { id: 'bn-vipers',  cat: 'banner', name: 'Vipers',      icon: '🐍', price: 1000, cur: 'credits', color: '#4be08a' },
+    { id: 'bn-reapers', cat: 'banner', name: 'Reapers',     icon: '⚰️', price: 1600, cur: 'credits', color: '#c46bff' },
+    { id: 'bn-titans',  cat: 'banner', name: 'Titans',      icon: '🛡️', price: 2200, cur: 'credits', color: '#ffcf4a' },
+    { id: 'bn-storm',   cat: 'banner', name: 'Stormbreak',  icon: '⚡', price: 35,   cur: 'gems',    color: '#35e0ff' },
   ];
 
   const CATEGORIES = [
@@ -49,6 +93,8 @@ const Shop = (() => {
     { id: 'avatar',  name: 'Avatars',      icon: '🙂' },
     { id: 'nametag', name: 'Name Tags',    icon: '🏷️' },
     { id: 'tracer',  name: 'Tracers',      icon: '💫' },
+    { id: 'emote',   name: 'Emotes',       icon: '😀' },
+    { id: 'banner',  name: 'Squad Banners',icon: '🚩' },
     { id: 'utility', name: 'Utility',      icon: '🧰' },
   ];
 

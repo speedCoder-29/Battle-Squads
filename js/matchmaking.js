@@ -84,9 +84,19 @@ const Matchmaking = (() => {
     }, 800);
   }
 
+  /* A party has been launched by its leader: skip the fake queue and drop
+     straight into the server's room, sharing the socket the lobby opened. */
+  function startNetworked(socket, mode) {
+    const overlay = document.getElementById('overlay-found');
+    if (overlay) overlay.classList.remove('is-open');
+    cancelQueue();
+    Toast.show('Squad deploying…');
+    Game.startOnline(socket, mode);
+  }
+
   function init() {
     btn().addEventListener('click', startQueue);
   }
 
-  return { init };
+  return { init, startNetworked };
 })();

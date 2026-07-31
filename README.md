@@ -76,6 +76,7 @@ battle-squads/
 │   ├── shop.js         # what coins buy: skins, avatars, tags, tracers, utility
 │   ├── botai.js        # 10 bot difficulty levels (aim / survival / teamwork)
 │   ├── net.js          # multiplayer client: transports + snapshot interpolation
+│   ├── party.js        # party lobby: invite codes, roster, deploy together
 │   ├── classes.js      # 10 classes: base speed, tool, consumable + carry limit
 │   ├── structures.js   # wall types + 13 building blueprints
 │   ├── terrain.js      # seeded island: ocean, beach, grass, river, bridges, roads
@@ -144,6 +145,24 @@ Melee tools have **damage, reach, structure damage, pierce and a cooldown**
 ([js/classes.js](js/classes.js)). Swing a hammer or spade at open ground and you **build**
 or **dig in** instead of striking.
 
+## Parties
+
+Squad up and play with people you know. **Create Party** on the Play screen gives
+you a five-character code; anyone who enters it — or opens your invite link —
+joins your lobby, and when the leader hits **Deploy Squad** everyone lands in the
+same room, on the same team.
+
+- Up to four to a party, leader shown, roster live for everyone.
+- The leader picks the mode and is the only one who can deploy.
+- **Copy link** produces `…/?party=CODE&server=…`, and opening that link joins
+  straight away.
+- Bad codes, full parties and disconnects are all handled: dropping out removes
+  you from the roster, and an empty party is cleaned up.
+
+Parties are a server-side concept — two people on different machines have to meet
+somewhere — so the panel needs the multiplayer server running. Without one it
+says so rather than pretending.
+
 ## Multiplayer
 
 There is a real authoritative server in [`server/`](server/). Clients send inputs;
@@ -166,6 +185,12 @@ cd server && npm install && npm start      # :8080
 
 With no server configured the game is exactly what it was: single-player vs bots.
 The home screen shows which mode you're in.
+
+The client plays a real networked match: it sends inputs at 30/s, renders the
+server's snapshot 100ms behind with interpolation between the two that straddle
+that moment, and draws remote players with their name and team colour. Your own
+HP, ammo and adrenaline come from the server; your position stays locally
+predicted so aiming is responsive, snapping back if it drifts too far.
 
 Movement, shooting, damage and deaths are authoritative — a modified client can't
 teleport or claim kills. Not yet moved server-side: the tactical layer (grenades,
@@ -297,8 +322,8 @@ passing through cover (see the wall table below). It does nothing against armour
 
 ## Shop & skins
 
-The **Shop** tab spends what you earn. Nothing in it changes a combat stat —
-there's a test asserting that.
+The **Shop** tab spends what you earn — over 40 items across seven categories.
+Nothing in it changes a combat stat; there's a test asserting that.
 
 | Category | What's in it |
 |---|---|
@@ -306,7 +331,9 @@ there's a test asserting that.
 | Avatars | Profile icons, credits or squad coins. |
 | Name Tags | Coloured callsign in the HUD and scoreboard. |
 | Tracers | Bullet trail colours, independent of your skin. |
-| Utility | A second loadout preset slot, XP boosts, callsign changes. |
+| Emotes | Quick squad signals — rally here, enemy spotted, good game. |
+| Squad Banners | Shown on your party card. |
+| Utility | Loadout preset slots, XP boosts, callsign changes, credit bundles. |
 
 Skins are also equippable from the gunsmith panel in the Loadout screen, which
 previews the paint on the weapon and shows live stat deltas for attachments and
@@ -436,6 +463,26 @@ piles, shipping containers, stumps.
 > rather than a technical one. The style is matched; the pixels are drawn here,
 > which also keeps the game a zero-asset static site that renders identically
 > everywhere.
+
+## Obstacles you can fight with
+
+Props aren't scenery — following survev, the things lying around the map are
+objects you shoot, break and hide behind. They're wall types like any other, so
+they inherit HP, toughness, the spatial index and tool breaching for free.
+
+| Prop | HP / Toughness | What it does |
+|---|---|---|
+| **Crate** | 90 / T1 | Breaks open and spills loot on the ground |
+| **Barrel** | 70 / T1 | Cooks off for 85 damage — and sets off any barrel near it, a beat later |
+| **Tree** | 160 / T2 | Blocks sight and gunfire until you bring it down |
+| **Boulder** | 400 / T4 | Hard cover; needs HEAT or the Stone Hammer |
+| **Container** | 500 / T4 | Steel: bullets ricochet off it |
+| **Bush** | 40 / T1 | Passable, and hides anyone standing still inside it |
+
+Bushes work like the Ghillie Suit but for everyone: stand still in one and bots
+lose track of you. Barrel chains are staggered rather than simultaneous, so a
+fuel depot goes up pop-pop-pop. Whoever shot a barrel gets credit for what it
+kills.
 
 ## Shadows & decor
 

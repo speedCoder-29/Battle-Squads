@@ -162,6 +162,34 @@
             <span class="btn--play__timer" id="queue-timer"></span>
           </button>
         </div>
+
+        <!-- ===== PARTY ===== -->
+        <div class="party" id="party">
+          <div class="party__head">
+            <h3>Squad</h3>
+            <span class="party__hint" id="party-hint">Play with friends online</span>
+          </div>
+          <div class="party__idle" id="party-idle">
+            <button class="btn btn--ghost" id="btn-party-create">Create Party</button>
+            <div class="party__joinrow">
+              <input id="party-code-in" maxlength="5" placeholder="CODE" autocomplete="off" />
+              <button class="btn btn--ghost" id="btn-party-join">Join</button>
+            </div>
+          </div>
+          <div class="party__active" id="party-active" hidden>
+            <div class="party__code">
+              <span>Invite code</span>
+              <b id="party-code">-----</b>
+              <button class="btn btn--ghost btn--tiny" id="btn-party-copy">Copy link</button>
+            </div>
+            <ul class="party__list" id="party-list"></ul>
+            <div class="party__actions">
+              <button class="btn btn--primary" id="btn-party-start">Deploy Squad</button>
+              <button class="btn btn--ghost" id="btn-party-leave">Leave</button>
+            </div>
+          </div>
+          <p class="party__error" id="party-error"></p>
+        </div>
       </div>
 
       <!-- RIGHT: daily missions preview -->
@@ -353,6 +381,7 @@
   <script src="js/skins.js"></script>
   <script src="js/shop.js"></script>
   <script src="js/net.js"></script>
+  <script src="js/party.js"></script>
   <script src="js/botai.js"></script>
   <script src="js/combat.js"></script>
   <script src="js/classes.js"></script>
