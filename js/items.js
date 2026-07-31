@@ -48,6 +48,7 @@ const Items = (() => {
 
   /* ---------- LOOT CRATES ---------- */
   // weighted tables straight from the design doc (weights are % chances)
+  // Regional loot pools for distinctive buildings
   const CRATE_TABLES = {
     regular: [
       { id: 'bandage',        w: 20, label: 'Bandage' },
@@ -72,6 +73,30 @@ const Items = (() => {
       { id: 'legendary',      w: 30, label: 'Legendary Weapon' },
       { id: 'armorT3',        w: 20, label: 'Armor T3' },
     ],
+    /* Regional pools — building-type loot tied to theme */
+    medical: [
+      { id: 'bandage',        w: 25, label: 'Bandage' },
+      { id: 'medkit',         w: 20, label: 'Medkit' },
+      { id: 'stim',           w: 15, label: 'Stim Injection' },
+      { id: 'pills',          w: 15, label: 'Pills' },
+      { id: 'ammo',           w: 15, label: 'Ammo' },
+      { id: 'armorT1',        w: 10, label: 'Armor T1' },
+    ],
+    industrial: [
+      { id: 'ammo',           w: 30, label: 'Ammo' },
+      { id: 'classConsumable',w: 25, label: 'Class Consumable' },
+      { id: 'bandage',        w: 15, label: 'Bandage' },
+      { id: 'armorT2',        w: 20, label: 'Armor T2' },
+      { id: 'mine',           w: 10, label: 'Mine' },
+    ],
+    military: [
+      { id: 'ammo',           w: 25, label: 'Ammo' },
+      { id: 'classConsumable',w: 20, label: 'Class Consumable' },
+      { id: 'frag',           w: 15, label: 'Frag Grenade' },
+      { id: 'stim',           w: 10, label: 'Stim Injection' },
+      { id: 'armorT3',        w: 20, label: 'Armor T3' },
+      { id: 'sentry',         w: 10, label: 'Sentry Gun' },
+    ],
   };
   // how often each crate tier appears on the map
   const CRATE_RARITY = [ { tier: 'regular', w: 60 }, { tier: 'silver', w: 30 }, { tier: 'gold', w: 10 } ];
@@ -79,6 +104,9 @@ const Items = (() => {
     regular: { color: '#8ea0c9', icon: '📦', name: 'Crate' },
     silver:  { color: '#cfd8ee', icon: '🎁', name: 'Silver Crate' },
     gold:    { color: '#ffcf4a', icon: '🏆', name: 'Gold Crate' },
+    medical: { color: '#c46bff', icon: '⛑️', name: 'Medical Cache' },
+    industrial: { color: '#9bacc9', icon: '🔧', name: 'Supply Crate' },
+    military: { color: '#4a6280', icon: '🎖️', name: 'Ammo Cache' },
   };
 
   // "Class Consumable" pool — fallback when we don't know the opener's class

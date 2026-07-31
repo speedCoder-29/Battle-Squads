@@ -21,6 +21,27 @@ const Weapons = (() => {
     Purple: '#c46bff', Brown: '#b07a4a',
   };
 
+  /* ---------- SCOPES ---------- */
+  /* Mounted optics with zoom levels and accuracy benefits */
+  const SCOPES = {
+    'Red Dot': {
+      name: 'Red Dot Sight', icon: '🔴', zoom: 1.5, accMult: 0.70,
+      adsTime: 0.25, weight: 1, description: '1.5× magnification, fast target acquisition',
+    },
+    '4x Scope': {
+      name: '4× Tactical Scope', icon: '🎯', zoom: 4.0, accMult: 0.50,
+      adsTime: 0.45, weight: 1.5, description: '4× magnification, medium range specialist',
+    },
+    '8x Scope': {
+      name: '8× Sniper Scope', icon: '🔭', zoom: 8.0, accMult: 0.40,
+      adsTime: 0.60, weight: 2, description: '8× magnification, long-range dominance',
+    },
+    'Thermal': {
+      name: 'Thermal Scope', icon: '🌡️', zoom: 2.5, accMult: 0.60,
+      adsTime: 0.50, weight: 2.5, description: '2.5× magnification, see through smoke',
+    },
+  };
+
   /* per-type feel: icon, bullet speed (px/s), how much ADS tightens spread */
   const TYPE_META = {
     'Assault Rifle': { icon: '🔫', bspeed: 900,  ads: 0.40 },
@@ -363,7 +384,7 @@ const Weapons = (() => {
     'vector', 'uzi', 'p90', 'm870', 'spas-12', 'm4', 'aks-74u', 'mk-14-ebr'];
 
   return {
-    list, byId, BOT_POOL, AMMO_COLORS, CLASS_META, RATING_LABELS, TYPE_META, withMods,
+    list, byId, BOT_POOL, AMMO_COLORS, CLASS_META, RATING_LABELS, TYPE_META, SCOPES, withMods,
     ATTACHMENTS, AMMO_TYPES, configure,
     allIds: () => list.map(w => w.id),
     default: 'm16',

@@ -57,6 +57,7 @@ const Terrain = (() => {
       oceanInset: OCEAN_INSET,
       beachInset: BEACH_INSET,
       rivers: [], bridges: [], roads: [], patches: [],
+      obstacles: [],  // structured obstacle zones
     };
 
     // --- river: a polyline wandering top-to-bottom or left-to-right ---
@@ -91,6 +92,17 @@ const Terrain = (() => {
     ], width: 78 });
     t.roads.push({ pts: [{ x: inset, y: h * 0.5 }, { x: w - inset, y: h * 0.5 }], width: 66 });
     t.roads.push({ pts: [{ x: w * 0.5, y: inset }, { x: w * 0.5, y: h - inset }], width: 66 });
+
+    // --- structured obstacle zones: clearings, dense clusters, perimeter fortifications ---
+    // Forest clearing (open sightlines in otherwise dense area)
+    t.obstacles.push({ type: 'clearing', x: w * 0.25, y: h * 0.35, r: 280, density: 0 });
+    // Dense thicket (tight cover, movement hazard)
+    t.obstacles.push({ type: 'thicket', x: w * 0.75, y: h * 0.25, r: 300, density: 0.8 });
+    // Rocky outcrop (scattered boulders, medium cover)
+    t.obstacles.push({ type: 'rocks', x: w * 0.5, y: h * 0.7, r: 320, density: 0.5 });
+    // Perimeter fortifications (sandbags + wire around edges)
+    t.obstacles.push({ type: 'fortified', x: BEACH_INSET + 100, y: BEACH_INSET + 100, r: 150, density: 0.9 });
+    t.obstacles.push({ type: 'fortified', x: w - BEACH_INSET - 100, y: h - BEACH_INSET - 100, r: 150, density: 0.9 });
 
     // --- grass patches: subtle tone variation so the field isn't flat ---
     for (let i = 0; i < 90; i++) {

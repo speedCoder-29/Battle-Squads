@@ -433,6 +433,101 @@ const Structures = (() => {
       out.push(seg('wire', ox - 60, oy - 50, 12, 'h', 0.4));
       return out;
     },
+
+    /* hospital: medical loot, open layout for triage, few walls for mobility */
+    hospital(ox, oy) {
+      const w = 640, h = 480;
+      const out = shell(ox, oy, w, h, 'wood', 0.4, [
+        { side: 'n', at: 240, type: 'door', len: 3 },
+        { side: 's', at: 280 }, { side: 'e', at: 300, type: 'door' },
+      ]);
+      // reception hall + treatment wings (low walls for sightlines)
+      out.push(seg('barricade', ox + 120, oy + 80, 4, 'v', 0.3));
+      out.push(seg('barricade', ox + 120, oy + 380, 4, 'v', 0.3));
+      out.push(seg('barricade', ox + 420, oy + 140, 5, 'v', 0.3));
+      // interior divisions (rooms open to corridors)
+      out.push(seg('door', ox + 240, oy + 200, 1.5, 'h'));
+      out.push(seg('door', ox + 380, oy + 280, 1.5, 'v'));
+      return out;
+    },
+
+    /* factory: industrial metal structure, tight corridors, high loot density */
+    factory(ox, oy) {
+      const w = 760, h = 520;
+      const out = shell(ox, oy, w, h, 'metal', 0.5, [
+        { side: 'n', at: 300, type: 'rdoor', len: 3 },
+        { side: 's', at: 200, type: 'rdoor', len: 2 },
+        { side: 'w', at: 240, type: 'door' },
+      ]);
+      // industrial floor: metal racking and partitions
+      out.push(seg('metal', ox + 150, oy + 50, 5.5, 'v', 0.3));
+      out.push(seg('metal', ox + 300, oy + 150, 5.5, 'v', 0.3));
+      out.push(seg('metal', ox + 500, oy + 80, 5.5, 'v', 0.3));
+      out.push(seg('barricade', ox + 100, oy + 320, 6, 'h', 0.3));
+      out.push(seg('barricade', ox + 520, oy + 280, 6, 'h', 0.3));
+      // control room (reinforced corner)
+      out.push(seg('rwall', ox + 650, oy + 60, 3, 'h', 0.35));
+      out.push(seg('rwall', ox + 650, oy + 60, 3, 'v', 0.35));
+      out.push(seg('rdoor', ox + 650, oy + 180, 1.5, 'v'));
+      return out;
+    },
+
+    /* dock: long wharf with crates and shipping containers, water-side hazard */
+    dock(ox, oy) {
+      const out = [];
+      // main warehouse
+      out.push(...shell(ox, oy, 520, 380, 'metal', 0.45, [
+        { side: 's', at: 180, type: 'door', len: 2 },
+        { side: 'w', at: 100, type: 'door' },
+      ]));
+      // container stacks (high cover)
+      for (let i = 0; i < 2; i++) {
+        out.push(seg('metal', ox + 20 + i * 200, oy + 450, 4, 'h', 0.45));
+        out.push(seg('metal', ox + 20 + i * 200, oy + 450, 2, 'v', 0.45));
+      }
+      // shipping crates and sandbags (low cover density)
+      out.push(seg('barricade', ox + 600, oy + 80, 5, 'v', 0.3));
+      out.push(seg('sandbag', ox + 600, oy + 250, 4, 'h', 0.5));
+      return out;
+    },
+
+    /* fortress: multi-layer defense, reinforced strongpoint, heavy to assault */
+    fortress(ox, oy) {
+      const w = 500, h = 500;
+      const out = [];
+      // outer perimeter (sandbags)
+      out.push(seg('sandbag', ox - 60, oy - 60, 10, 'h', 0.5));
+      out.push(seg('sandbag', ox - 60, oy + w + 60, 10, 'h', 0.5));
+      out.push(seg('sandbag', ox - 60, oy - 60, 10, 'v', 0.5));
+      out.push(seg('sandbag', ox + w + 60, oy - 60, 10, 'v', 0.5));
+      // main walls (reinforced)
+      out.push(...shell(ox, oy, w, h, 'rwall', 0.5, [
+        { side: 'n', at: 180, type: 'rdoor' }, { side: 'e', at: 160, type: 'rdoor' },
+      ]));
+      // inner strongroom
+      out.push(seg('rwall', ox + 160, oy + 80, 3.6, 'h', 0.4));
+      out.push(seg('rwall', ox + 160, oy + 80, 3.6, 'v', 0.4));
+      out.push(seg('rdoor', ox + 280, oy + 80, 1.5, 'h'));
+      // firing positions
+      out.push(seg('sandbag', ox + 60, oy + 240, 3, 'h', 0.5));
+      out.push(seg('sandbag', ox + 420, oy + 240, 3, 'h', 0.5));
+      return out;
+    },
+
+    /* radio tower: tiny observation post, tall sight lines, isolated loot */
+    'radio-tower'(ox, oy) {
+      const out = [];
+      // tower foundation
+      out.push(...shell(ox, oy, 120, 120, 'rwall', 0.35, [{ side: 's', at: 40, type: 'rdoor' }]));
+      // antenna tower (visual only, not functional)
+      out.push(seg('metal', ox + 60, oy - 100, 1, 'v', 0.3));  // mast
+      // perimeter wire
+      out.push(seg('wire', ox - 80, oy - 80, 6, 'h', 0.4));
+      out.push(seg('wire', ox - 80, oy - 80, 6, 'v', 0.4));
+      out.push(seg('wire', ox + 200, oy - 80, 6, 'v', 0.4));
+      out.push(seg('wire', ox - 80, oy + 200, 6, 'h', 0.4));
+      return out;
+    },
   };
 
   /* ---------- DECOR PLACEMENT ----------
