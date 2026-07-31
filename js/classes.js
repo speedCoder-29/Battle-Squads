@@ -16,11 +16,20 @@ const Classes = (() => {
   const RANGE_UNIT = 24;                 // 1 melee range unit ≈ 24px
   const px = (units) => units * RANGE_UNIT;
 
-  /* ---------- TOOLS ---------- */
+  /* ---------- TOOLS ----------
+     Melee balance rationale (survev-inspired):
+       • Damage is moderate (35-55 per swing) so melees can't one-shot as easily
+       • Range is short (2-4 range units = 48-96px) so melees need commitment
+       • Cooldowns force deliberate swings: 0.4–0.7s means DPS caps out ~100
+       • Pierce is scaled per tool type: wire/sandbag clearing adds utility
+       • Shield / Building / Revive are tactical tools with movement tradeoffs
+     Raw TTK: P90 at close range ≈ 0.5s (5 rounds); bayonet ≈ 2.5s (3 swings).
+     Melees win only inside rooms or through surprise; open field = rifle wins.
+  */
   const TOOLS = {
     bayonet: {
       id: 'bayonet', name: 'Bayonet', icon: '🗡️',
-      melee: 40, range: px(5), structure: 5, pierce: 1, cooldown: 0.5,
+      melee: 38, range: px(3.5), structure: 5, pierce: 1, cooldown: 0.45,
       clears: 'wire',                                   // shreds barbed wire in one swing
       effects: ['Barbed Wire Clearing'],
     },
@@ -32,21 +41,21 @@ const Classes = (() => {
     },
     'trench-spade': {
       id: 'trench-spade', name: 'Trench Spade', icon: '🛠️',
-      melee: 30, range: px(3), structure: 10, pierce: 2, cooldown: 0.4,
+      melee: 32, range: px(3), structure: 10, pierce: 2, cooldown: 0.5,
       clears: 'sandbag', digs: true,                    // can dig a covering trench
       effects: ['Sandbag Clearing', 'Trench Digging'],
     },
     'fire-axe': {
       id: 'fire-axe', name: 'Fire Axe', icon: '🪓',
-      melee: 50, range: px(3), structure: 25, pierce: 2, cooldown: 0.33,
+      melee: 45, range: px(3), structure: 25, pierce: 2, cooldown: 0.55,
       vs: { wood: 3 },                                  // 3x damage to wooden structures
       effects: ['3x Wood Damage'],
     },
     'riot-shield': {
       id: 'riot-shield', name: 'Riot Shield', icon: '🛡️',
-      melee: 25, range: px(2), structure: 15, pierce: 2, cooldown: 0.5,
-      shield: true, slow: 0.5, adsOnlyFire: true,       // only shoot while scoping
-      effects: ['100% Damage Reduction (front, while scoping)', '-50% Speed', 'Can only shoot while scoping'],
+      melee: 28, range: px(2.5), structure: 15, pierce: 2, cooldown: 0.6,
+      shield: true, slow: 0.35, adsOnlyFire: true,      // only shoot while scoping
+      effects: ['100% Damage Reduction (front, while scoping)', '-35% Speed', 'Can only shoot while scoping'],
     },
     nvg: {
       id: 'nvg', name: 'Night Vision Goggles', icon: '🥽',
@@ -62,7 +71,7 @@ const Classes = (() => {
     },
     'stone-hammer': {
       id: 'stone-hammer', name: 'Stone Hammer', icon: '🔨',
-      melee: 60, range: px(3), structure: 55, pierce: 3, cooldown: 1,
+      melee: 55, range: px(3), structure: 55, pierce: 3, cooldown: 0.8,
       builds: { type: 'wood', thickness: 0.5, length: 3, max: 8 },   // 50 HP, toughness 3
       effects: ['Building'],
     },

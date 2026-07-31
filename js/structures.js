@@ -34,50 +34,50 @@ const Structures = (() => {
     wood: {
       name: 'Wood', height: 'high', hpPerThickness: 10, toughness: (t) => (t <= 0.2 ? 1 : t <= 0.4 ? 2 : 3),
       bullets: 'pen', lossPerM: 1.0,            // 10% per 0.1 thickness
-      fill: '#6d5334', stroke: 'rgba(240,198,132,0.85)',
+      fill: '#8a6d45', stroke: 'rgba(255,200,110,0.95)',
       effect: 'Bullets lose 10% damage per 0.1 thickness',
     },
     metal: {
       name: 'Metal', height: 'high', hpPerThickness: 20, toughness: 4,
       bullets: 'pen', lossPerM: 1.0, reflectAbove: 0.5,
-      fill: '#546480', stroke: 'rgba(210,228,255,0.85)',
+      fill: '#4a6280', stroke: 'rgba(200,220,255,0.90)',
       effect: 'Penetrable up to 0.5 thickness, then ricochets for 50%',
     },
     door: {
       name: 'Door', height: 'high', hp: 90, toughness: 1, door: true,
       bullets: 'pen', lossPerM: 1.0,            // it's wood, 0.3 thick
       defThickness: 0.3, defLength: 1.5,
-      fill: '#7d5c31', stroke: 'rgba(255,210,140,0.9)',
+      fill: '#9a7244', stroke: 'rgba(255,210,140,0.95)',
       effect: 'Opens and closes',
     },
     rdoor: {
       name: 'Reinforced Door', height: 'high', hp: 300, toughness: 5, door: true,
       bullets: 'reflect', defThickness: 0.35, defLength: 1.5,
-      fill: '#5d6b82', stroke: 'rgba(225,238,255,0.9)',
+      fill: '#3d5070', stroke: 'rgba(220,235,255,0.95)',
       effect: 'Opens and closes · bullets ricochet for 50%',
     },
     rwall: {
       name: 'Reinforced Wall', height: 'high', hp: 300, toughness: 5,
       bullets: 'reflect',
-      fill: '#58657d', stroke: 'rgba(220,235,255,0.85)',
+      fill: '#4a5e80', stroke: 'rgba(200,220,255,0.90)',
       effect: 'Bullets ricochet for 50%',
     },
     wire: {
       name: 'Barbed Wire', height: 'low', hp: 60, toughness: 5,
       bullets: 'through', passable: true, slow: 0.1, dps: 2,
-      fill: 'rgba(190,205,235,0.14)', stroke: 'rgba(235,245,255,0.8)',
+      fill: 'rgba(180,200,240,0.18)', stroke: 'rgba(220,235,255,0.85)',
       effect: '90% movement slowdown · 2 damage/s',
     },
     sandbag: {
       name: 'Sand Bags', height: 'low', hp: 300, toughness: 6,
       bullets: 'stop',
-      fill: '#6b6236', stroke: 'rgba(240,224,150,0.8)',
+      fill: '#7a7040', stroke: 'rgba(245,225,140,0.85)',
       effect: 'Stops bullets outright',
     },
     barricade: {
       name: 'Barricade', height: 'low', hp: 150, toughness: 1,
       bullets: 'pen', flatLoss: 0.5,
-      fill: '#63526f', stroke: 'rgba(214,150,255,0.75)',
+      fill: '#6a5a85', stroke: 'rgba(200,140,255,0.80)',
       effect: 'Bullets lose 50% damage passing through',
     },
     trench: {
@@ -96,37 +96,37 @@ const Structures = (() => {
     crate: {
       name: 'Crate', height: 'low', hp: 90, toughness: 1, prop: 'crate',
       bullets: 'stop', drops: 'regular',
-      fill: '#8a6234', stroke: '#5e4222',
+      fill: '#9a7747', stroke: '#6b5333',
       effect: 'Breaks open and spills loot',
     },
     barrel: {
       name: 'Barrel', height: 'low', hp: 70, toughness: 1, prop: 'barrel',
       bullets: 'stop', explodes: { damage: 85, radius: 165 },
-      fill: '#a2542e', stroke: '#6f3719',
+      fill: '#c25e3a', stroke: '#7a3a1f',
       effect: 'Cooks off when destroyed — and sets off its neighbours',
     },
     tree: {
       name: 'Tree', height: 'high', hp: 160, toughness: 2, prop: 'tree',
       bullets: 'stop', round: true, drops: null,
-      fill: '#4a8f3c', stroke: '#33682a',
+      fill: '#5ab947', stroke: '#2d7a1a',
       effect: 'Blocks sight and gunfire until it comes down',
     },
     rock: {
       name: 'Boulder', height: 'low', hp: 400, toughness: 4, prop: 'rock',
       bullets: 'stop', round: true,
-      fill: '#8792a5', stroke: '#5d6675',
+      fill: '#9ca5b5', stroke: '#6a7382',
       effect: 'Hard cover — takes HEAT or a hammer',
     },
     container: {
       name: 'Container', height: 'high', hp: 500, toughness: 4, prop: 'container',
       bullets: 'reflect',
-      fill: '#3f7ea8', stroke: '#28536f',
+      fill: '#2d5a8a', stroke: '#1a3f5a',
       effect: 'Steel box: bullets ricochet off it',
     },
     bush: {
       name: 'Bush', height: 'low', hp: 40, toughness: 1, prop: 'bush',
       bullets: 'through', passable: true, conceals: true, round: true,
-      fill: 'rgba(74,143,60,0.35)', stroke: 'rgba(51,104,42,0.6)',
+      fill: 'rgba(90,185,71,0.40)', stroke: 'rgba(45,122,26,0.70)',
       effect: 'Hides anyone standing still inside it',
     },
   };

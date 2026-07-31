@@ -15,17 +15,26 @@
    ============================================================ */
 const Sprites = (() => {
 
-  /* shared palette so everything feels like one set */
+  /* shared palette so everything feels like one set (survev.io-inspired) */
   const P = {
-    wood: '#8a6234', woodDark: '#5e4222', woodLight: '#a87b45',
-    leaf: '#4a8f3c', leafDark: '#33682a', leafLight: '#62ab4e',
-    stone: '#8792a5', stoneDark: '#5d6675', stoneLight: '#a3aebf',
-    metal: '#7b8798', metalDark: '#525c6b', metalLight: '#9aa6b8',
-    rust: '#a2542e', rustDark: '#6f3719',
-    sand: '#d8b36a', sandDark: '#a8873f',
-    cloth: '#5f6b7d', clothDark: '#3f4857',
-    hot: '#e2622f', hotDark: '#a63f18',
-    dark: 'rgba(0,0,0,0.35)',
+    /* wood: warm, readable, slightly worn */
+    wood: '#9a7542', woodDark: '#6b5231', woodLight: '#c49060',
+    /* vegetation: saturated greens for visibility */
+    leaf: '#5ab947', leafDark: '#2d7a1a', leafLight: '#7cd347',
+    /* stone: neutral grays with subtle warmth */
+    stone: '#9ca5b5', stoneDark: '#6a7382', stoneLight: '#b8c2d2',
+    /* metal: cool, gunmetal appearance */
+    metal: '#6b7f99', metalDark: '#3d4f68', metalLight: '#9bacc9',
+    /* rust: oxidized metal, distinctive */
+    rust: '#c25e3a', rustDark: '#7a3a1f',
+    /* sand: warm, visible against grass */
+    sand: '#e8c76d', sandDark: '#b89d47',
+    /* cloth/fabric: survev-style muted blue */
+    cloth: '#5a7190', clothDark: '#2f4052',
+    /* fire/hot: bright warning color */
+    hot: '#ff6b35', hotDark: '#cc4422',
+    /* shadows: subtle depth */
+    dark: 'rgba(0,0,0,0.40)',
   };
 
   /* helper: filled path with a darker outline, the look of the whole set */
@@ -51,12 +60,13 @@ const Sprites = (() => {
   /* ---------- the sprites ----------
      Signature is always (ctx, r) with the transform already applied. */
   const DRAW = {
-    /* a tree from above: trunk ring under two offset canopy blobs */
+    /* a tree from above: dense canopy with dark shadow base for depth */
     tree(ctx, r) {
-      circle(ctx, 0, 0, r * 0.30, P.woodDark, null);
-      circle(ctx, -r * 0.16, -r * 0.12, r * 0.74, P.leafDark, null);
-      circle(ctx, r * 0.14, r * 0.10, r * 0.66, P.leaf, P.leafDark, 2);
-      circle(ctx, -r * 0.22, -r * 0.24, r * 0.30, P.leafLight, null);
+      circle(ctx, 0, 0, r * 0.35, P.woodDark, null);        // trunk
+      circle(ctx, -r * 0.18, -r * 0.14, r * 0.78, P.leafDark, null);   // back shadow
+      circle(ctx, r * 0.16, r * 0.12, r * 0.70, P.leaf, P.leafDark, 2.5);  // main canopy
+      circle(ctx, -r * 0.20, -r * 0.26, r * 0.32, P.leafLight, null);  // highlight
+      circle(ctx, r * 0.24, r * 0.20, r * 0.18, P.leafLight, null);    // rim light
     },
     /* palm: a starburst of fronds */
     palm(ctx, r) {
@@ -78,18 +88,21 @@ const Sprites = (() => {
       circle(ctx, 0, -r * 0.16, r * 0.60, P.leaf, P.leafDark, 2);
       circle(ctx, -r * 0.18, -r * 0.30, r * 0.22, P.leafLight, null);
     },
-    /* boulder: an irregular polygon so it doesn't read as a ball */
+    /* boulder: irregular polygon with strong shading for tactical clarity */
     rock(ctx, r) {
       ctx.beginPath();
       const pts = [[-0.9, -0.2], [-0.55, -0.8], [0.2, -0.95], [0.85, -0.4],
                    [0.9, 0.35], [0.35, 0.9], [-0.45, 0.8], [-0.9, 0.3]];
       pts.forEach(([px, py], i) => (i ? ctx.lineTo(px * r, py * r) : ctx.moveTo(px * r, py * r)));
       ctx.closePath();
-      shape(ctx, P.stone, P.stoneDark, 2.5);
+      shape(ctx, P.stone, P.stoneDark, 3);  // thicker outline for visibility
+      // large highlight on top-left for depth perception
       ctx.beginPath();
-      ctx.moveTo(-r * 0.4, -r * 0.35); ctx.lineTo(r * 0.1, -r * 0.55); ctx.lineTo(r * 0.25, -r * 0.1);
+      ctx.moveTo(-r * 0.35, -r * 0.40); ctx.lineTo(r * 0.15, -r * 0.60); ctx.lineTo(r * 0.30, -r * 0.05);
       ctx.closePath();
       shape(ctx, P.stoneLight, null);
+      // smaller rim light
+      circle(ctx, r * 0.45, r * 0.35, r * 0.12, P.stoneLight, null);
     },
     /* wooden crate: planks and a cross brace */
     crate(ctx, r) {
@@ -102,12 +115,15 @@ const Sprites = (() => {
       ctx.strokeStyle = P.woodLight; ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.moveTo(-r * 0.8, -r * 0.8); ctx.lineTo(r * 0.8, r * 0.8); ctx.stroke();
     },
-    /* oil drum: concentric rings, viewed from directly above */
+    /* oil drum: survev-style explosive hazard, immediately recognizable */
     barrel(ctx, r) {
-      circle(ctx, 0, 0, r, P.rust, P.rustDark, 2.5);
-      circle(ctx, 0, 0, r * 0.72, P.metal, P.metalDark, 1.8);
-      circle(ctx, 0, 0, r * 0.30, P.metalDark, null);
-      circle(ctx, -r * 0.3, -r * 0.3, r * 0.18, P.metalLight, null);
+      circle(ctx, 0, 0, r, P.rust, P.rustDark, 3);  // outer rim, thicker
+      circle(ctx, 0, 0, r * 0.68, P.metal, P.metalDark, 2);  // band
+      circle(ctx, 0, 0, r * 0.25, P.metalDark, null);  // center cap
+      circle(ctx, -r * 0.35, -r * 0.35, r * 0.20, P.metalLight, null);  // highlight
+      // warning stripe across top
+      ctx.strokeStyle = P.hotDark; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-r * 0.8, -r * 0.2); ctx.lineTo(r * 0.8, r * 0.2); ctx.stroke();
     },
     /* stack of planks */
     pallet(ctx, r) {
@@ -178,6 +194,56 @@ const Sprites = (() => {
         ctx.moveTo(i * r * 0.36, -r * 0.75); ctx.lineTo(i * r * 0.36, r * 0.75); ctx.stroke();
       }
     },
+    /* ---------- interior furniture ---------- */
+    table(ctx, r) {
+      box(ctx, -r, -r * 0.65, r * 2, r * 1.3, P.wood, P.woodDark, 2.5, 3);
+      ctx.strokeStyle = P.woodDark; ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.55, -r * 0.6); ctx.lineTo(-r * 0.55, r * 0.6);
+      ctx.moveTo(r * 0.55, -r * 0.6); ctx.lineTo(r * 0.55, r * 0.6);
+      ctx.stroke();
+    },
+    shelf(ctx, r) {
+      box(ctx, -r, -r * 0.45, r * 2, r * 0.9, P.woodDark, '#3a2916', 2, 2);
+      ctx.fillStyle = P.wood;
+      for (let i = 0; i < 3; i++) ctx.fillRect(-r * 0.9, -r * 0.34 + i * r * 0.28, r * 1.8, r * 0.16);
+    },
+    locker(ctx, r) {
+      box(ctx, -r * 0.7, -r, r * 1.4, r * 2, P.metal, P.metalDark, 2.5, 2);
+      ctx.strokeStyle = P.metalDark; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(0, -r * 0.9); ctx.lineTo(0, r * 0.9); ctx.stroke();
+      circle(ctx, -r * 0.2, 0, r * 0.1, P.metalLight, null);
+      circle(ctx, r * 0.2, 0, r * 0.1, P.metalLight, null);
+    },
+    bed(ctx, r) {
+      box(ctx, -r * 0.7, -r, r * 1.4, r * 2, '#6d5334', '#3a2916', 2.5, 3);
+      box(ctx, -r * 0.6, -r * 0.9, r * 1.2, r * 0.7, '#c9d4e6', '#8a97ad', 2, 3);
+      box(ctx, -r * 0.6, -r * 0.1, r * 1.2, r * 1.0, '#5b6d8a', '#3f4d63', 2, 3);
+    },
+    stove(ctx, r) {
+      box(ctx, -r * 0.85, -r * 0.85, r * 1.7, r * 1.7, P.metalDark, '#2c333d', 2.5, 3);
+      for (const [dx, dy] of [[-0.35, -0.35], [0.35, -0.35], [-0.35, 0.35], [0.35, 0.35]]) {
+        circle(ctx, dx * r, dy * r, r * 0.22, '#2c333d', P.metalLight, 1.5);
+      }
+    },
+    toilet(ctx, r) {
+      box(ctx, -r * 0.5, -r * 0.9, r, r * 0.7, '#e6ecf5', '#a8b4c6', 2, 3);
+      ctx.beginPath(); ctx.ellipse(0, r * 0.25, r * 0.55, r * 0.7, 0, 0, Math.PI * 2);
+      shape(ctx, '#f2f6fb', '#a8b4c6', 2);
+    },
+    desk(ctx, r) {
+      box(ctx, -r, -r * 0.55, r * 2, r * 1.1, '#4a5568', '#2f3745', 2.5, 3);
+      box(ctx, -r * 0.75, -r * 0.35, r * 0.8, r * 0.55, '#26303d', '#1a222c', 1.5, 2);
+      circle(ctx, r * 0.45, 0, r * 0.18, '#8a97ad', '#2f3745', 1.5);
+    },
+    ammoBox(ctx, r) {
+      box(ctx, -r * 0.85, -r * 0.6, r * 1.7, r * 1.2, '#4a5a3a', '#2c3722', 2.5, 2);
+      ctx.fillStyle = '#c9d48a';
+      ctx.fillRect(-r * 0.5, -r * 0.15, r, r * 0.18);
+      ctx.strokeStyle = '#2c3722'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(-r * 0.85, -r * 0.25); ctx.lineTo(r * 0.85, -r * 0.25); ctx.stroke();
+    },
+
     /* bare stump */
     stump(ctx, r) {
       circle(ctx, 0, 0, r * 0.8, P.wood, P.woodDark, 2.5);
@@ -188,22 +254,30 @@ const Sprites = (() => {
 
   /* metadata the world uses: draw radius, shadow throw, and whether it's tall */
   const META = {
-    tree:      { r: 26, shadow: 12, tall: true },
-    palm:      { r: 26, shadow: 12, tall: true },
-    bush:      { r: 17, shadow: 5 },
-    rock:      { r: 16, shadow: 7 },
-    crate:     { r: 15, shadow: 6 },
-    barrel:    { r: 13, shadow: 6 },
-    pallet:    { r: 15, shadow: 3 },
-    tyre:      { r: 12, shadow: 3 },
-    cone:      { r: 10, shadow: 3 },
-    rubble:    { r: 14, shadow: 4 },
-    antenna:   { r: 17, shadow: 8, tall: true },
-    sign:      { r: 14, shadow: 5 },
-    tent:      { r: 24, shadow: 8, tall: true },
-    sandpile:  { r: 18, shadow: 4 },
-    container: { r: 22, shadow: 9, tall: true },
-    stump:     { r: 13, shadow: 3 },
+    tree:      { r: 36, shadow: 12, tall: true },
+    palm:      { r: 36, shadow: 12, tall: true },
+    bush:      { r: 24, shadow: 5 },
+    rock:      { r: 22, shadow: 7 },
+    crate:     { r: 21, shadow: 6 },
+    barrel:    { r: 18, shadow: 6 },
+    pallet:    { r: 21, shadow: 3 },
+    tyre:      { r: 17, shadow: 3 },
+    cone:      { r: 14, shadow: 3 },
+    rubble:    { r: 20, shadow: 4 },
+    antenna:   { r: 24, shadow: 8, tall: true },
+    sign:      { r: 20, shadow: 5 },
+    tent:      { r: 34, shadow: 8, tall: true },
+    sandpile:  { r: 25, shadow: 4 },
+    container: { r: 31, shadow: 9, tall: true },
+    stump:     { r: 18, shadow: 3 },
+    table:     { r: 31, shadow: 4 },
+    shelf:     { r: 34, shadow: 4 },
+    locker:    { r: 25, shadow: 6, tall: true },
+    bed:       { r: 34, shadow: 4 },
+    stove:     { r: 28, shadow: 5 },
+    toilet:    { r: 21, shadow: 4 },
+    desk:      { r: 31, shadow: 4 },
+    ammoBox:   { r: 22, shadow: 4 },
   };
 
   const kinds = Object.keys(META);

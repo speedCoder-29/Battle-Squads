@@ -19,17 +19,17 @@ const Terrain = (() => {
 
   /* survev-ish palette: saturated grass, warm sand, deep water */
   const COLORS = {
-    ocean:      '#1c5a8c',
-    oceanDeep:  '#164a75',
-    beach:      '#d9b878',
-    beachEdge:  '#c19f5f',
-    grass:      '#4f8f45',
-    grassAlt:   '#468039',
-    grassLight: '#5da052',
-    river:      '#2d78ad',
-    riverEdge:  '#4a95c6',
-    road:       '#9c8f7a',
-    roadLine:   '#c9bda6',
+    ocean:      '#1a5a8e',
+    oceanDeep:  '#0f3d5c',
+    beach:      '#e5c88a',
+    beachEdge:  '#d4b873',
+    grass:      '#5aa83f',
+    grassAlt:   '#4a9d2d',
+    grassLight: '#6db856',
+    river:      '#2680b8',
+    riverEdge:  '#4a9fd6',
+    road:       '#9d8f7c',
+    roadLine:   '#d4c9b6',
     bridge:     '#8a6a45',
     bridgeEdge: '#5e4629',
   };

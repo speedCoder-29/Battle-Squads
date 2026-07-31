@@ -30,7 +30,11 @@ const Game = (() => {
   let grass = [], trenches = [], decor = [];                       // terrain + dressing
   let terrain = null;                                              // island: ocean/beach/grass/river/roads
   let flashOverlay = 0;                                            // player blind timer (s)
-  let zoom = 1, zoomTarget = 1;                                    // binoculars pull the camera back
+  /* survev shows you a fairly tight slice of the world — a player is a good
+     fraction of the screen height. BASE_ZOOM sets that framing; the binoculars
+     and ADS still scale relative to it. */
+  const BASE_ZOOM = 1.45;
+  let zoom = BASE_ZOOM, zoomTarget = BASE_ZOOM;
   let teamScores = [];
   let player = null;
   let matchStats = { kills: 0, captures: 0 };
@@ -142,6 +146,7 @@ const Game = (() => {
 
   function buildMap() {
     obstacles = []; trenches = []; decor = []; grass = [];
+    buildings = []; pendingIndoorCrates = [];
     invalidateRects();
     terrain = Terrain.generate(MAP_W, MAP_H, mode === 'domination' ? 20260730 : 90210);
 
@@ -208,6 +213,70 @@ const Game = (() => {
     return parts;
   }
 
+  /* ---------------- building interiors ----------------
+     survev buildings aren't just a ring of walls: they have a floor you can
+     see you're standing on, a roof that hides the inside until you walk in,
+     furniture, and loot worth going in for. Each placement records its
+     footprint so all three can be drawn and stocked. */
+  let buildings = [];
+
+  /* what furnishes each kind of building, and how much loot it's worth */
+  const FURNISH = {
+    house:      { props: ['table', 'bed', 'shelf', 'stove', 'toilet'], n: 5, loot: 2, floor: '#6b5741' },
+    mansion:    { props: ['table', 'bed', 'shelf', 'desk', 'locker'], n: 9, loot: 4, floor: '#7a6448' },
+    apartments: { props: ['bed', 'table', 'shelf', 'toilet', 'stove'], n: 10, loot: 4, floor: '#6b5741' },
+    shanty:     { props: ['shelf', 'stove', 'table'], n: 4, loot: 2, floor: '#5f4e3b' },
+    warehouse:  { props: ['shelf', 'ammoBox', 'locker', 'desk'], n: 8, loot: 4, floor: '#4e5666' },
+    hangar:     { props: ['ammoBox', 'locker', 'desk'], n: 7, loot: 4, floor: '#4a5260' },
+    bunker:     { props: ['locker', 'ammoBox', 'desk'], n: 5, loot: 3, floor: '#454d5a' },
+    base:       { props: ['locker', 'ammoBox', 'desk', 'table'], n: 8, loot: 4, floor: '#4e5666' },
+    tower:      { props: ['ammoBox', 'desk'], n: 2, loot: 1, floor: '#454d5a' },
+    farm:       { props: ['shelf', 'table', 'stove'], n: 4, loot: 2, floor: '#665338' },
+    depot:      { props: ['ammoBox', 'locker'], n: 3, loot: 2, floor: '#5a5646' },
+    camp:       { props: ['shelf', 'table'], n: 3, loot: 2, floor: null },
+    checkpoint: { props: ['ammoBox', 'desk'], n: 2, loot: 1, floor: '#4d5462' },
+  };
+
+  /* Fill a building: furniture against the inside of the walls, loot in the
+     middle where you have to commit to grabbing it. */
+  function furnish(name, bb) {
+    const conf = FURNISH[name];
+    if (!conf) return;
+    const inset = 46;
+    const spot = () => ({
+      x: rand(bb.x + inset, bb.x + bb.w - inset),
+      y: rand(bb.y + inset, bb.y + bb.h - inset),
+    });
+    for (let i = 0; i < conf.n; i++) {
+      for (let tries = 0; tries < 20; tries++) {
+        const p = spot();
+        const kind = conf.props[Math.floor(Math.random() * conf.props.length)];
+        const m = Sprites.META[kind];
+        if (!m) break;
+        const box = { x: p.x - m.r, y: p.y - m.r, w: m.r * 2, h: m.r * 2 };
+        if (structureRects().some(o => padOverlap(box, o, 8))) continue;
+        if (decor.some(d => dist2(d.x, d.y, p.x, p.y) < 46 * 46)) continue;
+        decor.push({ kind, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 1, indoors: true });
+        break;
+      }
+    }
+    // loot crates: the reason to go inside
+    for (let i = 0; i < conf.loot; i++) {
+      for (let tries = 0; tries < 20; tries++) {
+        const p = spot();
+        const box = { x: p.x - 20, y: p.y - 20, w: 40, h: 40 };
+        if (structureRects().some(o => padOverlap(box, o, 10))) continue;
+        pendingIndoorCrates.push({ x: p.x, y: p.y, tier: Math.random() < 0.28 ? 'gold' : Math.random() < 0.5 ? 'silver' : 'regular' });
+        break;
+      }
+    }
+  }
+  let pendingIndoorCrates = [];
+
+  /* is anyone inside this building? the roof lifts when they are */
+  const insideBuilding = (b, a) =>
+    a && a.alive && a.x > b.x && a.x < b.x + b.w && a.y > b.y && a.y < b.y + b.h;
+
   /* Scatter buildings across the island: valid terrain, clear of each other,
      clear of the objectives, and never sliced by the river. */
   function placeBuildingsProcedural(count) {
@@ -233,6 +302,10 @@ const Game = (() => {
       const pid = 'p' + placed.length;
       for (const part of parts) part.placement = pid;
       obstacles.push(...parts);
+      invalidateRects();
+      const conf = FURNISH[name];
+      buildings.push({ name, placement: pid, ...bb, floor: conf ? conf.floor : null });
+      furnish(name, bb);
     }
   }
 
@@ -288,7 +361,7 @@ const Game = (() => {
       if (!Terrain.isSpawnable(terrain, x, y)) continue;
       if (Terrain.onRoad(terrain, x, y)) continue;
       const scale = 0.8 + Math.random() * 0.45;
-      const size = type === 'tree' ? 46 : type === 'container' ? 54 : type === 'bush' ? 40 : 32;
+      const size = type === 'tree' ? 64 : type === 'container' ? 76 : type === 'bush' ? 56 : 46;
       const pr = Structures.prop(type, x, y, size, scale);
       if (structureRects().some(o => padOverlap(pr, o, 12))) continue;
       obstacles.push(pr);
@@ -357,7 +430,7 @@ const Game = (() => {
     const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
       team, isPlayer, alive: true,
-      x: 0, y: 0, r: 16, angle: 0,
+      x: 0, y: 0, r: 22, angle: 0,
       klass: 'infantry',                                    // see Combat.TARGETS
       hp: Combat.maxHpFor('infantry'), maxHp: Combat.maxHpFor('infantry'),
       vest: 0, helmet: 0,                                   // armour tiers 0-3
@@ -402,7 +475,6 @@ const Game = (() => {
       // Clear the ground under the objectives that actually ship. Doing it here,
       // on the final list, means no ordering or caching subtlety upstream can
       // leave a capture point sitting inside a wall.
-      for (const o of objectives) bulldoze(o.x, o.y, o.r);
     } else {
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
@@ -457,10 +529,14 @@ const Game = (() => {
     setupTeams();
     bullets = []; fx = []; dmgNums = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
-    zoom = zoomTarget = 1;
+    zoom = zoomTarget = BASE_ZOOM;
     hudMessage = ''; hudMessageT = 0;
     online = null;
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
+    // Last of all, once every generator and spawner has run: clear the ground
+    // under the capture points. Doing this earlier left a window for a later
+    // pass to drop a wall back on top of one.
+    for (const o of objectives) bulldoze(o.x, o.y, o.r);
     // starting tactical kit = whatever your class deploys with
     player.inv = {
       grenade:  { id: null, n: 0 },
@@ -1132,8 +1208,8 @@ const Game = (() => {
     // HP comes from the damage table; what makes a tank tough is that rifle
     // rounds do 0% to it, not a huge health pool
     const conf = vtype === 'tank'
-      ? { weapon: 'qlz-87', r: 26, speed: 110 }
-      : { weapon: 'm249', r: 22, speed: 175 };
+      ? { weapon: 'qlz-87', r: 34, speed: 110 }
+      : { weapon: 'm249', r: 29, speed: 175 };
     const v = makeAgent(team, false, conf.weapon);
     const hp = Combat.maxHpFor(vtype);
     v.isVehicle = true; v.vtype = vtype; v.klass = vtype;
@@ -1184,6 +1260,13 @@ const Game = (() => {
 
   function spawnCrates(n) {
     crates = [];
+    // Buildings stocked their own loot while the map was generated, but cover
+    // placed afterwards can land on top of it — re-check now that the world
+    // is final rather than trusting where they were put.
+    for (const c of pendingIndoorCrates) {
+      if (pointInObstacle(c.x, c.y)) continue;
+      crates.push({ x: c.x, y: c.y, tier: c.tier, opened: false, indoors: true });
+    }
     for (let i = 0; i < n; i++) {
       let x, y, tries = 0;
       do { x = rand(200, MAP_W - 200); y = rand(200, MAP_H - 200); tries++; }
@@ -1662,9 +1745,9 @@ const Game = (() => {
 
     // camera zoom: binoculars pull back, scoping a long gun pulls out to its
     // scope stat (snipers ~0.16 = a lot of magnification, pistols ~2 = none)
-    if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = 1 / player.tool.zoom;
-    else if (player.alive && input.ads) zoomTarget = clamp(0.35 + player.weapon.scope * 0.32, 0.4, 1);
-    else zoomTarget = 1;
+    if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = BASE_ZOOM / player.tool.zoom;
+    else if (player.alive && input.ads) zoomTarget = BASE_ZOOM * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
+    else zoomTarget = BASE_ZOOM;
     zoom += (zoomTarget - zoom) * Math.min(1, 9 * dt);
 
     // agents timers + AI
@@ -2031,6 +2114,7 @@ const Game = (() => {
       ctx.globalAlpha = 0.5; ctx.fillText(obj.name, obj.x, obj.y); ctx.globalAlpha = 1;
     }
 
+    drawFloors();      // building interiors, under everything inside them
     // decor sits on the ground, under the walls and everyone
     drawDecor();
     // every shadow in one pass, then the things that cast them
@@ -2142,6 +2226,7 @@ const Game = (() => {
     }
     ctx.globalAlpha = 1;
 
+    drawRoofs();    // roofs hide interiors until you step inside
     drawSmokes();   // smoke sits above units to obscure them
 
     ctx.restore();
@@ -2342,6 +2427,54 @@ const Game = (() => {
     ctx.scale(1, 0.6);
     ctx.beginPath(); ctx.arc(0, 0, r * 1.02, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+
+  /* ---------------- floors & roofs ----------------
+     A building reads as a place you go inside: its floor is a different
+     material from the ground outside, and its roof sits over the top until
+     you (or a squadmate) step in, at which point it lifts. */
+  function drawFloors() {
+    for (const b of buildings) {
+      if (!b.floor || !rectOnScreen(b)) continue;
+      ctx.fillStyle = b.floor;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      // floorboards, so it isn't a flat slab
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = b.x + 40; x < b.x + b.w; x += 40) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0,0,0,0.28)'; ctx.lineWidth = 2;
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+    }
+  }
+
+  function drawRoofs() {
+    for (const b of buildings) {
+      if (!rectOnScreen(b)) continue;
+      // lift the roof for whoever is inside — you and anyone on your team
+      const occupied = insideBuilding(b, player) ||
+        agents.some(a => a.team === player.team && !a.isVehicle && insideBuilding(b, a));
+      b.roofAlpha = b.roofAlpha === undefined ? 1 : b.roofAlpha;
+      const target = occupied ? 0 : 1;
+      b.roofAlpha += (target - b.roofAlpha) * 0.18;      // fade rather than snap
+      if (b.roofAlpha < 0.02) continue;
+
+      ctx.save();
+      ctx.globalAlpha = b.roofAlpha;
+      const g = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
+      g.addColorStop(0, '#6a5442');
+      g.addColorStop(1, '#54402f');
+      ctx.fillStyle = g;
+      ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+      // ridge lines and a border so it reads as a roof, not a lid
+      ctx.strokeStyle = 'rgba(0,0,0,0.30)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let y = b.y; y < b.y + b.h; y += 46) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(30,20,12,0.75)'; ctx.lineWidth = 4;
+      ctx.strokeRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+      ctx.restore();
+    }
   }
 
   function drawStructure(s) {
