@@ -621,6 +621,32 @@ input, select { font-family: inherit; }
 .result-stat b { display: block; font-size: 22px; }
 .result-stat span { font-size: 10px; color: var(--muted); }
 
+/* ---------- FINAL LEADERBOARD ----------
+   One grid shared by the header and every row, so the columns line up without
+   a table. The rows scroll — a 24-player elimination match won't fit. */
+.board { margin: 4px 0 12px; text-align: left; }
+.board__head,
+.board__row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 78px 34px 34px 48px;
+  gap: 6px; align-items: center; padding: 6px 10px;
+}
+.board__head { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+.board__rows { max-height: 232px; overflow-y: auto; }
+.board__row { border-radius: 8px; font-size: 13px; }
+.board__row:nth-child(odd) { background: rgba(0,0,0,0.22); }
+.board__row.is-you { background: rgba(53,224,255,0.16); box-shadow: inset 0 0 0 1px rgba(53,224,255,0.5); font-weight: 700; }
+.board__row.is-you em { font-style: normal; color: var(--accent); font-size: 11px; }
+.board__rank { color: var(--muted); font-variant-numeric: tabular-nums; }
+.board__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board__squad { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.board__squad i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.board__num { text-align: right; font-variant-numeric: tabular-nums; }
+/* the top three get a podium tint on their rank */
+.board__row:nth-child(1) .board__rank { color: var(--gold); font-weight: 900; }
+.board__row:nth-child(2) .board__rank { color: #cfd8ee; font-weight: 800; }
+.board__row:nth-child(3) .board__rank { color: #c08457; font-weight: 800; }
+
 /* ---------- TOASTS ---------- */
 .toast-wrap { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .toast { background: var(--panel-solid); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); padding: 12px 18px; border-radius: 10px; font-weight: 600; box-shadow: var(--shadow); animation: toastIn 0.3s ease; }

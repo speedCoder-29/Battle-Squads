@@ -176,7 +176,34 @@ cd server && npm install && npm start      # :8080
 # then open the game with  ?server=ws://localhost:8080
 ```
 
-> **The server cannot run on Vercel.** Vercel Functions cap at 300 seconds and
+### Playing on the Vercel link (no server)
+
+Vercel serves static files and cannot hold a socket open, so instead **one
+player's browser hosts**: it runs the same authoritative simulation
+([js/roomsim.js](js/roomsim.js)) the Node server runs, and everyone else
+connects straight to it.
+
+On the Play screen, under **Squad**:
+
+| Button | What it does |
+|---|---|
+| **Host Game** | You become the host and get a 5-character code. Share the code or the link. |
+| **Join Game** | Enter someone's code and connect to them. |
+| **Test in two tabs** | Same machine, no network at all — the quickest way to see the netcode working. |
+
+Peers are introduced by a small public WebRTC broker, then talk **directly** to
+each other; the game traffic never goes through a third party. The host is
+authoritative exactly as the server is — peers send inputs, never positions,
+and there's a test asserting a peer can't teleport itself.
+
+Sharing `…/?game=CODE` joins that game straight away.
+
+Limits worth knowing: the host carries the simulation, so pick the strongest
+machine; if the host leaves, the match ends; and a few strict corporate or
+mobile networks block direct WebRTC, which normally needs a TURN relay. For
+anything beyond testing, run the dedicated server below.
+
+> **The dedicated server cannot run on Vercel.** Vercel Functions cap at 300 seconds and
 > can't hold a WebSocket open, so <https://battle-squads.vercel.app> serves the
 > static game only and plays offline against bots. Deploy `server/` to any host
 > that keeps a process alive — Render, Railway, Fly.io, a VPS — and put the URL in

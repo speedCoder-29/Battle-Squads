@@ -992,6 +992,9 @@ const Game = (() => {
         good: true, t: 2.2,
       };
     } else if (victimIsMe) {
+      // also the one place an online death resets the streak: our HP comes from
+      // the server, so applyDamage never runs for us in a network match
+      victim.streak = 0;
       killBanner = {
         text: 'ELIMINATED BY ' + (killer ? killer.name.toUpperCase() : 'THE WORLD'),
         sub: zone === 'head' ? 'HEADSHOT' : '', good: false, t: 2.2,
@@ -2405,11 +2408,53 @@ const Game = (() => {
     }
   }
 
+  /* ---------------- final leaderboard ----------------
+     Every operator in the match, best first. Offline that's the agent list;
+     online it's the roster the server sends with its `end` message, which is
+     authoritative and includes players who already left. Both shapes are just
+     { name, team, kills, deaths }, so one renderer covers them. */
+  function buildLeaderboard(roster) {
+    const rows = roster
+      ? roster.map(r => ({
+        name: r.name, team: r.team, kills: r.kills || 0, deaths: r.deaths || 0,
+        isPlayer: !!(online && r.id === online.id),
+      }))
+      : agents.filter(a => !a.isVehicle).map(a => ({
+        name: a.name, team: a.team, kills: a.kills || 0, deaths: a.deaths || 0,
+        isPlayer: !!a.isPlayer,
+      }));
+    // most kills wins; fewest deaths breaks the tie, then name so it's stable
+    rows.sort((x, y) => y.kills - x.kills || x.deaths - y.deaths || x.name.localeCompare(y.name));
+    return rows;
+  }
+
+  function renderLeaderboard(rows) {
+    const box = document.getElementById('res-board');
+    if (!box) return;
+    const esc = (s) => String(s).replace(/[&<>"]/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    box.innerHTML = rows.map((r, i) => {
+      const kd = r.deaths ? (r.kills / r.deaths).toFixed(2) : r.kills.toFixed(2);
+      const colour = TEAM_COLORS[r.team] || '#8ea0c9';
+      const squad = TEAM_NAMES[r.team] || '—';
+      return `<div class="board__row${r.isPlayer ? ' is-you' : ''}">
+        <span class="board__rank">${i + 1}</span>
+        <span class="board__name">${esc(r.name)}${r.isPlayer ? ' <em>(you)</em>' : ''}</span>
+        <span class="board__squad"><i style="background:${colour}"></i>${squad}</span>
+        <span class="board__num">${r.kills}</span>
+        <span class="board__num">${r.deaths}</span>
+        <span class="board__num">${kd}</span>
+      </div>`;
+    }).join('');
+  }
+
   /* ---------------- match end + rewards ---------------- */
-  function endMatch(won) {
+  function endMatch(won, roster) {
     if (!running) return;
     running = false;
     input.shooting = false;
+    // snapshot the board before `online` is torn down by the caller
+    const board = buildLeaderboard(roster);
 
     const profile = DB.getProfile();
     const score = mode === 'domination' ? Math.round(teamScores[0]) : matchStats.kills * 10;
@@ -2445,6 +2490,7 @@ const Game = (() => {
     document.getElementById('res-score').textContent = score;
     document.getElementById('res-xp').textContent = '+' + xp;
     document.getElementById('res-credits').textContent = '+' + (credits + bonusCredits);
+    renderLeaderboard(board);
     document.getElementById('game-results').classList.add('is-open');
     won ? SFX.win() : SFX.lose();
   }
@@ -3434,8 +3480,10 @@ const Game = (() => {
     } else if (msg.t === 'end') {
       const mine = (msg.scores || {})[player.team] || 0;
       const best = Math.max(0, ...Object.values(msg.scores || {}));
+      const roster = msg.roster;          // read before `online` is cleared
+      const won = mine >= best;
+      endMatch(won, roster);
       online = null;
-      endMatch(mine >= best);
     }
   }
 

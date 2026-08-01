@@ -381,6 +381,20 @@
           <div class="result-stat"><b id="res-xp">0</b><span>Battle Pass XP</span></div>
           <div class="result-stat"><b id="res-credits">0</b><span>Credits</span></div>
         </div>
+
+        <!-- Final scoreboard, filled in by game.js endMatch() -->
+        <div class="board">
+          <div class="board__head">
+            <span class="board__rank">#</span>
+            <span class="board__name">Operator</span>
+            <span class="board__squad">Squad</span>
+            <span class="board__num">K</span>
+            <span class="board__num">D</span>
+            <span class="board__num">K/D</span>
+          </div>
+          <div class="board__rows" id="res-board"></div>
+        </div>
+
         <button class="btn btn--primary btn--full" id="btn-continue">Continue</button>
       </div>
     </div>
