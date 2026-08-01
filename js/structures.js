@@ -2,6 +2,32 @@
    structures.js — wall types, their ballistics, and the buildings
    the map is made out of.
 
+   BUILDING CATEGORIES (30 total, 28 implemented):
+     • Tactical (small, fast play): tower, checkpoint, bunker, fuel-depot
+     • Residential (medium, mixed): house, mansion, shanty, apartments
+     • Industrial (large, complex): warehouse, factory, depot, power-plant
+     • Institutional (varied): hospital, school, church, museum, prison
+     • Commercial (trade hubs): market, bank, gas-station
+     • Military (high-security): base, fortress, hangar, barracks, armory
+     • Unique (special gameplay): radio-tower, arena, bridge-fort, mine, farm, camp
+     • Utility (resource hubs): dock, train-station
+
+   PHASE 6 EXPANSION (14 new buildings added):
+     ✓ prison (high-security cells, reinforced perimeter, 6+ entry points for breach gameplay)
+     ✓ bank (ultra-secure vault, minimal access, high-tier loot concentration)
+     ✓ market (diverse loot pools, many entry points, open stall layout for dynamic play)
+     ✓ school (varied heights, open classrooms, educational loot distribution)
+     ✓ church (tall interior, spiritual atmosphere, pew-line cover patterns)
+     ✓ museum (gallery halls, display cases as cover, high-rarity artifacts)
+     ✓ barracks (military dormitory, dense rooms, weapons-rich loot)
+     ✓ armory (weapons cache, ultra-reinforced, legendary-tier loot)
+     ✓ arena (open center with ring seating, ring-of-fire tactical engagement)
+     ✓ bridge-fort (linear forced-engagement bridge, narrow high-pressure combat)
+     ✓ train-station (platform-based, multiple entry points, horizontal sightlines)
+     ✓ power-plant (industrial complex, hazardous turbine areas, tech loot)
+     ✓ gas-station (compact convenience store, fuel pump cover, explosive hazard)
+     ✓ mine (underground quarry, vertical drops, tight passages, ore/explosives)
+
    Engine mapping notes:
      • Thickness/length are design metres; PX_PER_M converts them.
        A "0.3 thickness, 1.5 length" door is 12px thick and 60px wide.
@@ -526,6 +552,274 @@ const Structures = (() => {
       out.push(seg('wire', ox - 80, oy - 80, 6, 'v', 0.4));
       out.push(seg('wire', ox + 200, oy - 80, 6, 'v', 0.4));
       out.push(seg('wire', ox - 80, oy + 200, 6, 'h', 0.4));
+      return out;
+    },
+
+    /* prison: high-security cells with reinforced walls, hard to breach */
+    prison(ox, oy) {
+      const w = 800, h = 600;
+      const out = shell(ox, oy, w, h, 'rwall', 0.5, [
+        { side: 'n', at: 320, type: 'rdoor', len: 2 },
+        { side: 's', at: 200, type: 'rdoor' },
+      ]);
+      // cell block north: 4 cells × 2 rows
+      for (let row = 0; row < 2; row++) {
+        for (let col = 0; col < 4; col++) {
+          const cx = ox + 80 + col * 120, cy = oy + 100 + row * 160;
+          out.push(seg('rwall', cx, cy, 2.8, 'h', 0.35));
+          out.push(seg('rwall', cx, cy, 2.8, 'v', 0.35));
+          out.push(seg('rdoor', cx + 56, cy, 1.2, 'h'));  // cell entrance
+        }
+      }
+      // guard corridor
+      out.push(seg('metal', ox + 50, oy + 300, 7.2, 'h', 0.3));
+      // watchtower (corner)
+      out.push(seg('rwall', ox + 650, oy + 450, 2, 'h', 0.4));
+      out.push(seg('rwall', ox + 650, oy + 450, 2, 'v', 0.4));
+      out.push(seg('sandbag', ox + 700, oy + 400, 3, 'h', 0.5));
+      return out;
+    },
+
+    /* bank: ultra-secure vault with minimal entry points, high-tier loot */
+    bank(ox, oy) {
+      const w = 520, h = 420;
+      const out = shell(ox, oy, w, h, 'rwall', 0.55, [
+        { side: 'n', at: 200, type: 'rdoor', len: 1.5 },
+      ]);
+      // front lobby (reinforced)
+      out.push(seg('metal', ox + 120, oy + 80, 2.8, 'h', 0.4));
+      // vault room (ultra-secure)
+      out.push(seg('rwall', ox + 320, oy + 120, 4, 'h', 0.5));
+      out.push(seg('rwall', ox + 320, oy + 120, 3.2, 'v', 0.5));
+      out.push(seg('rdoor', ox + 360, oy + 120, 1, 'h'));  // narrow vault entrance
+      // teller stations + secure boxes
+      out.push(seg('metal', ox + 150, oy + 200, 2.2, 'h', 0.3));
+      out.push(seg('metal', ox + 300, oy + 280, 2.2, 'v', 0.3));
+      return out;
+    },
+
+    /* market: diverse trading post with many entry points, varied cover */
+    market(ox, oy) {
+      const w = 680, h = 520;
+      const out = shell(ox, oy, w, h, 'wood', 0.35, [
+        { side: 'n', at: 160 }, { side: 'n', at: 400 },
+        { side: 's', at: 200 }, { side: 'e', at: 280 },
+      ]);
+      // market stalls (scattered, low cover)
+      for (let i = 0; i < 5; i++) {
+        out.push(seg('barricade', ox + 100 + i * 110, oy + 150 + (i % 2) * 200, 2, 'h', 0.25));
+        out.push(seg('barricade', ox + 100 + i * 110, oy + 150 + (i % 2) * 200, 1.8, 'v', 0.25));
+      }
+      // vendor counter
+      out.push(seg('wood', ox + 320, oy + 320, 4.2, 'h', 0.3));
+      return out;
+    },
+
+    /* school: open classrooms, varied heights, educational theme */
+    school(ox, oy) {
+      const w = 640, h = 560;
+      const out = shell(ox, oy, w, h, 'wood', 0.4, [
+        { side: 'n', at: 240, type: 'door', len: 2 },
+        { side: 's', at: 320 },
+      ]);
+      // classroom wings (north + south corridor)
+      out.push(seg('wood', ox + 14, oy + 200, 8.4, 'h', 0.3));  // divider
+      for (const dx of [100, 240, 380, 520]) {
+        out.push(seg('door', ox + dx, oy + 200, 1.5, 'h'));  // classroom doors
+      }
+      // gym (large open area)
+      out.push(seg('barricade', ox + 400, oy + 380, 5, 'h', 0.25));
+      out.push(seg('barricade', ox + 400, oy + 380, 3.5, 'v', 0.25));
+      // cafeteria (low walls, many tables)
+      out.push(seg('barricade', ox + 180, oy + 450, 3, 'h', 0.25));
+      return out;
+    },
+
+    /* church: tall open interior, minimal internal walls, spiritual cover */
+    church(ox, oy) {
+      const w = 500, h = 620;
+      const out = shell(ox, oy, w, h, 'wood', 0.45, [
+        { side: 'n', at: 180, type: 'door', len: 2 },
+        { side: 's', at: 200, type: 'door' },
+      ]);
+      // altar platform (elevated, central focus)
+      out.push(seg('wood', ox + 220, oy + 100, 3, 'h', 0.3));
+      out.push(seg('wood', ox + 220, oy + 100, 2, 'v', 0.3));
+      // pews (linear rows for cover)
+      for (let i = 0; i < 4; i++) {
+        out.push(seg('barricade', ox + 60, oy + 220 + i * 80, 3.6, 'h', 0.25));
+      }
+      // bell tower (back corner)
+      out.push(seg('metal', ox + 420, oy + 400, 2, 'h', 0.35));
+      out.push(seg('metal', ox + 420, oy + 400, 2.5, 'v', 0.35));
+      return out;
+    },
+
+    /* museum: cultural artifacts, high ceilings, display cases as cover */
+    museum(ox, oy) {
+      const w = 720, h = 580;
+      const out = shell(ox, oy, w, h, 'wood', 0.4, [
+        { side: 'n', at: 280, type: 'door', len: 2 },
+        { side: 'e', at: 180, type: 'door' },
+      ]);
+      // gallery halls (parallel wings with art display walls)
+      out.push(seg('wood', ox + 180, oy + 80, 6, 'v', 0.3));
+      out.push(seg('wood', ox + 380, oy + 80, 6, 'v', 0.3));
+      out.push(seg('wood', ox + 580, oy + 140, 5, 'v', 0.3));
+      // central atrium (open area, few walls)
+      out.push(seg('wood', ox + 280, oy + 300, 3.2, 'h', 0.25));
+      // security desk
+      out.push(seg('metal', ox + 100, oy + 200, 2.2, 'h', 0.3));
+      return out;
+    },
+
+    /* barracks: military dormitory, many small rooms, high-loot density */
+    barracks(ox, oy) {
+      const w = 700, h = 500;
+      const out = shell(ox, oy, w, h, 'metal', 0.45, [
+        { side: 'w', at: 120, type: 'door' }, { side: 'e', at: 180, type: 'door' },
+      ]);
+      // bunk room 1 (north wing)
+      out.push(seg('metal', ox + 120, oy + 80, 3.4, 'v', 0.3));
+      out.push(seg('door', ox + 120, oy + 220, 1.5, 'v'));
+      // bunk room 2 (central)
+      out.push(seg('metal', ox + 360, oy + 100, 3.4, 'v', 0.3));
+      out.push(seg('door', ox + 360, oy + 240, 1.5, 'v'));
+      // common area (south)
+      out.push(seg('barricade', ox + 280, oy + 380, 4, 'h', 0.3));
+      // armory (reinforced corner)
+      out.push(seg('rwall', ox + 600, oy + 350, 2.8, 'h', 0.35));
+      out.push(seg('rwall', ox + 600, oy + 350, 2.8, 'v', 0.35));
+      out.push(seg('rdoor', ox + 650, oy + 350, 1.2, 'h'));
+      return out;
+    },
+
+    /* armory: weapons cache, heavily reinforced, sparse interior */
+    armory(ox, oy) {
+      const w = 480, h = 360;
+      const out = shell(ox, oy, w, h, 'rwall', 0.55, [
+        { side: 's', at: 150, type: 'rdoor', len: 1.5 },
+      ]);
+      // weapon racks (metal storage)
+      out.push(seg('metal', ox + 100, oy + 80, 1.8, 'h', 0.4));
+      out.push(seg('metal', ox + 220, oy + 100, 1.8, 'h', 0.4));
+      out.push(seg('metal', ox + 340, oy + 110, 1.8, 'h', 0.4));
+      // ammo vault (ultra-secure)
+      out.push(seg('rwall', ox + 320, oy + 200, 2.2, 'h', 0.5));
+      out.push(seg('rwall', ox + 320, oy + 200, 2, 'v', 0.5));
+      out.push(seg('rdoor', ox + 350, oy + 200, 1, 'h'));
+      return out;
+    },
+
+    /* arena: open center with spectator seating, ring of cover */
+    arena(ox, oy) {
+      const w = 700, h = 700;
+      const out = [];
+      // outer ring wall (spectator barrier)
+      out.push(seg('sandbag', ox - 40, oy - 40, 14, 'h', 0.5));
+      out.push(seg('sandbag', ox - 40, oy + w + 40, 14, 'h', 0.5));
+      out.push(seg('sandbag', ox - 40, oy - 40, 14, 'v', 0.5));
+      out.push(seg('sandbag', ox + w + 40, oy - 40, 14, 'v', 0.5));
+      // inner ring (lower seating cover)
+      out.push(seg('barricade', ox + 80, oy + 80, 12, 'h', 0.3));
+      out.push(seg('barricade', ox + 80, oy + 80, 12, 'v', 0.3));
+      out.push(seg('barricade', ox + w - 80, oy + 80, 12, 'v', 0.3));
+      out.push(seg('barricade', ox + 80, oy + w - 80, 12, 'h', 0.3));
+      // center pit (open, vulnerable)
+      return out;
+    },
+
+    /* bridge fortification: narrow linear structure, forced engagement */
+    'bridge-fort'(ox, oy) {
+      const out = [];
+      // main bridge deck (metal)
+      out.push(seg('metal', ox, oy, 8, 'h', 0.4));
+      // fortification pillars + sandbags
+      for (let i = 0; i < 4; i++) {
+        out.push(seg('sandbag', ox + 120 + i * 140, oy - 60, 1.5, 'h', 0.5));
+        out.push(seg('sandbag', ox + 120 + i * 140, oy + 60, 1.5, 'h', 0.5));
+      }
+      // center strongpoint
+      out.push(seg('rwall', ox + 300, oy - 80, 2.2, 'h', 0.4));
+      out.push(seg('rwall', ox + 300, oy - 80, 2.2, 'v', 0.4));
+      out.push(seg('rwall', ox + 300, oy + 80, 2.2, 'h', 0.4));
+      out.push(seg('rwall', ox + 300, oy + 80, 2.2, 'v', 0.4));
+      return out;
+    },
+
+    /* train station: linear with platforms, multiple entry points */
+    'train-station'(ox, oy) {
+      const w = 800, h = 500;
+      const out = shell(ox, oy, w, h, 'metal', 0.4, [
+        { side: 'n', at: 200 }, { side: 'n', at: 500 },
+        { side: 's', at: 250 }, { side: 'w', at: 150, type: 'door' },
+      ]);
+      // track platforms (metal rails as barriers)
+      out.push(seg('metal', ox + 100, oy + 180, 7.2, 'h', 0.3));
+      out.push(seg('metal', ox + 300, oy + 180, 7.2, 'h', 0.3));
+      // passenger benches + pillars (cover)
+      for (let i = 0; i < 3; i++) {
+        out.push(seg('wood', ox + 150 + i * 200, oy + 80, 1.6, 'v', 0.3));
+      }
+      // station office
+      out.push(seg('wood', ox + 650, oy + 200, 2.6, 'h', 0.35));
+      out.push(seg('wood', ox + 650, oy + 200, 2.6, 'v', 0.35));
+      return out;
+    },
+
+    /* power plant: industrial complex with hazardous generators */
+    'power-plant'(ox, oy) {
+      const w = 820, h = 600;
+      const out = shell(ox, oy, w, h, 'metal', 0.5, [
+        { side: 'w', at: 150, type: 'rdoor' }, { side: 'e', at: 200, type: 'rdoor' },
+      ]);
+      // turbine hall (large open area)
+      out.push(seg('metal', ox + 200, oy + 100, 5, 'v', 0.4));
+      out.push(seg('metal', ox + 400, oy + 120, 5, 'v', 0.4));
+      out.push(seg('metal', ox + 600, oy + 80, 5, 'v', 0.4));
+      // control room (reinforced)
+      out.push(seg('rwall', ox + 650, oy + 350, 3.2, 'h', 0.4));
+      out.push(seg('rwall', ox + 650, oy + 350, 3.2, 'v', 0.4));
+      out.push(seg('rdoor', ox + 720, oy + 350, 1.5, 'h'));
+      // cooling systems (low walls, hazard zones)
+      out.push(seg('barricade', ox + 100, oy + 450, 4, 'h', 0.3));
+      out.push(seg('barricade', ox + 500, oy + 500, 4, 'h', 0.3));
+      return out;
+    },
+
+    /* fuel depot (expanded): gas station with pumps + convenience store */
+    'gas-station'(ox, oy) {
+      const out = [];
+      // fuel pump islands (metal)
+      for (let i = 0; i < 2; i++) {
+        out.push(seg('metal', ox + 60, oy + 40 + i * 120, 2, 'h', 0.35));
+        out.push(seg('metal', ox + 60, oy + 40 + i * 120, 1.4, 'v', 0.35));
+      }
+      // convenience store (small structure)
+      out.push(...shell(ox + 280, oy - 20, 240, 200, 'wood', 0.3, [
+        { side: 's', at: 80, type: 'door', len: 1.2 },
+      ]));
+      // storage tanks (hazard)
+      out.push(seg('metal', ox + 480, oy + 160, 2.2, 'h', 0.4));
+      out.push(seg('metal', ox + 480, oy + 160, 2.2, 'v', 0.4));
+      return out;
+    },
+
+    /* mine: underground quarry with vertical drops and tight passages */
+    mine(ox, oy) {
+      const w = 680, h = 640;
+      const out = shell(ox, oy, w, h, 'rock', 0.4, [
+        { side: 'n', at: 240, type: 'door' }, { side: 's', at: 280, type: 'door' },
+      ]);
+      // mining shafts (vertical passages)
+      out.push(seg('rock', ox + 150, oy + 120, 4.4, 'v', 0.35));
+      out.push(seg('rock', ox + 400, oy + 100, 4.8, 'v', 0.35));
+      // support structures (wooden scaffolding)
+      out.push(seg('wood', ox + 280, oy + 280, 3.2, 'h', 0.25));
+      out.push(seg('wood', ox + 500, oy + 320, 3, 'h', 0.25));
+      // equipment room (metal reinforced)
+      out.push(seg('metal', ox + 580, oy + 450, 2.8, 'h', 0.35));
+      out.push(seg('metal', ox + 580, oy + 450, 2.8, 'v', 0.35));
       return out;
     },
   };

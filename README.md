@@ -80,7 +80,7 @@ battle-squads/
 │   ├── classes.js      # 10 classes: base speed, tool, consumable + carry limit
 │   ├── structures.js   # wall types + 13 building blueprints
 │   ├── terrain.js      # seeded island: ocean, beach, grass, river, bridges, roads
-│   ├── sprites.js      # all world art, drawn as canvas vectors (no image files)
+│   ├── sprites.js      # all world art + furniture, drawn as canvas vectors
 │   ├── items.js        # consumables, loot-crate tables, legendary weapons
 │   ├── storage.js      # localStorage persistence (accounts, profile, settings)
 │   ├── audio.js        # procedural WebAudio SFX (no audio files needed)
@@ -463,6 +463,33 @@ piles, shipping containers, stumps.
 > rather than a technical one. The style is matched; the pixels are drawn here,
 > which also keeps the game a zero-asset static site that renders identically
 > everywhere.
+
+## Buildings you go inside
+
+Buildings are places, not wall rings. Each one has a **floor** in its own
+material, **furniture** against the walls, **loot** in the middle worth
+committing to, and a **roof** that hides all of it until someone on your team
+steps in — at which point it fades out rather than snapping.
+
+| Building | Furnished with | Loot |
+|---|---|---|
+| House / Apartments / Shanty | beds, tables, shelves, stoves, toilets | 2–4 crates |
+| Mansion | beds, desks, lockers, shelves | 4 crates |
+| Warehouse / Hangar / Base | ammo boxes, lockers, desks, shelves | 4 crates |
+| Bunker / Tower / Checkpoint | lockers, ammo boxes, desks | 1–3 crates |
+| Farm / Depot / Camp | shelves, tables, stoves | 2 crates |
+
+Furniture is placed against the inside of the walls and never overlapping them;
+crates go toward the middle. Indoor loot is re-checked once the whole map is
+final, so a wall placed later can't end up sitting on a crate.
+
+## Scale
+
+Framing matches survev's: the camera sits at **1.45×** so a player and the
+things around them fill a good part of the screen, the player is r22, and every
+prop scales with them — a tree is wider than a person, a container wider still.
+Aiming down sights and the binoculars both scale relative to that base rather
+than fighting it.
 
 ## Obstacles you can fight with
 
