@@ -38,7 +38,17 @@ const Game = (() => {
   let teamScores = [];
   let player = null;
   let matchStats = { kills: 0, captures: 0 };
+  /* One tile, the unit everything spatial is measured in: weapon ranges
+     (weapons.js), blast radii (items.js) and the map itself, which is 128
+     tiles across. */
   const TILE = 50;
+  /* Infantry hitbox radius. Smaller than a tile by a good margin — a body is
+     something you fit through a doorway with, not something that fills one.
+     Shrinking it also widens the world without touching the camera: at 0.3
+     tiles a player is a target you have to aim at across a courtyard rather
+     than a blob you can hardly miss. Bullets are stepped along their flight
+     (see BULLET_STEP) so a hitbox this small still can't be flown through. */
+  const BODY_R = 15;
 
   /* Every wall on the map is a Structures.seg — see js/structures.js for the
      wall-type table (height, HP, toughness, ballistics). */
@@ -59,7 +69,18 @@ const Game = (() => {
 
   /* Where the domination objectives sit. Needed before the map is built so the
      generator can keep those approaches clear, and again when teams are set up. */
+  /* Objectives live inside the landmark buildings, so capturing one means
+     holding a factory floor or a keep rather than standing in a field. If a
+     landmark somehow failed to place, we fall back to open ground. */
   function objectiveAnchors() {
+    const names = ['A', 'B', 'C'];
+    if (landmarks.length >= 3) {
+      return landmarks.slice(0, 3).map((l, i) => {
+        const r = Math.max(150, Math.min(l.w, l.h) * 0.30);
+        const p = spotInsideBuilding(l, r);
+        return { name: names[i], x: p.x, y: p.y, r, building: l.name, inside: true };
+      });
+    }
     return [
       { name: 'A', x: MAP_W * 0.24, y: MAP_H * 0.70, r: 165 },
       { name: 'B', x: MAP_W * 0.50, y: MAP_H * 0.44, r: 175 },
@@ -73,6 +94,70 @@ const Game = (() => {
      anchor until the disc is clear of walls and out of the water. Reserving
      ground up front and filtering afterwards meant every new placer had to
      remember the rule; this way an objective simply cannot be inside a wall. */
+  /* ---------------- landmarks ----------------
+     One of each, placed first so they get the room they need, spread across
+     the map. In domination these are also where the objectives go: capturing
+     means holding a building, not standing in a field. */
+  const LANDMARKS = ['factory', 'keep', 'silos'];
+
+  function placeLandmarks() {
+    const anchors = [
+      { x: MAP_W * 0.26, y: MAP_H * 0.70 },
+      { x: MAP_W * 0.52, y: MAP_H * 0.40 },
+      { x: MAP_W * 0.76, y: MAP_H * 0.72 },
+    ];
+    landmarks = [];
+    LANDMARKS.forEach((name, i) => {
+      const anchor = anchors[i % anchors.length];
+      for (let ring = 0; ring <= 30; ring++) {
+        for (let k = 0; k < 12; k++) {
+          const ang = (k / 12) * Math.PI * 2 + ring;
+          const d = ring * 140;
+          const x = anchor.x + Math.cos(ang) * d - 300;
+          const y = anchor.y + Math.sin(ang) * d - 250;
+          const parts = placeBuilding(name, x, y);
+          if (!parts.length) continue;
+          const bb = boundsOf(parts);
+          if (landmarks.some(l => padOverlap(bb, l, 260))) continue;
+          const pid = 'L' + i;
+          for (const p of parts) { p.placement = pid; p.landmark = true; genAdd(p); }
+          obstacles.push(...parts);
+          invalidateRects();
+          const rec = { name, placement: pid, ...bb, floor: '#5a5f70', landmark: true };
+          landmarks.push(rec);
+          buildings.push(rec);
+          furnish(name, bb);
+          return;
+        }
+      }
+    });
+  }
+  let landmarks = [];
+
+  /* Somewhere inside a landmark that a capture point can actually sit: not on
+     one of its internal walls, and as near the middle as we can manage. Big
+     buildings have spines and inner rooms, so the geometric centre is often
+     solid brick. */
+  function spotInsideBuilding(l, r) {
+    const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+    const clear = (x, y) => {
+      if (pointInObstacle(x, y)) return false;
+      // keep the disc inside the building's footprint
+      return x - r > l.x - 20 && x + r < l.x + l.w + 20 &&
+             y - r > l.y - 20 && y + r < l.y + l.h + 20;
+    };
+    if (clear(cx, cy)) return { x: cx, y: cy };
+    for (let ring = 1; ring <= 14; ring++) {
+      for (let k = 0; k < 16; k++) {
+        const ang = (k / 16) * Math.PI * 2 + ring * 0.4;
+        const d = ring * 34;
+        const x = cx + Math.cos(ang) * d, y = cy + Math.sin(ang) * d;
+        if (clear(x, y)) return { x, y };
+      }
+    }
+    return { x: cx, y: cy };            // bulldozing will make room
+  }
+
   function placeObjectives() {
     const clearAt = (x, y, r) => {
       if (!Terrain.isSpawnable(terrain, x, y)) return false;
@@ -102,6 +187,10 @@ const Game = (() => {
     // left a rare case where an objective sat inside a wall; bulldozing makes it
     // impossible rather than unlikely.
     objectiveSpotsCache = objectiveAnchors().map(a => {
+      // An objective inside a landmark stays put — the whole point is that you
+      // fight for the building. Clear only the clutter in the middle of it,
+      // never the shell you're meant to be holding.
+      if (a.inside) { clearObjectiveSite(a); return a; }
       const spot = pick(a);
       bulldoze(spot.x, spot.y, spot.r);
       return spot;
@@ -109,18 +198,43 @@ const Game = (() => {
     return objectiveSpotsCache;
   }
 
+  /* Make a capture point usable. Inside a landmark we keep the shell — holding
+     the building is the point — but if the spot still lands on one of its
+     internal walls, punch through that: an unreachable objective is worse than
+     a doorway in a spine. */
+  function clearObjectiveSite(o) {
+    bulldoze(o.x, o.y, o.r, !!o.inside);
+    // Keep going until the point is genuinely standable. One pass left rare
+    // cases where a landmark's own internal wall still covered the centre, and
+    // an objective you can't stand on is worse than a gap in a spine.
+    for (let r = 70; r <= 200 && pointInObstacle(o.x, o.y); r += 65) {
+      bulldoze(o.x, o.y, r, false);
+    }
+  }
+
   /* clear every wall out of a disc, dropping whole buildings rather than
      leaving half of one standing */
-  function bulldoze(x, y, r) {
+  function bulldoze(x, y, r, keepLandmark) {
     const disc = { x: x - r, y: y - r, w: r * 2, h: r * 2 };
     const doomed = new Set();
     for (const o of obstacles) {
+      if (keepLandmark && o.landmark) continue;
       if (o.placement && padOverlap(disc, o, 0)) doomed.add(o.placement);
     }
     obstacles = obstacles.filter(o => {
+      if (keepLandmark && o.landmark) return true;
       if (o.placement && doomed.has(o.placement)) return false;
       return !padOverlap(disc, o, 0);
     });
+    // deployed walls count too — solidRects includes them, so leaving one
+    // behind would still block the point
+    for (let i = deployables.length - 1; i >= 0; i--) {
+      const dp = deployables[i];
+      if (dp.type === 'wall' && dp.rect && padOverlap(disc, dp.rect, 0)) deployables.splice(i, 1);
+    }
+    // furniture in the capture area would just be in the way
+    decor = decor.filter(d => !(d.indoors &&
+      d.x > disc.x && d.x < disc.x + disc.w && d.y > disc.y && d.y < disc.y + disc.h));
     invalidateRects();
   }
 
@@ -146,7 +260,8 @@ const Game = (() => {
 
   function buildMap() {
     obstacles = []; trenches = []; decor = []; grass = [];
-    buildings = []; pendingIndoorCrates = [];
+    buildings = []; landmarks = []; pendingIndoorCrates = [];
+    genReset();
     invalidateRects();
     terrain = Terrain.generate(MAP_W, MAP_H, mode === 'domination' ? 20260730 : 90210);
 
@@ -155,6 +270,7 @@ const Game = (() => {
     const playH = MAP_H - Terrain.BEACH_INSET * 2;
     const area = (playW * playH) / 1e6;                  // in millions of px
 
+    placeLandmarks();                                   // the big one-offs get first pick
     placeBuildingsProcedural(Math.round(area * DENSITY.buildings));
     placeCover(Math.round(area * DENSITY.cover));
     placeGrass(Math.round(area * DENSITY.grassPatches));
@@ -194,6 +310,44 @@ const Game = (() => {
     a.x - pad < b.x + b.w && a.x + a.w + pad > b.x &&
     a.y - pad < b.y + b.h && a.y + a.h + pad > b.y;
 
+  /* ---------------- generation-time overlap index ----------------
+     Placing ~1700 walls by testing each candidate against every wall already
+     down is quadratic, and it showed: map generation was taking over a second.
+     This is a coarse bucket grid maintained during generation, so a candidate
+     only checks the walls near it. */
+  const GEN_CELL = 200;
+  let genGrid = null;
+  const genReset = () => { genGrid = new Map(); };
+  const genKey = (cx, cy) => cx + ',' + cy;
+  function genAdd(r) {
+    if (!genGrid) genReset();
+    const x0 = Math.floor(r.x / GEN_CELL), x1 = Math.floor((r.x + r.w) / GEN_CELL);
+    const y0 = Math.floor(r.y / GEN_CELL), y1 = Math.floor((r.y + r.h) / GEN_CELL);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const k = genKey(cx, cy);
+        let arr = genGrid.get(k);
+        if (!arr) { arr = []; genGrid.set(k, arr); }
+        arr.push(r);
+      }
+    }
+  }
+  /* does this rect (plus padding) hit anything already placed? */
+  function genHits(r, pad) {
+    if (!genGrid) return false;
+    const p = pad || 0;
+    const x0 = Math.floor((r.x - p) / GEN_CELL), x1 = Math.floor((r.x + r.w + p) / GEN_CELL);
+    const y0 = Math.floor((r.y - p) / GEN_CELL), y1 = Math.floor((r.y + r.h + p) / GEN_CELL);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const arr = genGrid.get(genKey(cx, cy));
+        if (!arr) continue;
+        for (const o of arr) if (padOverlap(r, o, p)) return true;
+      }
+    }
+    return false;
+  }
+
   /* Place a building only where the terrain allows it, and keep it whole.
      Filtering segment-by-segment would carve holes in anything straddling the
      river, so a placement either lands entirely or is rejected. */
@@ -202,6 +356,11 @@ const Game = (() => {
     if (!parts.length) return [];
     const bb = boundsOf(parts);
     if (bb.x < 40 || bb.y < 40 || bb.x + bb.w > MAP_W - 40 || bb.y + bb.h > MAP_H - 40) return [];
+    // Cheap rejections first. Most candidates fail, and the per-segment terrain
+    // check below runs a distance-to-river test per probe — doing that for a
+    // building that already overlaps something was most of the generation cost.
+    if (genHits(bb, 120)) return [];
+    if (!Terrain.isBuildable(terrain, bb.x + bb.w / 2, bb.y + bb.h / 2, 10)) return [];
     // Check every segment, not just the bounding box: a river bending through
     // the middle of a large building passes between the corners unnoticed, and
     // half a warehouse standing in the water is worse than not placing it.
@@ -222,19 +381,23 @@ const Game = (() => {
 
   /* what furnishes each kind of building, and how much loot it's worth */
   const FURNISH = {
-    house:      { props: ['table', 'bed', 'shelf', 'stove', 'toilet'], n: 5, loot: 2, floor: '#6b5741' },
-    mansion:    { props: ['table', 'bed', 'shelf', 'desk', 'locker'], n: 9, loot: 4, floor: '#7a6448' },
-    apartments: { props: ['bed', 'table', 'shelf', 'toilet', 'stove'], n: 10, loot: 4, floor: '#6b5741' },
-    shanty:     { props: ['shelf', 'stove', 'table'], n: 4, loot: 2, floor: '#5f4e3b' },
-    warehouse:  { props: ['shelf', 'ammoBox', 'locker', 'desk'], n: 8, loot: 4, floor: '#4e5666' },
-    hangar:     { props: ['ammoBox', 'locker', 'desk'], n: 7, loot: 4, floor: '#4a5260' },
-    bunker:     { props: ['locker', 'ammoBox', 'desk'], n: 5, loot: 3, floor: '#454d5a' },
-    base:       { props: ['locker', 'ammoBox', 'desk', 'table'], n: 8, loot: 4, floor: '#4e5666' },
-    tower:      { props: ['ammoBox', 'desk'], n: 2, loot: 1, floor: '#454d5a' },
-    farm:       { props: ['shelf', 'table', 'stove'], n: 4, loot: 2, floor: '#665338' },
-    depot:      { props: ['ammoBox', 'locker'], n: 3, loot: 2, floor: '#5a5646' },
-    camp:       { props: ['shelf', 'table'], n: 3, loot: 2, floor: null },
-    checkpoint: { props: ['ammoBox', 'desk'], n: 2, loot: 1, floor: '#4d5462' },
+    house:      { props: ['table', 'bed', 'shelf', 'stove', 'toilet', 'crate', 'rubble'], n: 12, loot: 3, floor: '#6b5741' },
+    mansion:    { props: ['table', 'bed', 'shelf', 'desk', 'locker', 'crate', 'tyre'], n: 22, loot: 6, floor: '#7a6448' },
+    apartments: { props: ['bed', 'table', 'shelf', 'toilet', 'stove', 'crate', 'rubble'], n: 26, loot: 7, floor: '#6b5741' },
+    shanty:     { props: ['shelf', 'stove', 'table', 'rubble', 'crate'], n: 10, loot: 3, floor: '#5f4e3b' },
+    warehouse:  { props: ['shelf', 'ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel'], n: 24, loot: 7, floor: '#4e5666' },
+    hangar:     { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre'], n: 22, loot: 7, floor: '#4a5260' },
+    bunker:     { props: ['locker', 'ammoBox', 'desk', 'crate'], n: 12, loot: 5, floor: '#454d5a' },
+    base:       { props: ['locker', 'ammoBox', 'desk', 'table', 'crate', 'pallet'], n: 20, loot: 6, floor: '#4e5666' },
+    tower:      { props: ['ammoBox', 'desk', 'crate'], n: 5, loot: 2, floor: '#454d5a' },
+    farm:       { props: ['shelf', 'table', 'stove', 'pallet', 'crate'], n: 12, loot: 3, floor: '#665338' },
+    depot:      { props: ['ammoBox', 'locker', 'barrel', 'pallet'], n: 10, loot: 4, floor: '#5a5646' },
+    camp:       { props: ['shelf', 'table', 'crate', 'tyre'], n: 8, loot: 3, floor: null },
+    checkpoint: { props: ['ammoBox', 'desk', 'sandpile'], n: 5, loot: 2, floor: '#4d5462' },
+    /* landmarks: much bigger footprints, so much more inside */
+    factory:    { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre', 'rubble'], n: 46, loot: 12, floor: '#4a5260' },
+    keep:       { props: ['locker', 'ammoBox', 'desk', 'table', 'crate', 'rubble'], n: 40, loot: 11, floor: '#565b6b' },
+    silos:      { props: ['barrel', 'pallet', 'crate', 'ammoBox'], n: 30, loot: 9, floor: '#5a5646' },
   };
 
   /* Fill a building: furniture against the inside of the walls, loot in the
@@ -254,7 +417,7 @@ const Game = (() => {
         const m = Sprites.META[kind];
         if (!m) break;
         const box = { x: p.x - m.r, y: p.y - m.r, w: m.r * 2, h: m.r * 2 };
-        if (structureRects().some(o => padOverlap(box, o, 8))) continue;
+        if (genHits(box, 8)) continue;
         if (decor.some(d => dist2(d.x, d.y, p.x, p.y) < 46 * 46)) continue;
         decor.push({ kind, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 1, indoors: true });
         break;
@@ -265,8 +428,15 @@ const Game = (() => {
       for (let tries = 0; tries < 20; tries++) {
         const p = spot();
         const box = { x: p.x - 20, y: p.y - 20, w: 40, h: 40 };
-        if (structureRects().some(o => padOverlap(box, o, 10))) continue;
-        pendingIndoorCrates.push({ x: p.x, y: p.y, tier: Math.random() < 0.28 ? 'gold' : Math.random() < 0.5 ? 'silver' : 'regular' });
+        if (genHits(box, 10)) continue;
+        // Loot gets better the harder the building is to hold: landmarks are
+        // where the gold crates live, which is what makes them worth taking.
+        const land = ['factory', 'keep', 'silos'].includes(name);
+        const roll = Math.random();
+        const tier = land
+          ? (roll < 0.45 ? 'gold' : roll < 0.8 ? 'silver' : 'regular')
+          : (roll < 0.2 ? 'gold' : roll < 0.55 ? 'silver' : 'regular');
+        pendingIndoorCrates.push({ x: p.x, y: p.y, tier });
         break;
       }
     }
@@ -297,10 +467,11 @@ const Game = (() => {
       if (!parts.length) continue;
       const bb = boundsOf(parts);
       if (placed.some(b => padOverlap(bb, b, 130))) continue;          // breathing room
+      if (landmarks.some(l => padOverlap(bb, l, 200))) continue;       // don't crowd a landmark
       placed.push(bb);
       seen[name] = (seen[name] || 0) + 1;
       const pid = 'p' + placed.length;
-      for (const part of parts) part.placement = pid;
+      for (const part of parts) { part.placement = pid; genAdd(part); }
       obstacles.push(...parts);
       invalidateRects();
       const conf = FURNISH[name];
@@ -327,9 +498,9 @@ const Game = (() => {
       if (seg.x < 20 || seg.y < 20 || seg.x + seg.w > MAP_W - 20 || seg.y + seg.h > MAP_H - 20) continue;
       if (!Terrain.isSpawnable(terrain, seg.x + seg.w / 2, seg.y + seg.h / 2)) continue;
       // don't drop a wall on top of a building
-      if (structureRects().some(o => padOverlap(seg, o, 24))) continue;
+      if (genHits(seg, 24)) continue;
       obstacles.push(seg);
-      invalidateRects();
+      genAdd(seg);
       made++;
     }
   }
@@ -363,9 +534,9 @@ const Game = (() => {
       const scale = 0.8 + Math.random() * 0.45;
       const size = type === 'tree' ? 64 : type === 'container' ? 76 : type === 'bush' ? 56 : 46;
       const pr = Structures.prop(type, x, y, size, scale);
-      if (structureRects().some(o => padOverlap(pr, o, 12))) continue;
+      if (genHits(pr, 12)) continue;
       obstacles.push(pr);
-      invalidateRects();
+      genAdd(pr);
     }
 
     for (let i = 0; i < count - liveCount; i++) {
@@ -430,7 +601,7 @@ const Game = (() => {
     const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
       team, isPlayer, alive: true,
-      x: 0, y: 0, r: 22, angle: 0,
+      x: 0, y: 0, r: BODY_R, angle: 0,
       klass: 'infantry',                                    // see Combat.TARGETS
       hp: Combat.maxHpFor('infantry'), maxHp: Combat.maxHpFor('infantry'),
       vest: 0, helmet: 0,                                   // armour tiers 0-3
@@ -536,7 +707,8 @@ const Game = (() => {
     // Last of all, once every generator and spawner has run: clear the ground
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
-    for (const o of objectives) bulldoze(o.x, o.y, o.r);
+    for (const o of objectives) clearObjectiveSite(o);
+    buildNav();          // the world is final now, so the grid matches it
     // starting tactical kit = whatever your class deploys with
     player.inv = {
       grenade:  { id: null, n: 0 },
@@ -646,7 +818,16 @@ const Game = (() => {
   }
 
   /* ---------------- shooting ---------------- */
-  const FALLOFF_UNIT = 210, FALLOFF_MIN = 0.4;   // falloff start is per-gun now
+  /* Falloff: a round carries full damage for the first FALLOFF_START of its
+     gun's range, then sheds the gun's falloff% every FALLOFF_STEP travelled,
+     down to FALLOFF_MIN. Measured in tiles so the curve keeps its shape
+     whatever the range: an AKM at its 27-tile limit still lands 81% of its
+     damage, an M870 pellet at 13 tiles lands 68%. */
+  const FALLOFF_STEP = TILE * 4, FALLOFF_START = 0.45, FALLOFF_MIN = 0.4;
+  /* How far a round may move between collision tests. Has to stay under the
+     smallest thing it can hit — a BODY_R hitbox, or the thinnest wall — or
+     fast rounds fly straight through. */
+  const BULLET_STEP = 10;
 
   function startReload(a) {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
@@ -670,7 +851,14 @@ const Game = (() => {
     a.fireCd = w.fireInterval;
     a.ammo--;
 
-    const ads = a.isPlayer && input.ads;
+    /* Aimed fire tightens the cone. The player holds right mouse for it; a bot
+       counts as aimed when it has stopped and held the contact long enough to
+       settle, which is the only thing that makes a bot marksman dangerous at
+       the ranges these guns now reach — a hipfired M16 cone is ±44px at 25
+       tiles, wider than the body it's shooting at. */
+    const ads = a.isPlayer
+      ? input.ads
+      : (a.contactT > 0.35 && Math.hypot(a.vx || 0, a.vy || 0) < 40);
     // moving widens the cone by the gun's own moveSpread — a MAC-10 sprays at
     // a run, a QBB bullpup barely notices. ADS steadies both.
     const speed = Math.hypot(a.vx || 0, a.vy || 0);
@@ -706,7 +894,7 @@ const Game = (() => {
   /* Gunfire is a giveaway: bots within earshot of an unsuppressed shot look
      your way. A Suppressor drops the report below that threshold entirely. */
   function alertNearbyBots(shooter) {
-    const earshot = 700 * 700;
+    const earshot = (TILE * 22) ** 2;   // a shot carries about a screen and a half
     for (const o of agents) {
       if (!o.alive || o.isPlayer || o.team === shooter.team || o.isVehicle) continue;
       if (dist2(o.x, o.y, shooter.x, shooter.y) > earshot) continue;
@@ -1012,6 +1200,7 @@ const Game = (() => {
     if (s.hp <= 0) destroyStructure(s);
   }
   function destroyStructure(s) {
+    navDirty = true;                 // a hole in a wall is a new route
     const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
     const k = kindOf(s);
     spawnFx(cx, cy, k.stroke && k.stroke[0] === '#' ? k.stroke : '#8ea0c9', s.isProp ? 18 : 14);
@@ -1394,8 +1583,8 @@ const Game = (() => {
     const ang = s.angle + (Math.random() - 0.5) * 0.05;
     bullets.push({
       x: s.x + Math.cos(ang) * 20, y: s.y + Math.sin(ang) * 20,
-      vx: Math.cos(ang) * 900, vy: Math.sin(ang) * 900, sx: s.x, sy: s.y,
-      team: s.team, dmg: s.item.damage, falloff: 0.04,
+      vx: Math.cos(ang) * TILE * 48, vy: Math.sin(ang) * TILE * 48, sx: s.x, sy: s.y,
+      team: s.team, dmg: s.item.damage, falloff: 0.04, range: s.item.range,
       splash: 0, splashR: 0, life: 1.2, owner: s.owner, color: '#35e0ff',
     });
     spawnFx(s.x + Math.cos(ang) * 20, s.y + Math.sin(ang) * 20, '#ffd36a', 2);
@@ -1620,14 +1809,33 @@ const Game = (() => {
       }
       // SURVIVAL — reload when you've broken off rather than mid-fight
       if (SURV.reloadsInCover && retreating && a.ammo < a.weapon.mag) startReload(a);
-    } else if (a.aiTargetPt) {
-      const ang = Math.atan2(a.aiTargetPt.y - a.y, a.aiTargetPt.x - a.x);
-      a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
-      if (dist2(a.x, a.y, a.aiTargetPt.x, a.aiTargetPt.y) < 60 * 60) a.aiTargetPt = null;
-    } else if (enemy) {
-      // roam toward enemy
-      const ang = Math.atan2(enemy.y - a.y, enemy.x - a.x);
-      a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
+    } else {
+      // Not fighting: route somewhere. Head for the objective if there is one,
+      // otherwise toward the nearest enemy — but *around* the buildings rather
+      // than into them.
+      const goal = a.aiTargetPt || (enemy ? { x: enemy.x, y: enemy.y } : null);
+      if (goal) {
+        let dir = null;
+        // a clear straight line is cheaper than a path, and looks better
+        if (navGrid && Nav.clearLine(navGrid, a, goal)) {
+          const ang = Math.atan2(goal.y - a.y, goal.x - a.x);
+          dir = { x: Math.cos(ang), y: Math.sin(ang) };
+          a.path = null;
+        } else if (ensurePath(a, goal.x, goal.y)) {
+          dir = followPath(a);
+        }
+        if (dir) {
+          a.angle = Math.atan2(dir.y, dir.x);
+          moveX += dir.x; moveY += dir.y;
+        } else {
+          // no route at all — fall back to nosing toward it
+          const ang = Math.atan2(goal.y - a.y, goal.x - a.x);
+          a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
+        }
+        if (a.aiTargetPt && dist2(a.x, a.y, a.aiTargetPt.x, a.aiTargetPt.y) < 90 * 90) {
+          a.aiTargetPt = null; a.path = null;
+        }
+      }
     }
 
     // TEAMWORK — stick with the squad, but not close enough to share a grenade
@@ -1662,6 +1870,87 @@ const Game = (() => {
     } else { a.vx = 0; a.vy = 0; }
     if (a.ammo <= 0) startReload(a);
   }
+  /* ---------------- bot navigation ----------------
+     A nav grid is built once per match; bots request a path to wherever they
+     want to be and follow the waypoints. Recomputes are staggered and budgeted
+     so twenty-odd bots don't all run A* on the same frame. */
+  let navGrid = null;
+  let pathBudget = 0;
+  let navDirty = false, navRebuildIn = 0, navChanges = 0;
+
+  function buildNav() {
+    navGrid = Nav.build(MAP_W, MAP_H, solidRects());
+    if (!terrain) return;
+    // Stamp costs by walking the paths rather than asking the terrain about
+    // every cell: surfaceAt does a distance-to-polyline test, and running that
+    // 5000 times per rebuild was the single most expensive thing in the frame.
+    const g = navGrid;
+    const stamp = (pts, halfWidth, value) => {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const steps = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (Nav.CELL * 0.5));
+        for (let k = 0; k <= steps; k++) {
+          const t = k / steps;
+          const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
+          const spread = Math.ceil(halfWidth / Nav.CELL);
+          const [ccx, ccy] = Nav.cellOf(x, y);
+          for (let dy = -spread; dy <= spread; dy++) {
+            for (let dx = -spread; dx <= spread; dx++) {
+              const cx = ccx + dx, cy = ccy + dy;
+              if (cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows) continue;
+              const idx = cy * g.cols + cx;
+              if (!g.blocked[idx]) g.cost[idx] = value;
+            }
+          }
+        }
+      }
+    };
+    for (const r of terrain.rivers) stamp(r.pts, r.width / 2, 4);      // avoid swimming
+    for (const rd of terrain.roads) stamp(rd.pts, rd.width / 2, 0.7);  // prefer roads
+    for (const b of terrain.bridges) {                                  // bridges are fine
+      const [cx, cy] = Nav.cellOf(b.x, b.y);
+      const spread = Math.ceil(Math.max(b.w, b.h) / 2 / Nav.CELL);
+      for (let dy = -spread; dy <= spread; dy++) {
+        for (let dx = -spread; dx <= spread; dx++) {
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
+          const idx = ny * g.cols + nx;
+          if (!g.blocked[idx]) g.cost[idx] = 0.7;
+        }
+      }
+    }
+  }
+
+  /* Ask for a path, respecting the per-frame budget. Returns true if the bot
+     has a usable route. */
+  function ensurePath(a, tx, ty) {
+    if (!navGrid) return false;
+    const moved = !a.pathTarget || dist2(a.pathTarget.x, a.pathTarget.y, tx, ty) > 240 * 240;
+    a.pathAge = (a.pathAge || 0) - 1;
+    if (a.path && a.path.length && !moved && a.pathAge > 0) return true;
+    if (pathBudget <= 0) return !!(a.path && a.path.length);   // keep the old route this frame
+
+    pathBudget--;
+    a.pathTarget = { x: tx, y: ty };
+    a.pathAge = 90 + Math.floor(Math.random() * 60);           // ~1.5-2.5s
+    a.path = Nav.findPath(navGrid, a.x, a.y, tx, ty) || null;
+    a.pathI = 0;
+    return !!(a.path && a.path.length);
+  }
+
+  /* direction to the next waypoint, advancing as they're reached */
+  function followPath(a) {
+    if (!a.path || a.pathI >= a.path.length) return null;
+    let wp = a.path[a.pathI];
+    while (wp && dist2(a.x, a.y, wp.x, wp.y) < 70 * 70) {
+      a.pathI++;
+      wp = a.path[a.pathI];
+    }
+    if (!wp) { a.path = null; return null; }
+    const ang = Math.atan2(wp.y - a.y, wp.x - a.x);
+    return { x: Math.cos(ang), y: Math.sin(ang), wp };
+  }
+
   /* Bots walk in straight lines, so a building corner can pin them. If a bot
      barely moves while trying to, give it a sidestep heading for a moment. */
   function trackStuck(a, px, py, spd, dt) {
@@ -1675,12 +1964,16 @@ const Game = (() => {
   }
   const obj_jitter = (o) => o.x + rand(-o.r * 0.5, o.r * 0.5);
   const obj_jitterY = (o) => o.y + rand(-o.r * 0.5, o.r * 0.5);
-  // bots engage inside their own gun's effective range, clamped to something sane
-  const botRange = (w) => clamp(w.range * 0.85, 260, 900);
+  /* Bots engage inside their own gun's effective range, clamped to something
+     sane. The ceiling is deliberately about one screen: a sniper bot's rifle
+     reaches 56 tiles, but being shot by something you have no way of seeing
+     isn't a fight, so they hold until you're on their screen too. */
+  const botRange = (w) => clamp(w.range * 0.8, TILE * 8, TILE * 25);
 
   /* ---------------- update ---------------- */
   function update(dt) {
-    invalidateRects();          // walls can be built, blown up or opened any frame
+    invalidateRects();
+    pathBudget = 2;      // at most two A* runs a frame, spread across the bots          // walls can be built, blown up or opened any frame
     timeLeft -= dt;
     if (input.dashCd > 0) input.dashCd -= dt;
 
@@ -1695,7 +1988,7 @@ const Game = (() => {
         a.adrenaline = Math.max(0, a.adrenaline - 0.1*adr.burn * dt);
         if (a.isPlayer && Math.random() < dt * 3) spawnFx(a.x, a.y, '#4be08a', 1);
       } else {
-        a.adrenaline = Math.max(0, a.adrenaline - 0.1 * dt);   // slow idle decay
+        a.adrenaline = Math.max(0, a.adrenaline - 0.2 * dt);   // slow idle decay
       }
     }
     if (player.channel) { player.channel.t -= dt; if (player.channel.t <= 0) { player.channel.onDone(); player.channel = null; } }
@@ -1781,19 +2074,32 @@ const Game = (() => {
     // bullets
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
-      b.px = b.x; b.py = b.y;                  // remembered so ricochets know which face was hit
-      b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
-      let dead = b.life <= 0 || b.x < 0 || b.y < 0 || b.x > MAP_W || b.y > MAP_H;
-      if (!dead && bulletVsWall(b)) dead = true;
-      if (!dead) {
+      b.life -= dt;
+      let dead = b.life <= 0;
+      /* Walk the round along its flight in short hops instead of teleporting it
+         a whole frame. A sniper round covers 4600px/s — 77px in one frame, five
+         times a body — so a single end-of-frame position test would let it pass
+         clean through a player, or through a 10px barricade, without ever
+         registering. Every hop is short enough that nothing can be skipped. */
+      let remaining = dead ? 0 : dt;
+      while (remaining > 1e-6) {
+        const speed = Math.hypot(b.vx, b.vy) || 1;
+        const hop = Math.min(remaining, BULLET_STEP / speed);
+        remaining -= hop;
+        b.px = b.x; b.py = b.y;                // remembered so ricochets know which face was hit
+        b.x += b.vx * hop; b.y += b.vy * hop;
+
+        if (b.x < 0 || b.y < 0 || b.x > MAP_W || b.y > MAP_H) { dead = true; break; }
+        if (bulletVsWall(b)) { dead = true; break; }
+
         for (const a of agents) {
           if (!a.alive || a.team === b.team) continue;
           if (dist2(a.x, a.y, b.x, b.y) < a.r * a.r) {
             if (!b.splash) {   // explosives deal their damage via the blast below
               // falloff starts partway into the gun's own effective range
               const travelled = Math.hypot(b.x - b.sx, b.y - b.sy);
-              const start = (b.range || FALLOFF_UNIT * 2) * 0.45;
-              const steps = Math.max(0, travelled - start) / FALLOFF_UNIT;
+              const start = (b.range || FALLOFF_STEP * 6) * FALLOFF_START;
+              const steps = Math.max(0, travelled - start) / FALLOFF_STEP;
               const mult = Math.max(FALLOFF_MIN, 1 - b.falloff * steps);
               applyDamage(a, b.dmg * mult, b.owner, b.dmgType);
               spawnFx(b.x, b.y, TEAM_COLORS[a.team], 4);
@@ -1801,8 +2107,8 @@ const Game = (() => {
             dead = true; break;
           }
         }
-      }
-      if (!dead) {
+        if (dead) break;
+
         for (let k = deployables.length - 1; k >= 0; k--) {
           const dp = deployables[k];
           if (dp.type !== 'sentry' || dp.team === b.team) continue;
@@ -1812,6 +2118,7 @@ const Game = (() => {
             dead = true; break;
           }
         }
+        if (dead) break;
       }
       if (dead) {
         if (b.splash) explode(b.x, b.y, b.dmg, b.splashR, b.team, b.owner, b.dmgType);
@@ -1827,6 +2134,15 @@ const Game = (() => {
     updateGrenades(dt);
     updateDrops(dt);
     updateChains(dt);
+    // rebuild the nav grid a beat after the world changes, not on every hit
+    // Rebuilding the whole grid for every broken crate is wasted work; wait
+    // until a few things have changed and then do it once.
+    if (navDirty) { navChanges++; navDirty = false; }
+    if (navChanges >= 6 && navRebuildIn <= 0) navRebuildIn = 3;
+    if (navRebuildIn > 0) {
+      navRebuildIn -= dt;
+      if (navRebuildIn <= 0) { buildNav(); navChanges = 0; }
+    }
     updateAirstrikes(dt);
     updateDeployables(dt);
     updateSmokes(dt);
@@ -1889,7 +2205,10 @@ const Game = (() => {
       : (b.px < wall.x || b.px > wall.x + wall.w);
     if (cameFromSide) b.vx = -b.vx; else b.vy = -b.vy;
     b.dmg *= bal.keep;
-    b.x += b.vx * 0.02; b.y += b.vy * 0.02;      // clear the surface
+    // step back off the surface by a fixed nudge, not a fixed slice of time —
+    // scaled by velocity a fast round would bounce half a room clear
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    b.x += (b.vx / sp) * BULLET_STEP; b.y += (b.vy / sp) * BULLET_STEP;
     b.sx = b.x; b.sy = b.y;                      // falloff restarts from the bounce
     b.inWall = null;
     b.ricochet = true;
@@ -2185,8 +2504,8 @@ const Game = (() => {
       ctx.strokeStyle = a.isPlayer ? '#fff' : 'rgba(0,0,0,0.4)'; ctx.stroke();
       // player glow ring
       if (a.isPlayer) { ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 6, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(53,224,255,0.6)'; ctx.lineWidth = 2; ctx.stroke(); }
-      // health bar
-      const hpw = 34;
+      // health bar — kept proportional to the body it sits over
+      const hpw = 26;
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 12, hpw, 5);
       ctx.fillStyle = a.hp > 50 ? '#4be08a' : a.hp > 25 ? '#ffcf4a' : '#ff4b5c';
       ctx.fillRect(a.x - hpw / 2, a.y - a.r - 12, hpw * (a.hp / a.maxHp), 5);
@@ -2992,21 +3311,23 @@ const Game = (() => {
     for (const a of online.remote) {
       if (!a.alive || !onScreen(a.x, a.y, 40)) continue;
       const col = TEAM_COLORS[a.team % TEAM_COLORS.length];
-      drawUnitShadow(a.x, a.y, 16);
+      // same body size as a local agent — a remote player must be the same
+      // target the server is hit-testing
+      drawUnitShadow(a.x, a.y, BODY_R);
       ctx.strokeStyle = '#e9f0ff'; ctx.lineWidth = 5; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(a.x, a.y);
-      ctx.lineTo(a.x + Math.cos(a.angle) * 28, a.y + Math.sin(a.angle) * 28); ctx.stroke();
-      ctx.beginPath(); ctx.arc(a.x, a.y, 16, 0, Math.PI * 2);
+      ctx.lineTo(a.x + Math.cos(a.angle) * (BODY_R + 12), a.y + Math.sin(a.angle) * (BODY_R + 12)); ctx.stroke();
+      ctx.beginPath(); ctx.arc(a.x, a.y, BODY_R, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.fill();
       ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.stroke();
-      const hpw = 34;
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - 28, hpw, 5);
+      const hpw = 26;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - BODY_R - 12, hpw, 5);
       ctx.fillStyle = a.hp > 50 ? '#4be08a' : a.hp > 25 ? '#ffcf4a' : '#ff4b5c';
-      ctx.fillRect(a.x - hpw / 2, a.y - 28, hpw * clamp(a.hp / 100, 0, 1), 5);
+      ctx.fillRect(a.x - hpw / 2, a.y - BODY_R - 12, hpw * clamp(a.hp / 100, 0, 1), 5);
       // name tag, so you can tell your squad apart
       ctx.fillStyle = a.team === player.team ? '#9fe8b4' : '#ffd0d4';
       ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center';
-      ctx.fillText(a.name || '', a.x, a.y - 34);
+      ctx.fillText(a.name || '', a.x, a.y - BODY_R - 20);
     }
   }
 

@@ -32,7 +32,9 @@ const Items = (() => {
     barricade: { name: 'Barricade',  cat: 'tactical', mode: 'wall',  icon: '🧱', place: 5, life: 60, w: 120, h: 22 },
     ammobox:   { name: 'Ammo Box',   cat: 'tactical', mode: 'ammo',  icon: '📦', supply: 200, life: 45 },
     flag:      { name: 'Cool Flag',  cat: 'tactical', mode: 'flag',  icon: '🚩', radius: 250, adr: 10, speed: 0.25, life: 40 },
-    sentry:    { name: 'Sentry Gun', cat: 'tactical', mode: 'sentry',icon: '🔫', hp: 180, range: 440, damage: 15.8, rof: 7.5, life: 75 },
+    // 14 tiles of reach — short of an assault rifle, so a sentry holds a room
+    // or a doorway rather than a whole approach
+    sentry:    { name: 'Sentry Gun', cat: 'tactical', mode: 'sentry',icon: '🔫', hp: 180, range: 700, damage: 15.8, rof: 7.5, life: 75 },
 
     // heals / boosts (self, channeled) -----------------------------------
     medkit:    { name: 'Medkit',     cat: 'heal', icon: '⛑️', hp: 100, time: 7.5 },

@@ -49,6 +49,12 @@ const SIM = 1000 / 60;               // simulation step
 const MAP = { w: 3400, h: 2300 };
 const ROOM_MAX = 24;
 const MATCH_SECONDS = 8 * 60;
+/* Ballistics constants, mirroring game.js — the roster is shared through the
+   vm context above, but these live in the sim rather than the weapon table.
+   BODY_R is the authoritative hitbox; BULLET_STEP must stay under it. */
+const BODY_R = 15;
+const BULLET_STEP = 10;
+const FALLOFF_STEP = Weapons.TILE * 4, FALLOFF_START = 0.45, FALLOFF_MIN = 0.4;
 
 const now = () => Date.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -209,20 +215,31 @@ class Room {
   stepBullets(dt) {
     for (let i = this.bullets.length - 1; i >= 0; i--) {
       const b = this.bullets[i];
-      b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
-      let dead = b.life <= 0 || b.x < 0 || b.y < 0 || b.x > MAP.w || b.y > MAP.h;
-      if (!dead) {
+      b.life -= dt;
+      let dead = b.life <= 0;
+      /* Same short-hop flight the client walks (see BULLET_STEP in game.js):
+         a sniper round moves five body-widths in one tick, so testing only the
+         end-of-tick position would let it pass through a player untouched —
+         and here that would be an authoritative miss. */
+      let remaining = dead ? 0 : dt;
+      while (remaining > 1e-6) {
+        const speed = Math.hypot(b.vx, b.vy) || 1;
+        const hop = Math.min(remaining, BULLET_STEP / speed);
+        remaining -= hop;
+        b.x += b.vx * hop; b.y += b.vy * hop;
+        if (b.x < 0 || b.y < 0 || b.x > MAP.w || b.y > MAP.h) { dead = true; break; }
         for (const p of this.players.values()) {
           if (!p.alive || p.team === b.team) continue;
-          if (dist2(p.x, p.y, b.x, b.y) < 16 * 16) {
+          if (dist2(p.x, p.y, b.x, b.y) < BODY_R * BODY_R) {
             const travelled = Math.hypot(b.x - b.sx, b.y - b.sy);
-            const start = (b.range || 420) * 0.45;
-            const steps = Math.max(0, travelled - start) / 210;
-            const mult = Math.max(0.4, 1 - b.falloff * steps);
+            const start = (b.range || FALLOFF_STEP * 6) * FALLOFF_START;
+            const steps = Math.max(0, travelled - start) / FALLOFF_STEP;
+            const mult = Math.max(FALLOFF_MIN, 1 - b.falloff * steps);
             this.damage(p, b.dmg * mult, b.dmgType, this.players.get(b.owner));
             dead = true; break;
           }
         }
+        if (dead) break;
       }
       if (dead) this.bullets.splice(i, 1);
     }

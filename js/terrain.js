@@ -75,23 +75,36 @@ const Terrain = (() => {
     }
     t.rivers.push({ pts, width, vertical });
 
-    // --- bridges: crossings so the river never fully cuts the map in two ---
-    for (const frac of [0.25, 0.55, 0.82]) {
-      const i = Math.floor(frac * (pts.length - 1));
-      const a = pts[i], b = pts[i + 1] || pts[i];
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const ang = Math.atan2(b.y - a.y, b.x - a.x) + Math.PI / 2;
-      t.bridges.push({ x: mx, y: my, angle: ang, w: width + 90, h: 108 });
-    }
+    // bridges are added after the roads, where the two actually cross
 
-    // --- roads: a ring road plus a couple of spurs ---
+    /* --- roads ---
+       A proper network rather than decoration: a ring road round the inhabited
+       area, a cross through the middle, and spurs out to the three landmark
+       sites, so the places worth going to are actually connected. Junctions are
+       recorded because bridges are placed where a road meets the river. */
     const inset = BEACH_INSET + 180;
-    t.roads.push({ pts: [
+    const ring = [
       { x: inset, y: inset }, { x: w - inset, y: inset },
       { x: w - inset, y: h - inset }, { x: inset, y: h - inset }, { x: inset, y: inset },
-    ], width: 78 });
-    t.roads.push({ pts: [{ x: inset, y: h * 0.5 }, { x: w - inset, y: h * 0.5 }], width: 66 });
-    t.roads.push({ pts: [{ x: w * 0.5, y: inset }, { x: w * 0.5, y: h - inset }], width: 66 });
+    ];
+    t.roads.push({ pts: ring, width: 84, kind: 'ring' });
+    t.roads.push({ pts: [{ x: inset, y: h * 0.5 }, { x: w - inset, y: h * 0.5 }], width: 70, kind: 'trunk' });
+    t.roads.push({ pts: [{ x: w * 0.5, y: inset }, { x: w * 0.5, y: h - inset }], width: 70, kind: 'trunk' });
+
+    // spurs to the landmark anchors, matching game.js's placement
+    t.landmarkAnchors = [
+      { x: w * 0.26, y: h * 0.70 },
+      { x: w * 0.52, y: h * 0.40 },
+      { x: w * 0.76, y: h * 0.72 },
+    ];
+    for (const a of t.landmarkAnchors) {
+      // join each site to the nearest trunk, with one bend so it isn't a ruler line
+      const toTrunkY = Math.abs(a.y - h * 0.5) < Math.abs(a.x - w * 0.5);
+      const bend = toTrunkY
+        ? { x: a.x, y: h * 0.5 }
+        : { x: w * 0.5, y: a.y };
+      t.roads.push({ pts: [{ x: a.x, y: a.y }, bend], width: 58, kind: 'spur' });
+    }
 
     // --- structured obstacle zones: clearings, dense clusters, perimeter fortifications ---
     // Forest clearing (open sightlines in otherwise dense area)
@@ -103,6 +116,40 @@ const Terrain = (() => {
     // Perimeter fortifications (sandbags + wire around edges)
     t.obstacles.push({ type: 'fortified', x: BEACH_INSET + 100, y: BEACH_INSET + 100, r: 150, density: 0.9 });
     t.obstacles.push({ type: 'fortified', x: w - BEACH_INSET - 100, y: h - BEACH_INSET - 100, r: 150, density: 0.9 });
+
+    /* --- bridges ---
+       Put a bridge wherever a road crosses the river, which is where you'd
+       actually build one, and guarantees the network stays connected. If the
+       river somehow misses every road, fall back to spacing them along it. */
+    for (const road of t.roads) {
+      for (let i = 0; i < road.pts.length - 1; i++) {
+        const a = road.pts[i], b = road.pts[i + 1];
+        const steps = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 40);
+        let entry = null;
+        for (let k = 0; k <= steps; k++) {
+          const p = k / steps;
+          const x = a.x + (b.x - a.x) * p, y = a.y + (b.y - a.y) * p;
+          const wet = distToPath(pts, x, y) < width / 2;
+          if (wet && !entry) entry = { x, y };
+          else if (!wet && entry) {
+            const mx = (entry.x + x) / 2, my = (entry.y + y) / 2;
+            const ang = Math.atan2(b.y - a.y, b.x - a.x);
+            if (!t.bridges.some(br => Math.hypot(br.x - mx, br.y - my) < 300)) {
+              t.bridges.push({ x: mx, y: my, angle: ang, w: width + 160, h: Math.max(96, road.width + 24) });
+            }
+            entry = null;
+          }
+        }
+      }
+    }
+    if (t.bridges.length < 2) {
+      for (const frac of [0.3, 0.7]) {
+        const i = Math.floor(frac * (pts.length - 1));
+        const a = pts[i], b = pts[i + 1] || pts[i];
+        const ang = Math.atan2(b.y - a.y, b.x - a.x) + Math.PI / 2;
+        t.bridges.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, angle: ang, w: width + 120, h: 108 });
+      }
+    }
 
     // --- grass patches: subtle tone variation so the field isn't flat ---
     for (let i = 0; i < 90; i++) {

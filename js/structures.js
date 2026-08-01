@@ -441,6 +441,69 @@ const Structures = (() => {
       return out;
     },
 
+    /* ---------- LANDMARKS ----------
+       One-offs, much bigger than the ordinary buildings, meant to anchor a
+       whole area of the map and be worth fighting over. */
+
+    /* silo complex: three reinforced drums joined by a walkway */
+    silos(ox, oy) {
+      const out = [];
+      const drum = (dx, dy, r) => {
+        // a ring of short reinforced segments approximates a round silo
+        const n = 10;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          const px = dx + Math.cos(a) * r, py = dy + Math.sin(a) * r;
+          const seg1 = seg('rwall', px, py, 1.4, i % 2 ? 'h' : 'v', 0.4);
+          out.push(seg1);
+        }
+      };
+      drum(ox + 150, oy + 150, 120);
+      drum(ox + 470, oy + 150, 120);
+      drum(ox + 310, oy + 430, 120);
+      // connecting gantry
+      out.push(seg('metal', ox + 150, oy + 150, 8, 'h', 0.5));
+      out.push(seg('metal', ox + 310, oy + 150, 7, 'v', 0.5));
+      out.push(seg('sandbag', ox + 40, oy + 560, 8, 'h', 0.5));
+      return out;
+    },
+
+    /* factory: a long hall with an internal spine and loading bays */
+    factory(ox, oy) {
+      const w = 1000, h = 560;
+      const out = shell(ox, oy, w, h, 'metal', 0.6, [
+        { side: 'n', at: 200, type: 'rdoor', len: 4 },
+        { side: 'n', at: 640, type: 'rdoor', len: 4 },
+        { side: 's', at: 420, type: 'rdoor', len: 4 },
+        { side: 'w', at: 240, type: 'rdoor' },
+      ]);
+      // production line down the middle, with gaps to move through
+      for (const x of [260, 500, 740]) {
+        out.push(seg('metal', ox + x, oy + 40, 3, 'v', 0.35));
+        out.push(seg('metal', ox + x, oy + 340, 4.5, 'v', 0.35));
+      }
+      out.push(seg('rwall', ox + 60, oy + 280, 6, 'h', 0.4));
+      out.push(seg('sandbag', ox + 700, oy + 200, 5, 'h', 0.5));
+      return out;
+    },
+
+    /* keep: a walled compound with an inner reinforced hold */
+    keep(ox, oy) {
+      const w = 820, h = 760;
+      const out = shell(ox, oy, w, h, 'rwall', 0.5, [
+        { side: 's', at: 340, type: 'rdoor', len: 3 },
+        { side: 'n', at: 380, type: 'rdoor', len: 3 },
+      ]);
+      // corner towers
+      for (const [tx, ty] of [[0, 0], [w - 130, 0], [0, h - 130], [w - 130, h - 130]]) {
+        out.push(...shell(ox + tx, oy + ty, 130, 130, 'rwall', 0.45, []));
+      }
+      // inner hold
+      out.push(...shell(ox + 250, oy + 250, 320, 260, 'rwall', 0.5, [{ side: 'w', at: 90, type: 'rdoor' }]));
+      out.push(seg('wire', ox - 60, oy - 60, 22, 'h', 0.4));
+      return out;
+    },
+
     /* camp: a cluster of low tents behind sandbags and wire */
     camp(ox, oy) {
       const out = [];
