@@ -176,6 +176,21 @@
               <button class="btn btn--ghost" id="btn-party-join">Join</button>
             </div>
           </div>
+          <div class="party__p2p">
+            <div class="party__p2p-head">
+              <b>Play online from this page</b>
+              <span>No server needed — one of you hosts, straight browser to browser.</span>
+            </div>
+            <div class="party__joinrow">
+              <button class="btn btn--primary" id="btn-p2p-host">Host Game</button>
+              <input id="p2p-code-in" maxlength="5" placeholder="CODE" autocomplete="off" />
+              <button class="btn btn--ghost" id="btn-p2p-join">Join Game</button>
+            </div>
+            <div class="party__joinrow">
+              <button class="btn btn--ghost btn--tiny" id="btn-p2p-local">Test in two tabs on this machine</button>
+            </div>
+            <p class="party__p2p-status" id="p2p-status"></p>
+          </div>
           <div class="party__active" id="party-active" hidden>
             <div class="party__code">
               <span>Invite code</span>
@@ -375,17 +390,22 @@
   <div id="toast-wrap" class="toast-wrap"></div>
 
   <!-- Scripts (plain scripts, load order matters — no build step / no modules) -->
+  <!-- The shared data modules come first: roomsim.js reads Weapons, Combat and
+       Classes as it evaluates, and falls back to require() when they're missing,
+       which is a hard error in a browser. -->
   <script src="js/weapons.js"></script>
+  <script src="js/combat.js"></script>
+  <script src="js/classes.js"></script>
   <script src="js/sprites.js"></script>
   <script src="js/terrain.js"></script>
   <script src="js/nav.js"></script>
   <script src="js/skins.js"></script>
   <script src="js/shop.js"></script>
   <script src="js/net.js"></script>
+  <script src="js/roomsim.js"></script>
+  <script src="js/p2p.js"></script>
   <script src="js/party.js"></script>
   <script src="js/botai.js"></script>
-  <script src="js/combat.js"></script>
-  <script src="js/classes.js"></script>
   <script src="js/structures.js"></script>
   <script src="js/items.js"></script>
   <script src="js/storage.js"></script>

@@ -204,12 +204,24 @@ const Game = (() => {
      a doorway in a spine. */
   function clearObjectiveSite(o) {
     bulldoze(o.x, o.y, o.r, !!o.inside);
-    // Keep going until the point is genuinely standable. One pass left rare
-    // cases where a landmark's own internal wall still covered the centre, and
-    // an objective you can't stand on is worse than a gap in a spine.
-    for (let r = 70; r <= 200 && pointInObstacle(o.x, o.y); r += 65) {
-      bulldoze(o.x, o.y, r, false);
+    // If the point is still covered — usually by one of the landmark's own
+    // internal walls — carve out just the offending pieces. Escalating through
+    // bulldoze() would take the whole placement with it and delete the very
+    // building the objective is supposed to be inside.
+    for (let r = 70; r <= 220 && pointInObstacle(o.x, o.y); r += 50) carveOut(o.x, o.y, r);
+  }
+
+  /* Remove individual wall pieces overlapping a disc, without the whole-
+     placement cascade bulldoze() does. Used to open a doorway through a
+     building we want to keep standing. */
+  function carveOut(x, y, r) {
+    const disc = { x: x - r, y: y - r, w: r * 2, h: r * 2 };
+    obstacles = obstacles.filter(o => !padOverlap(disc, o, 0));
+    for (let i = deployables.length - 1; i >= 0; i--) {
+      const dp = deployables[i];
+      if (dp.type === 'wall' && dp.rect && padOverlap(disc, dp.rect, 0)) deployables.splice(i, 1);
     }
+    invalidateRects();
   }
 
   /* clear every wall out of a disc, dropping whole buildings rather than
@@ -392,7 +404,7 @@ const Game = (() => {
     tower:      { props: ['ammoBox', 'desk', 'crate'], n: 5, loot: 2, floor: '#454d5a' },
     farm:       { props: ['shelf', 'table', 'stove', 'pallet', 'crate'], n: 12, loot: 3, floor: '#665338' },
     depot:      { props: ['ammoBox', 'locker', 'barrel', 'pallet'], n: 10, loot: 4, floor: '#5a5646' },
-    camp:       { props: ['shelf', 'table', 'crate', 'tyre'], n: 8, loot: 3, floor: null },
+    camp:       { props: ['shelf', 'table', 'crate', 'tyre'], n: 8, loot: 3, floor: '#5c5a44' },
     checkpoint: { props: ['ammoBox', 'desk', 'sandpile'], n: 5, loot: 2, floor: '#4d5462' },
     /* landmarks: much bigger footprints, so much more inside */
     factory:    { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre', 'rubble'], n: 46, loot: 12, floor: '#4a5260' },
@@ -617,7 +629,8 @@ const Game = (() => {
       // ai
       strafeDir: Math.random() < 0.5 ? 1 : -1, strafeTimer: rand(0.5, 2), aiRepath: 0, aiTargetPt: null,
       name: isPlayer ? 'You' : `${TEAM_NAMES[team]}-${Math.floor(rand(1, 99))}`,
-      kills: 0,
+      // scoreboard: kills/deaths persist across respawns, streak resets on death
+      kills: 0, deaths: 0, streak: 0,
     };
   }
 
@@ -702,6 +715,7 @@ const Game = (() => {
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     zoom = zoomTarget = BASE_ZOOM;
     hudMessage = ''; hudMessageT = 0;
+    killFeed = []; killBanner = null;
     online = null;
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
     // Last of all, once every generator and spawner has run: clear the ground
@@ -828,6 +842,9 @@ const Game = (() => {
      smallest thing it can hit — a BODY_R hitbox, or the thinnest wall — or
      fast rounds fly straight through. */
   const BULLET_STEP = 10;
+  /* How far a settled bot gets toward its gun's full ADS cone (0 = always
+     hipfire, 1 = as steady as a scoped player). */
+  const BOT_STEADY = 0.55;
 
   function startReload(a) {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
@@ -851,19 +868,26 @@ const Game = (() => {
     a.fireCd = w.fireInterval;
     a.ammo--;
 
-    /* Aimed fire tightens the cone. The player holds right mouse for it; a bot
-       counts as aimed when it has stopped and held the contact long enough to
-       settle, which is the only thing that makes a bot marksman dangerous at
-       the ranges these guns now reach — a hipfired M16 cone is ±44px at 25
-       tiles, wider than the body it's shooting at. */
-    const ads = a.isPlayer
-      ? input.ads
-      : (a.contactT > 0.35 && Math.hypot(a.vx || 0, a.vy || 0) < 40);
+    /* Aimed fire tightens the cone. The player holds right mouse for it and
+       gets the gun's full ADS benefit.
+
+       A bot that has stopped and held the contact settles too, but only part
+       of the way there — BOT_STEADY of the distance from hip to ADS. Without
+       any of this a bot is harmless at the ranges these guns now reach (a
+       hipfired M16 cone is ±44px at 25 tiles, wider than the body it's aiming
+       at); with all of it, a bot marksman never misses and squads evaporate.
+       Partway leaves them dangerous when they set up and sloppy on the move,
+       which is what the difficulty traits in botai.js are trying to say. */
+    const speed = Math.hypot(a.vx || 0, a.vy || 0);
+    const settled = !a.isPlayer && a.contactT > 0.35 && speed < 40;
+    const ads = a.isPlayer ? input.ads : settled;
+    const aimMult = a.isPlayer
+      ? (ads ? w.adsMult : 1)
+      : (settled ? 1 - BOT_STEADY * (1 - w.adsMult) : 1);
     // moving widens the cone by the gun's own moveSpread — a MAC-10 sprays at
     // a run, a QBB bullpup barely notices. ADS steadies both.
-    const speed = Math.hypot(a.vx || 0, a.vy || 0);
     const moving = clamp(speed / 200, 0, 1);
-    const cone = w.spreadBase * (ads ? w.adsMult : 1)
+    const cone = w.spreadBase * aimMult
       + (w.moveSpread || 0) * moving * (ads ? 0.45 : 1)
       + a.bloom;
     const pellets = w.pellets || 1;
@@ -933,6 +957,56 @@ const Game = (() => {
   /* ================= CONSUMABLES / TACTICAL LAYER ================= */
   let hudMessage = '', hudMessageT = 0;
   function hudMsg(t) { hudMessage = t; hudMessageT = 2; }
+
+  /* ---------------- kill feed ----------------
+     Every elimination in the match, newest first, under the minimap. Rows the
+     player is in are drawn with a highlight — in a 24-agent firefight the feed
+     scrolls fast, and the one line that matters is the one with your name in
+     it. Entries are fed from two places: applyDamage() offline, and the
+     server's `kill` events online, so both modes read identically. */
+  const KILL_FEED_MAX = 5;          // rows kept on screen
+  const KILL_FEED_LIFE = 6;         // seconds before a row fades out
+  let killFeed = [];
+  /* A separate, louder callout for the player's own kills and deaths, centred
+     over the action rather than tucked in the corner. */
+  let killBanner = null;
+
+  function pushKill(killer, victim, zone) {
+    const mine = !!(killer && killer.isPlayer);
+    const victimIsMe = !!(victim && victim.isPlayer);
+    killFeed.unshift({
+      killer: killer ? killer.name : 'The world',
+      killerTeam: killer ? killer.team : -1,
+      victim: victim ? victim.name : '?',
+      victimTeam: victim ? victim.team : -1,
+      headshot: zone === 'head', mine, victimIsMe, t: KILL_FEED_LIFE,
+    });
+    if (killFeed.length > KILL_FEED_MAX) killFeed.length = KILL_FEED_MAX;
+
+    if (mine) {
+      killer.streak = (killer.streak || 0) + 1;
+      killBanner = {
+        text: 'ELIMINATED ' + (victim ? victim.name.toUpperCase() : ''),
+        sub: (zone === 'head' ? 'HEADSHOT' : '')
+          + (killer.streak > 1 ? (zone === 'head' ? '  ·  ' : '') + killer.streak + ' KILL STREAK' : ''),
+        good: true, t: 2.2,
+      };
+    } else if (victimIsMe) {
+      killBanner = {
+        text: 'ELIMINATED BY ' + (killer ? killer.name.toUpperCase() : 'THE WORLD'),
+        sub: zone === 'head' ? 'HEADSHOT' : '', good: false, t: 2.2,
+      };
+    }
+  }
+
+  function updateKillFeed(dt) {
+    for (let i = killFeed.length - 1; i >= 0; i--) {
+      killFeed[i].t -= dt;
+      if (killFeed[i].t <= 0) killFeed.splice(i, 1);
+    }
+    if (killBanner) { killBanner.t -= dt; if (killBanner.t <= 0) killBanner = null; }
+  }
+
   const worldMouse = () => ({ x: input.mx / zoom + camX, y: input.my / zoom + camY });
   const near2 = (a, b, r) => dist2(a.x, a.y, b.x, b.y) < r * r;
 
@@ -1994,6 +2068,7 @@ const Game = (() => {
     if (player.channel) { player.channel.t -= dt; if (player.channel.t <= 0) { player.channel.onDone(); player.channel = null; } }
     if (flashOverlay > 0) flashOverlay -= dt;
     if (hudMessageT > 0) hudMessageT -= dt;
+    updateKillFeed(dt);
 
     // player control
     if (player.alive) {
@@ -2260,8 +2335,10 @@ const Game = (() => {
     if (a.isPlayer) SFX.hurt();
     if (a.hp <= 0) {
       a.hp = 0; a.alive = false;
+      a.deaths++; a.streak = 0;
       spawnFx(a.x, a.y, TEAM_COLORS[a.team], 14);
       if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
+      pushKill(owner, a, hit.zone);
       if (mode === 'domination') a.respawnTimer = 3;
       if (a.isPlayer) SFX.hurt();
     }
@@ -2568,6 +2645,8 @@ const Game = (() => {
 
     drawTacticalHud();
     drawMinimap();
+    drawKillFeed();
+    drawKillBanner();
 
     // flashbang whiteout (screen space, over everything)
     if (flashOverlay > 0) { ctx.fillStyle = `rgba(255,255,255,${clamp(flashOverlay / 1.5, 0, 0.96)})`; ctx.fillRect(0, 0, W, H); }
@@ -3160,8 +3239,83 @@ const Game = (() => {
     ctx.globalAlpha = 1;
   }
 
+  /* ---------------- kill feed ----------------
+     Sits directly under the minimap, top-right, newest at the top. Each row is
+     "killer ▸ victim" with both names in their team colour, so you can read who
+     is winning a fight without reading the words. */
+  function drawKillFeed() {
+    if (!killFeed.length) return;
+    const pad = 16, rowH = 24, right = W - pad;
+    let y = pad + 40 + MINIMAP_W * (MAP_H / MAP_W) + 14;   // below the minimap
+
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 13px Segoe UI';
+    for (const k of killFeed) {
+      const fade = clamp(k.t, 0, 1);               // last second fades out
+      ctx.globalAlpha = fade;
+
+      const killer = k.killer, victim = k.victim;
+      const arrow = k.headshot ? '  ⌖  ' : '  ▸  ';
+      const wk = ctx.measureText(killer).width;
+      const wv = ctx.measureText(victim).width;
+      const wa = ctx.measureText(arrow).width;
+      const boxW = wk + wa + wv + 20;
+      const x0 = right - boxW;
+
+      // rows you're in are called out; everything else is quiet background
+      ctx.fillStyle = k.mine ? 'rgba(75,224,138,0.22)'
+        : k.victimIsMe ? 'rgba(255,75,92,0.22)' : 'rgba(26,38,66,0.72)';
+      roundRect(x0, y - rowH / 2, boxW, rowH, 6); ctx.fill();
+      if (k.mine || k.victimIsMe) {
+        ctx.strokeStyle = k.mine ? 'rgba(75,224,138,0.85)' : 'rgba(255,75,92,0.85)';
+        ctx.lineWidth = 1.5; ctx.stroke();
+      }
+
+      let x = x0 + 10;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = k.killerTeam >= 0 ? TEAM_COLORS[k.killerTeam] : '#8ea0c9';
+      ctx.fillText(killer, x, y); x += wk;
+      ctx.fillStyle = k.headshot ? '#ffcf4a' : 'rgba(207,216,238,0.9)';
+      ctx.fillText(arrow, x, y); x += wa;
+      ctx.fillStyle = k.victimTeam >= 0 ? TEAM_COLORS[k.victimTeam] : '#8ea0c9';
+      ctx.fillText(victim, x, y);
+
+      y += rowH + 4;
+    }
+    ctx.restore();
+  }
+
+  /* The player's own kills and deaths, called out over the middle of the screen
+     where they can't be missed. */
+  function drawKillBanner() {
+    if (!killBanner) return;
+    const b = killBanner;
+    const fade = clamp(b.t / 0.5, 0, 1);          // hold, then fade
+    const rise = (1 - clamp(b.t / 2.2, 0, 1)) * 10;
+    const cy = H * 0.30 - rise;
+
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 30px Segoe UI';
+    ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(6,12,26,0.75)';
+    ctx.strokeText(b.text, W / 2, cy);
+    ctx.fillStyle = b.good ? '#4be08a' : '#ff6b78';
+    ctx.fillText(b.text, W / 2, cy);
+    if (b.sub) {
+      ctx.font = 'bold 16px Segoe UI';
+      ctx.lineWidth = 4;
+      ctx.strokeText(b.sub, W / 2, cy + 28);
+      ctx.fillStyle = '#ffcf4a';
+      ctx.fillText(b.sub, W / 2, cy + 28);
+    }
+    ctx.restore();
+  }
+
+  const MINIMAP_W = 180;
   function drawMinimap() {
-    const mw = 180, mh = mw * (MAP_H / MAP_W), pad = 16;
+    const mw = MINIMAP_W, mh = mw * (MAP_H / MAP_W), pad = 16;
     const ox = W - mw - pad, oy = pad + 40;
     ctx.save();
     ctx.fillStyle = 'rgba(26,38,66,0.78)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
@@ -3221,30 +3375,47 @@ const Game = (() => {
      off entirely — no prediction of anyone but ourselves. */
   let online = null;
 
-  function startOnline(socket, selectedMode) {
+  /* Takes either a WebSocket to the dedicated server, or a transport object
+     from js/p2p.js when another browser is hosting. The rest of the online
+     path can't tell the two apart. */
+  function startOnline(connection, selectedMode) {
     start(selectedMode);                    // build the world and HUD as usual
-    agents = agents.filter(a => a.isPlayer); // the server supplies everyone else
+    agents = agents.filter(a => a.isPlayer); // the host supplies everyone else
+
+    const isSocket = typeof connection.send === 'function' && 'readyState' in connection;
+    const transport = isSocket
+      ? Object.assign(new Net.SocketTransport(Net.serverUrl()), { ws: connection, connected: true })
+      : connection;
+
     online = {
-      socket,
-      transport: new Net.SocketTransport(Net.serverUrl()),
+      socket: isSocket ? connection : null,
+      transport,
+      peer: !isSocket,
       id: null, roster: [], lastSend: 0, ping: 0, lastPingAt: 0,
       remote: [],
     };
-    online.transport.ws = socket;
-    online.transport.connected = true;
-    socket.onmessage = (ev) => onlineMessage(ev.data);
-    socket.onclose = () => {
-      if (!online) return;
-      hudMsg('Disconnected — finishing offline');
-      online = null;
-    };
-    hudMsg('Online match — squad up');
+
+    if (isSocket) {
+      connection.onmessage = (ev) => onlineMessage(ev.data);
+      connection.onclose = () => {
+        if (!online) return;
+        hudMsg('Disconnected — finishing offline');
+        online = null;
+      };
+      hudMsg('Online match — squad up');
+    } else {
+      // peer transports hand us parsed objects rather than socket frames
+      P2P.on('message', (msg) => onlineMessage(msg));
+      hudMsg(P2P.isHosting() ? 'Hosting — waiting for players' : 'Connected to host');
+    }
   }
 
   function onlineMessage(raw) {
     if (!online) return;
     let msg;
-    try { msg = JSON.parse(raw); } catch (e) { return; }
+    if (typeof raw === 'string') { try { msg = JSON.parse(raw); } catch (e) { return; } }
+    else msg = raw;
+    if (!msg) return;
     if (msg.t === 'welcome') {
       online.id = msg.id;
       online.roster = msg.roster || [];
@@ -3254,7 +3425,7 @@ const Game = (() => {
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
       timeLeft = msg.timeLeft;
       for (const e of msg.events || []) {
-        if (e.e === 'kill') hudMsg(`${e.by} eliminated ${e.victim}${e.zone === 'head' ? ' (headshot)' : ''}`);
+        if (e.e === 'kill') onlineKill(e);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
       }
@@ -3266,6 +3437,27 @@ const Game = (() => {
       online = null;
       endMatch(mine >= best);
     }
+  }
+
+  /* A kill the server reported. The event carries names and ids but not teams,
+     so we resolve each side against the live snapshot (falling back to the
+     roster for someone who has since left) and hand it to the same feed the
+     offline game uses. */
+  function onlineKill(e) {
+    const find = (id, fallbackName) => {
+      if (id != null && online) {
+        if (id === online.id) return player;
+        const live = (online.remote || []).find(r => r.id === id);
+        if (live) return { name: live.name, team: live.team };
+        const known = (online.roster || []).find(r => r.id === id);
+        if (known) return { name: known.name, team: known.team };
+      }
+      return fallbackName ? { name: fallbackName, team: -1 } : null;
+    };
+    const killer = find(e.byId, e.by);
+    const victim = find(e.victimId, e.victim);
+    if (killer && killer.isPlayer) matchStats.kills++;
+    pushKill(killer, victim, e.zone);
   }
 
   /* push our intent to the server, and pull the interpolated world back */
