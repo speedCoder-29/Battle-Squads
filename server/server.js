@@ -25,7 +25,7 @@ const { WebSocketServer } = require('ws');
 /* ---------- the shared rules ----------
    The match simulation and the data tables live in js/, so this server and a
    browser hosting over WebRTC (see js/p2p.js) run exactly the same code. */
-const { Weapons, Classes } = require('../js/_shared');
+const { Weapons, Classes, buildWorld } = require('../js/_shared');
 const { Room, MAP, TICK, ROOM_MAX, MATCH_SECONDS } = require('../js/roomsim');
 console.log(`[init] loaded ${Weapons.list.length} weapons, ${Classes.list.length} classes`);
 
@@ -101,8 +101,16 @@ function findRoom(mode, needSeats) {
     if (r.mode === mode && !r.over && r.players.size + seats <= ROOM_MAX) return r;
   }
   const r = new Room('room-' + (rooms.size + 1), mode);
+  /* Build the room's map here, from its own seed, so the server simulates the
+     same buildings the clients draw. If generation ever fails the match still
+     runs — just on open ground — rather than taking the server down with it. */
+  try {
+    const n = r.setWorld(buildWorld(mode, r.seed));
+    console.log(`[room] created ${r.id} (${mode}) seed ${r.seed}, ${n} walls`);
+  } catch (e) {
+    console.warn(`[room] ${r.id}: could not build the map (${e.message}) — running without cover`);
+  }
   rooms.set(r.id, r);
-  console.log(`[room] created ${r.id} (${mode})`);
   return r;
 }
 

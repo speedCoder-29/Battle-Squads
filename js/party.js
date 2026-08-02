@@ -165,11 +165,11 @@ const Party = (() => {
     const code = randomCode();
     p2pStatus('Opening a room…');
     try {
-      await P2P.hostWebRTC(code, meInfo());
+      const r = await P2P.hostWebRTC(code, meInfo());
       p2pStatus(`Hosting ${code} — share the code or the link. Deploying…`);
       Toast.show(`Hosting game ${code}`, 'reward');
       setInviteLink(code);
-      Game.startOnline(P2P.transport(), Screens.getSelectedMode());
+      Game.startOnline(P2P.transport(), Screens.getSelectedMode(), r && r.seed);
     } catch (e) {
       p2pStatus(e.message, true);
     }
@@ -202,9 +202,9 @@ const Party = (() => {
       Game.startOnline(P2P.transport(), Screens.getSelectedMode());
     } else {
       localStorage.setItem(claim, String(Date.now()));
-      P2P.hostLocal('LOCAL', meInfo());
+      const r = P2P.hostLocal('LOCAL', meInfo());
       p2pStatus('Hosting locally — open this page in a second tab and press the same button.');
-      Game.startOnline(P2P.transport(), Screens.getSelectedMode());
+      Game.startOnline(P2P.transport(), Screens.getSelectedMode(), r && r.seed);
     }
   }
 

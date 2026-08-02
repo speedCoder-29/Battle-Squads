@@ -23,15 +23,23 @@
   else root.RoomSim = mod;
 }(typeof self !== 'undefined' ? self : this, function () {
 
-  /* The data modules are globals in the browser and required on the
-     server; either way ballistics and the damage calculator are the
-     same code both sides. */
-  const W = (typeof Weapons !== 'undefined') ? Weapons : require('./_shared').Weapons;
-  const C = (typeof Combat !== 'undefined') ? Combat : require('./_shared').Combat;
-  const K = (typeof Classes !== 'undefined') ? Classes : require('./_shared').Classes;
+  /* The data modules are globals in the browser and required on the server;
+     either way ballistics and the damage calculator are the same code both
+     sides. Resolved on first use rather than at load, so this file doesn't
+     care whether it is pulled in before or after them. */
+  let W, C, K, FALLOFF_STEP;
+  function deps() {
+    if (W) return;
+    if (typeof Weapons !== 'undefined') { W = Weapons; C = Combat; K = Classes; }
+    else { const s = require('./_shared'); W = s.Weapons; C = s.Combat; K = s.Classes; }
+    FALLOFF_STEP = W.TILE * 4;
+  }
 
   const TICK = 1000 / 20;              // snapshot rate
-  const MAP = { w: 3400, h: 2300 };
+  /* The client renders in these dimensions, so the simulation has to use them
+     too. They were 3400x2300 here and 6400x6400 there, which meant an online
+     match was simulated in one coordinate space and drawn in another. */
+  const MAP_SIZES = { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
   const ROOM_MAX = 24;
   const MATCH_SECONDS = 8 * 60;
 
@@ -42,19 +50,73 @@
      fast round can step straight past someone. */
   const BODY_R = 15;
   const BULLET_STEP = 10;
-  const FALLOFF_STEP = W.TILE * 4, FALLOFF_START = 0.45, FALLOFF_MIN = 0.4;
+  const FALLOFF_START = 0.45, FALLOFF_MIN = 0.4;   // FALLOFF_STEP set in deps()
 
   const now = () => Date.now();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
+  const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+  /* ---------- the world the match is fought in ----------
+     The simulation used to know nothing about the map: players walked through
+     warehouses and rounds went straight through walls, while every client drew
+     solid buildings. Whoever owns the match now owns the geometry too.
+
+     It arrives as a flat list of rects, because the client already generated
+     exactly this world from the room's seed — see Game.netWorld(). Each rect
+     keeps the id it had on the client, so "that wall just came down" is one
+     number on the wire and every client destroys the same piece.
+
+     Same coarse bucket grid the client uses: a map is 300+ segments and this
+     is queried per player and per bullet hop. */
+  const WCELL = 220;
+  function worldIndex(rects, w, h) {
+    const g = { cols: Math.ceil(w / WCELL) + 1, cells: new Map() };
+    for (const s of rects) addToIndex(g, s);
+    return g;
+  }
+  function addToIndex(g, s) {
+    const x0 = Math.max(0, Math.floor(s.x / WCELL)), x1 = Math.floor((s.x + s.w) / WCELL);
+    const y0 = Math.max(0, Math.floor(s.y / WCELL)), y1 = Math.floor((s.y + s.h) / WCELL);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const k = cy * g.cols + cx;
+        let arr = g.cells.get(k);
+        if (!arr) { arr = []; g.cells.set(k, arr); }
+        arr.push(s);
+      }
+    }
+  }
+  const cellAt = (g, x, y) => g.cells.get(Math.floor(y / WCELL) * g.cols + Math.floor(x / WCELL));
+  function nearRects(g, x, y, r) {
+    const out = [];
+    const x0 = Math.max(0, Math.floor((x - r) / WCELL)), x1 = Math.floor((x + r) / WCELL);
+    const y0 = Math.max(0, Math.floor((y - r) / WCELL)), y1 = Math.floor((y + r) / WCELL);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const arr = g.cells.get(cy * g.cols + cx);
+        if (arr) for (const s of arr) if (!s.dead && out.indexOf(s) < 0) out.push(s);
+      }
+    }
+    return out;
+  }
 
   let nextId = 1;
 
   class Room {
     constructor(id, mode) {
+      deps();                       // make sure the shared tables are resolved
       this.id = id;
       this.mode = mode || 'domination';
+      this.map = MAP_SIZES[this.mode] || MAP_SIZES.domination;
+      /* Every client generates its own copy of the world, so they all need the
+         same seed to end up with the same map. The room owns it and hands it
+         out with the welcome. */
+      this.seed = (Math.random() * 0xffffffff) >>> 0;
       this.players = new Map();          // id -> player
+      this.walls = [];                   // world geometry, empty until setWorld
+      this.wallIndex = null;
+      this.downed = [];                  // walls destroyed so far, for late joiners
       this.bullets = [];
       this.events = [];                  // things clients should hear about
       this.timeLeft = MATCH_SECONDS;
@@ -64,6 +126,59 @@
     }
 
     get full() { return this.players.size >= ROOM_MAX; }
+
+    /* Hand the room the map. Whoever hosts has already built this world from
+       this room's seed, so the rects — and their ids — are the ones every
+       client is looking at. Safe to call before or after players join. */
+    setWorld(rects) {
+      this.walls = (rects || []).map(r => ({
+        id: r.id, x: r.x, y: r.y, w: r.w, h: r.h,
+        solid: !!r.solid,                        // stops a player walking through
+        mode: r.mode || 'stop',                  // what a round does: stop/pen/through/ricochet
+        keep: typeof r.keep === 'number' ? r.keep : 0,
+        hp: r.hp > 0 ? r.hp : Infinity,          // Infinity = indestructible
+        type: r.type, toughness: r.toughness || 1,
+        dead: false,
+      }));
+      this.wallIndex = worldIndex(this.walls, this.map.w, this.map.h);
+      // anyone already standing in a wall gets pushed out of it
+      for (const p of this.players.values()) if (p.alive) this.resolveWorld(p);
+      return this.walls.length;
+    }
+    get hasWorld() { return !!(this.wallIndex && this.walls.length); }
+
+    /* push a player out of anything solid they have ended up inside */
+    resolveWorld(p, r = BODY_R) {
+      if (!this.wallIndex) return;
+      for (const o of nearRects(this.wallIndex, p.x, p.y, r + 4)) {
+        if (!o.solid) continue;
+        const cx = clamp(p.x, o.x, o.x + o.w);
+        const cy = clamp(p.y, o.y, o.y + o.h);
+        const dx = p.x - cx, dy = p.y - cy;
+        const d = Math.hypot(dx, dy);
+        if (d < r && d > 0) { p.x = cx + (dx / d) * r; p.y = cy + (dy / d) * r; }
+        else if (d === 0) {
+          // dead centre of the rect: leave by the nearest face
+          const l = p.x - o.x, ri = o.x + o.w - p.x, t = p.y - o.y, b = o.y + o.h - p.y;
+          const min = Math.min(l, ri, t, b);
+          if (min === l) p.x = o.x - r;
+          else if (min === ri) p.x = o.x + o.w + r;
+          else if (min === t) p.y = o.y - r;
+          else p.y = o.y + o.h + r;
+        }
+      }
+    }
+
+    /* is this spot clear of solid geometry? */
+    freeSpot(x, y, r = BODY_R) {
+      if (!this.wallIndex) return true;
+      for (const o of nearRects(this.wallIndex, x, y, r)) {
+        if (!o.solid) continue;
+        const cx = clamp(x, o.x, o.x + o.w), cy = clamp(y, o.y, o.y + o.h);
+        if (dist2(x, y, cx, cy) < r * r) return false;
+      }
+      return true;
+    }
 
     /* the emptiest team that can seat a whole party together */
     freeTeam(size) {
@@ -104,8 +219,11 @@
       };
       this.players.set(id, p);
       p.send({
-        t: 'welcome', id, team, mode: this.mode, map: MAP,
+        t: 'welcome', id, team, mode: this.mode, map: this.map, seed: this.seed,
         tickRate: 1000 / TICK, roster: this.roster(),
+        // join halfway through and the cover that has already been shot away
+        // should be gone on your screen too
+        downed: this.downed.slice(),
       });
       this.pushEvent({ e: 'join', id, name: p.name, team });
       return p;
@@ -118,14 +236,24 @@
       this.pushEvent({ e: 'leave', id, name: p.name });
     }
 
+    /* Each team gets its own quarter of the map, and nobody spawns inside a
+       building — spread the jitter wider on each retry so a crowded corner
+       still finds somewhere to put you. */
     spawnPoint(team) {
-      const cx = MAP.w / 2, cy = MAP.h / 2;
-      const rx = MAP.w / 2 - 240, ry = MAP.h / 2 - 240;
+      const cx = this.map.w / 2, cy = this.map.h / 2;
+      const rx = this.map.w / 2 - 240, ry = this.map.h / 2 - 240;
       const ang = -Math.PI / 2 + (team / 4) * Math.PI * 2;
-      return {
-        x: cx + Math.cos(ang) * rx + (Math.random() * 140 - 70),
-        y: cy + Math.sin(ang) * ry + (Math.random() * 140 - 70),
-      };
+      const bx = cx + Math.cos(ang) * rx, by = cy + Math.sin(ang) * ry;
+      let last = { x: bx, y: by };
+      for (let i = 0; i < 40; i++) {
+        const spread = 70 + i * 18;
+        last = {
+          x: clamp(bx + (Math.random() * 2 - 1) * spread, 40, this.map.w - 40),
+          y: clamp(by + (Math.random() * 2 - 1) * spread, 40, this.map.h - 40),
+        };
+        if (this.freeSpot(last.x, last.y, BODY_R + 6)) return last;
+      }
+      return last;
     }
 
     roster() {
@@ -154,8 +282,16 @@
         if (m > 0) {
           let spd = p.weapon.moveSpeed * p.cls.speed * C.armorSpeed(p) * C.adrenaline(p.adrenaline).speed;
           if (i.ads) spd *= 0.55;
-          p.x = clamp(p.x + (dx / m) * spd * dt, 16, MAP.w - 16);
-          p.y = clamp(p.y + (dy / m) * spd * dt, 16, MAP.h - 16);
+          /* One axis at a time, so running into a wall at an angle slides
+             along it instead of stopping you dead — the same feel the client
+             gives offline. */
+          const stepX = (dx / m) * spd * dt, stepY = (dy / m) * spd * dt;
+          const fromX = p.x, fromY = p.y;
+          p.x = clamp(p.x + stepX, 16, this.map.w - 16);
+          if (!this.freeSpot(p.x, p.y)) p.x = fromX;
+          p.y = clamp(p.y + stepY, 16, this.map.h - 16);
+          if (!this.freeSpot(p.x, p.y)) p.y = fromY;
+          this.resolveWorld(p);
         }
         p.angle = i.angle;
 
@@ -214,8 +350,10 @@
           const speed = Math.hypot(b.vx, b.vy) || 1;
           const hop = Math.min(remaining, BULLET_STEP / speed);
           remaining -= hop;
+          b.px = b.x; b.py = b.y;                  // the face test needs where it came from
           b.x += b.vx * hop; b.y += b.vy * hop;
-          if (b.x < 0 || b.y < 0 || b.x > MAP.w || b.y > MAP.h) { dead = true; break; }
+          if (b.x < 0 || b.y < 0 || b.x > this.map.w || b.y > this.map.h) { dead = true; break; }
+          if (this.wallIndex && this.bulletVsWall(b)) { dead = true; break; }
           for (const p of this.players.values()) {
             if (!p.alive || p.team === b.team) continue;
             if (dist2(p.x, p.y, b.x, b.y) < BODY_R * BODY_R) {
@@ -231,6 +369,45 @@
         }
         if (dead) this.bullets.splice(i, 1);
       }
+    }
+
+    /* ---------- rounds against the map ----------
+       Mirrors bulletVsWall() in game.js, minus the sparks: a wall either
+       swallows the round, bleeds some damage off it, or lets it by. The room
+       owns wall HP, so a wall coming down is broadcast rather than decided
+       twice — otherwise two clients disagree about where the cover is. */
+    bulletVsWall(b) {
+      const arr = cellAt(this.wallIndex, b.x, b.y);
+      let wall = null;
+      if (arr) for (const s of arr) { if (!s.dead && s.mode !== 'through' && inRect(b.x, b.y, s)) { wall = s; break; } }
+      if (!wall) { b.inWall = null; return false; }
+      if (b.inWall === wall) return false;         // already dealt with on the way in
+      b.inWall = wall;
+
+      // only a round that out-ranks the wall's toughness chews into it
+      const src = { kind: b.dmgType === 'heat' ? 'heat' : 'bullet', ap: b.dmgType === 'ap' };
+      if (wall.hp !== Infinity && C.canDamageStructure(wall, src)) {
+        wall.hp -= b.dmg;
+        if (wall.hp <= 0) this.destroyWall(wall);
+      }
+      if (wall.mode === 'stop') return true;
+      if (wall.mode === 'pen') { b.dmg *= wall.keep; return b.dmg < 1; }
+      // ricochet: bounce off whichever face the round crossed
+      if (b.px === undefined ? wall.w < wall.h : (b.px < wall.x || b.px > wall.x + wall.w)) b.vx = -b.vx;
+      else b.vy = -b.vy;
+      b.dmg *= wall.keep;
+      const sp = Math.hypot(b.vx, b.vy) || 1;
+      b.x += (b.vx / sp) * BULLET_STEP * 1.5; b.y += (b.vy / sp) * BULLET_STEP * 1.5;
+      b.sx = b.x; b.sy = b.y;                      // falloff restarts from the bounce
+      b.inWall = null;
+      return b.dmg < 1;
+    }
+
+    destroyWall(wall) {
+      if (wall.dead) return;
+      wall.dead = true;
+      this.downed.push(wall.id);
+      this.pushEvent({ e: 'wall', id: wall.id });
     }
 
     /* the same calculator the client uses */
@@ -283,5 +460,5 @@
       this.broadcast({ t: 'end', scores, roster: this.roster() });
     }
   }
-  return { Room, MAP, TICK, ROOM_MAX, MATCH_SECONDS };
+  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS };
 }));

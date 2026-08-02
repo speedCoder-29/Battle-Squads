@@ -33,8 +33,29 @@ const P2P = (() => {
   let mode = null;          // 'webrtc' | 'local' | null
 
   const listeners = { message: [], status: [], peers: [] };
-  const on = (evt, fn) => { (listeners[evt] = listeners[evt] || []).push(fn); return P2P; };
-  const emit = (evt, data) => (listeners[evt] || []).forEach(fn => fn(data));
+  /* The room answers a join with `welcome` straight away — before the game
+     screen has had a chance to subscribe. Anything sent to nobody is held
+     here and replayed to the first listener, otherwise the host would never
+     receive its own welcome and would not know which agent it is. */
+  const pending = [];
+  const on = (evt, fn) => {
+    (listeners[evt] = listeners[evt] || []).push(fn);
+    if (evt === 'message' && pending.length) {
+      const held = pending.splice(0, pending.length);
+      for (const m of held) fn(m);
+    }
+    return P2P;
+  };
+  const emit = (evt, data) => {
+    const ls = listeners[evt] || [];
+    if (!ls.length) { if (evt === 'message' && pending.length < 64) pending.push(data); return; }
+    ls.forEach(fn => fn(data));
+  };
+
+  /* A new match starts with a clean bus: game.js subscribes on every
+     startOnline, so without this a second match would deliver every message
+     twice over. */
+  function resetBus() { listeners.message.length = 0; pending.length = 0; }
 
   /* ---------- loading PeerJS on demand ---------- */
   let peerLibPromise = null;
@@ -53,7 +74,15 @@ const P2P = (() => {
 
   /* ---------- the authoritative host ---------- */
   function startHost(code, opts) {
+    resetBus();
     const room = new RoomSim.Room('p2p-' + code, (opts && opts.mode) || 'domination');
+    // A shared code should give a reproducible world, and the host must build
+    // the same one it hands out — so the room's seed comes from the code.
+    if (code) {
+      let h = 2166136261;
+      for (const ch of String(code)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+      room.seed = h >>> 0;
+    }
     host = { code, room, peers: new Map(), nextPeer: 1, timer: null, simTimer: null };
 
     // the host plays too — its own send() just loops straight back
@@ -75,6 +104,13 @@ const P2P = (() => {
 
     emit('status', { hosting: true, code, players: room.players.size });
     return host.localPlayer;
+  }
+
+  /* The room is created before the map is, so the host hands the geometry
+     over once game.js has generated it. Until then the sim has no walls. */
+  function provideWorld(rects) {
+    if (!host) return 0;
+    return host.room.setWorld(rects);
   }
 
   /* accept a peer and wire its messages into the room */
@@ -128,7 +164,7 @@ const P2P = (() => {
             if (player) { host.room.leave(player.id); emit('peers', rosterNames()); }
           });
         });
-        resolve({ code, me });
+        resolve({ code, me, seed: host.room.seed });
       });
       peer.on('error', (err) => {
         clearTimeout(timeout);
@@ -141,6 +177,7 @@ const P2P = (() => {
   }
 
   async function joinWebRTC(code, info) {
+    resetBus();
     const Peer = await loadPeerLib();
     return new Promise((resolve, reject) => {
       const peer = new Peer({ debug: 0 });
@@ -190,10 +227,11 @@ const P2P = (() => {
       }
     };
     emit('status', { hosting: true, code, local: true });
-    return { code, me };
+    return { code, me, seed: host.room.seed };
   }
 
   function joinLocal(info) {
+    resetBus();
     const ch = new BroadcastChannel(CHANNEL);
     const peerId = 'g' + Math.random().toString(36).slice(2, 8);
     mode = 'local';
@@ -272,7 +310,7 @@ const P2P = (() => {
 
   return {
     hostWebRTC, joinWebRTC, hostLocal, joinLocal,
-    transport, stop, on,
+    transport, stop, on, provideWorld,
     isHosting, isGuest, isActive, playerCount, rosterNames,
     ROOM_PREFIX, CHANNEL,
     /* exposed for tests */ _startHost: startHost, _acceptPeer: acceptPeer, _handleFromPeer: handleFromPeer,

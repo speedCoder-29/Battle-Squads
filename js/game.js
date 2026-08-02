@@ -7,7 +7,31 @@
    ============================================================ */
 const Game = (() => {
   // domination is fought over a much bigger board than the elimination arena
-  const MAP_SIZES = { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
+  /* Map sizes live in the shared sim so a host and its peers agree on the
+     coordinate space. They used to be declared here and again in the server,
+     which meant an online match simulated in one size and rendered in another. */
+  const MAP_SIZES = (typeof RoomSim !== 'undefined' && RoomSim.MAP_SIZES)
+    ? RoomSim.MAP_SIZES
+    : { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
+
+  /* ---------------- world seed ----------------
+     Every client builds its own copy of the map, so the two have to agree
+     exactly. Generation draws on Math.random in five different modules, so
+     rather than thread a generator through all of them we swap Math.random
+     for a seeded one for the duration of generation and put it straight back.
+     Generation is synchronous, so nothing else can observe the swap. */
+  let worldSeed = 1;
+  function withSeed(seed, fn) {
+    const real = Math.random;
+    let s = (seed >>> 0) || 1;
+    Math.random = () => {
+      s ^= s << 13; s >>>= 0;
+      s ^= s >> 17;
+      s ^= s << 5; s >>>= 0;
+      return s / 4294967296;
+    };
+    try { return fn(); } finally { Math.random = real; }
+  }
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
   const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
@@ -158,7 +182,8 @@ const Game = (() => {
     return { x: cx, y: cy };            // bulldozing will make room
   }
 
-  function placeObjectives() {
+  function placeObjectives() { return withSeed(worldSeed ^ 0x5bf0, placeObjectivesInner); }
+  function placeObjectivesInner() {
     const clearAt = (x, y, r) => {
       if (!Terrain.isSpawnable(terrain, x, y)) return false;
       if (x < r + 60 || y < r + 60 || x > MAP_W - r - 60 || y > MAP_H - r - 60) return false;
@@ -270,12 +295,13 @@ const Game = (() => {
     ['sandbag', 26], ['barricade', 22], ['wire', 20], ['wood', 16], ['metal', 10], ['rwall', 6],
   ];
 
-  function buildMap() {
+  function buildMap() { withSeed(worldSeed, buildMapInner); }
+  function buildMapInner() {
     obstacles = []; trenches = []; decor = []; grass = [];
     buildings = []; landmarks = []; pendingIndoorCrates = [];
     genReset();
     invalidateRects();
-    terrain = Terrain.generate(MAP_W, MAP_H, mode === 'domination' ? 20260730 : 90210);
+    terrain = Terrain.generate(MAP_W, MAP_H, worldSeed);
 
     // playable ground is the grass interior, not the whole rectangle
     const playW = MAP_W - Terrain.BEACH_INSET * 2;
@@ -695,7 +721,7 @@ const Game = (() => {
   }
 
   /* ---------------- start / stop ---------------- */
-  function start(selectedMode) {
+  function start(selectedMode, seed) {
     mode = selectedMode;
     Screens.show('game');
     if (!canvas) {
@@ -707,6 +733,7 @@ const Game = (() => {
     window.addEventListener('resize', resize);
 
     MAP_W = MAP_SIZES[mode].w; MAP_H = MAP_SIZES[mode].h;
+    worldSeed = (seed >>> 0) || ((Math.random() * 0xffffffff) >>> 0);
     botLevel = DB.getSettings().botLevel || BotAI.DEFAULT;
     squadIntel = [];
     buildMap();
@@ -722,6 +749,7 @@ const Game = (() => {
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
     for (const o of objectives) clearObjectiveSite(o);
+    stampWorldIds();     // the wall list is final, so it can be named now
     buildNav();          // the world is final now, so the grid matches it
     // starting tactical kit = whatever your class deploys with
     player.inv = {
@@ -971,13 +999,17 @@ const Game = (() => {
      over the action rather than tucked in the corner. */
   let killBanner = null;
 
+  /* Online, a kill can name someone who has already left the room, and the
+     world itself kills nobody by name at all — so never assume there is one. */
+  const nameOf = (a, fallback) => (a && a.name) || fallback;
+
   function pushKill(killer, victim, zone) {
     const mine = !!(killer && killer.isPlayer);
     const victimIsMe = !!(victim && victim.isPlayer);
     killFeed.unshift({
-      killer: killer ? killer.name : 'The world',
+      killer: nameOf(killer, 'The world'),
       killerTeam: killer ? killer.team : -1,
-      victim: victim ? victim.name : '?',
+      victim: nameOf(victim, '?'),
       victimTeam: victim ? victim.team : -1,
       headshot: zone === 'head', mine, victimIsMe, t: KILL_FEED_LIFE,
     });
@@ -986,7 +1018,7 @@ const Game = (() => {
     if (mine) {
       killer.streak = (killer.streak || 0) + 1;
       killBanner = {
-        text: 'ELIMINATED ' + (victim ? victim.name.toUpperCase() : ''),
+        text: 'ELIMINATED ' + nameOf(victim, '').toUpperCase(),
         sub: (zone === 'head' ? 'HEADSHOT' : '')
           + (killer.streak > 1 ? (zone === 'head' ? '  ·  ' : '') + killer.streak + ' KILL STREAK' : ''),
         good: true, t: 2.2,
@@ -996,7 +1028,7 @@ const Game = (() => {
       // the server, so applyDamage never runs for us in a network match
       victim.streak = 0;
       killBanner = {
-        text: 'ELIMINATED BY ' + (killer ? killer.name.toUpperCase() : 'THE WORLD'),
+        text: 'ELIMINATED BY ' + nameOf(killer, 'the world').toUpperCase(),
         sub: zone === 'head' ? 'HEADSHOT' : '', good: false, t: 2.2,
       };
     }
@@ -1247,6 +1279,32 @@ const Game = (() => {
     }
     return rectCache;
   }
+  /* ---------------- naming the world for the network ----------------
+     Every client generates the same map from the room's seed, in the same
+     order, so position in `obstacles` is a name all of them agree on. Stamped
+     once the map is final; destroying a wall never renumbers the rest, so
+     "wall 214 is down" means the same thing on every screen.
+
+     netWorld() is what the host hands the simulation: enough of each wall for
+     it to stop a player and chew a bullet, and nothing about how it's drawn. */
+  function stampWorldIds() { for (let i = 0; i < obstacles.length; i++) obstacles[i].nid = i; }
+  function netWorld() {
+    return obstacles.map(o => {
+      const bal = Structures.ballistics(o);
+      return {
+        id: o.nid, x: o.x, y: o.y, w: o.w, h: o.h,
+        solid: Structures.blocksMove(o),
+        mode: bal.mode, keep: bal.keep,
+        hp: o.hp, type: o.type, toughness: o.toughness,
+      };
+    });
+  }
+  /* the host said this one came down — take it down here too */
+  function netDestroyWall(id) {
+    const s = obstacles.find(o => o.nid === id);
+    if (s) destroyStructure(s);
+  }
+
   /* A tool can only work a wall its Structure Pierce out-rates, unless it has
      an explicit clearing effect for that type (bayonet→wire, spade→sandbags). */
   const canBreach = (t, s) => Combat.canDamageStructure(s, { kind: 'melee', pierce: t.pierce, clears: t.clears });
@@ -1524,7 +1582,8 @@ const Game = (() => {
     hudMsg('Nothing to interact with');
   }
 
-  function spawnCrates(n) {
+  function spawnCrates(n) { withSeed(worldSeed ^ 0x9e37, () => spawnCratesInner(n)); }
+  function spawnCratesInner(n) {
     crates = [];
     // Buildings stocked their own loot while the map was generated, but cover
     // placed afterwards can land on top of it — re-check now that the world
@@ -2263,7 +2322,9 @@ const Game = (() => {
 
     // a round only chews the wall if its damage type out-ranks the toughness
     const src = { kind: b.dmgType === 'heat' ? 'heat' : b.splash ? 'explosive' : 'bullet', ap: b.dmgType === 'ap' };
-    if (!b.splash && Combat.canDamageStructure(wall, src)) {
+    // Online the room owns wall HP and tells everyone when one falls. Chewing
+    // through it locally as well would leave each client with different cover.
+    if (!b.splash && !online && Combat.canDamageStructure(wall, src)) {
       wall.lastAttacker = b.owner;
       damageStructure(wall, b.dmg, b.x, b.y);
     }
@@ -3318,13 +3379,16 @@ const Game = (() => {
         ctx.lineWidth = 1.5; ctx.stroke();
       }
 
+      // your own name goes white: a team colour on the tinted row it sits in
+      // is the one thing in the feed that has to stay readable
+      const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t] : '#8ea0c9');
       let x = x0 + 10;
       ctx.textAlign = 'left';
-      ctx.fillStyle = k.killerTeam >= 0 ? TEAM_COLORS[k.killerTeam] : '#8ea0c9';
+      ctx.fillStyle = k.mine ? '#fff' : teamInk(k.killerTeam);
       ctx.fillText(killer, x, y); x += wk;
       ctx.fillStyle = k.headshot ? '#ffcf4a' : 'rgba(207,216,238,0.9)';
       ctx.fillText(arrow, x, y); x += wa;
-      ctx.fillStyle = k.victimTeam >= 0 ? TEAM_COLORS[k.victimTeam] : '#8ea0c9';
+      ctx.fillStyle = k.victimIsMe ? '#fff' : teamInk(k.victimTeam);
       ctx.fillText(victim, x, y);
 
       y += rowH + 4;
@@ -3424,8 +3488,8 @@ const Game = (() => {
   /* Takes either a WebSocket to the dedicated server, or a transport object
      from js/p2p.js when another browser is hosting. The rest of the online
      path can't tell the two apart. */
-  function startOnline(connection, selectedMode) {
-    start(selectedMode);                    // build the world and HUD as usual
+  function startOnline(connection, selectedMode, seed) {
+    start(selectedMode, seed);                    // build the world and HUD as usual
     agents = agents.filter(a => a.isPlayer); // the host supplies everyone else
 
     const isSocket = typeof connection.send === 'function' && 'readyState' in connection;
@@ -3454,6 +3518,33 @@ const Game = (() => {
       P2P.on('message', (msg) => onlineMessage(msg));
       hudMsg(P2P.isHosting() ? 'Hosting — waiting for players' : 'Connected to host');
     }
+    // hosting: the room was created before the map existed, so give it the
+    // world we just built. Without this the sim has no geometry and players
+    // walk through the buildings everyone can see.
+    publishWorld();
+  }
+
+  function publishWorld() {
+    if (typeof P2P !== 'undefined' && P2P.isHosting()) P2P.provideWorld(netWorld());
+  }
+
+  /* Throw away the world we generated locally and rebuild it exactly as the
+     host has it. Cheap enough to do once on join (~0.4s) and far simpler than
+     streaming the map across the wire. */
+  function rebuildWorld(seed, hostMode, hostMap) {
+    worldSeed = seed >>> 0;
+    if (hostMode) mode = hostMode;
+    if (hostMap && hostMap.w && hostMap.h) { MAP_W = hostMap.w; MAP_H = hostMap.h; }
+    buildMap();
+    spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
+    if (mode === 'domination') {
+      objectives = objectiveSpots().map(o => ({ ...o, owner: -1, progress: 0, capTeam: -1 }));
+      for (const o of objectives) clearObjectiveSite(o);
+    }
+    stampWorldIds();
+    buildNav();
+    publishWorld();
+    hudMsg('Synced to the host’s map');
   }
 
   function onlineMessage(raw) {
@@ -3466,12 +3557,22 @@ const Game = (() => {
       online.id = msg.id;
       online.roster = msg.roster || [];
       if (player) player.team = msg.team;
+      /* We built a world the moment we joined, before the host had told us
+         which one. Rebuild it from the host's seed so everybody is standing
+         on the same map — without this each client generated its own and
+         players appeared to be in completely different places. */
+      if (typeof msg.seed === 'number' && msg.seed !== worldSeed) {
+        rebuildWorld(msg.seed, msg.mode || mode, msg.map);
+      }
+      // cover that was already shot away before we arrived
+      for (const id of msg.downed || []) netDestroyWall(id);
     } else if (msg.t === 'snapshot') {
       online.transport.snapshots.push({ at: performance.now(), data: msg });
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
       timeLeft = msg.timeLeft;
       for (const e of msg.events || []) {
         if (e.e === 'kill') onlineKill(e);
+        else if (e.e === 'wall') netDestroyWall(e.id);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
       }
@@ -3580,5 +3681,7 @@ const Game = (() => {
   return {
     start, startOnline, isOnline,
     setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
+    // the map, as the simulation needs to see it (see netWorld above)
+    netWorld,
   };
 })();
