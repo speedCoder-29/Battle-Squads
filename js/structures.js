@@ -315,6 +315,11 @@ const Structures = (() => {
       out.push(seg('wood', ox + 240, oy + 12, 3.1, 'v', 0.2));
       out.push(seg('door', ox + 240, oy + 136, 1.5, 'v'));
       out.push(seg('wood', ox + 240, oy + 196, 3.5, 'v', 0.2));
+      // windows for light and alternate sightlines
+      out.push(seg('window', ox + 60, oy + 20, 1.2, 'h', 0.15));
+      out.push(seg('window', ox + 360, oy + 20, 1.2, 'h', 0.15));
+      // small pantry/closet off the rear room
+      out.push(seg('wood', ox + 320, oy + 220, 1.6, 'v', 0.18));
       return out;
     },
 
@@ -330,6 +335,11 @@ const Structures = (() => {
       out.push(seg('door', ox + 280, oy + 182, 1.5, 'v'));
       out.push(seg('wood', ox + 14, oy + 300, 6.6, 'h', 0.3));
       out.push(seg('door', ox + 292, oy + 300, 1.5, 'h'));
+      // grand staircase partition (visual + cover)
+      out.push(seg('barricade', ox + 360, oy + 230, 2.8, 'h', 0.3));
+      // windows on all faces for mansion sightlines
+      out.push(seg('window', ox + 80, oy + 12, 2.2, 'h', 0.15));
+      out.push(seg('window', ox + 640, oy + 12, 2.2, 'h', 0.15));
       // reinforced strongroom in the back corner
       out.push(seg('rwall', ox + 460, oy + 330, 6.4, 'h', 0.4));
       out.push(seg('rwall', ox + 460, oy + 330, 4.6, 'v', 0.4));
@@ -441,6 +451,11 @@ const Structures = (() => {
       for (const dx of [120, 320, 520, 660]) {
         out.push(seg('door', ox + dx, oy + 150, 1.5, 'h'));
         out.push(seg('door', ox + dx - 40, oy + 250, 1.5, 'h'));
+      }
+      // add external windows and small balcony covers
+      for (const wx of [80, 260, 440, 620]) {
+        out.push(seg('window', ox + wx, oy + 10, 1.8, 'h', 0.15));
+        out.push(seg('barricade', ox + wx + 20, oy + 14, 1.6, 'h', 0.18));
       }
       // room dividers above and below the corridor
       for (const dx of [200, 400, 600]) {
@@ -607,6 +622,9 @@ const Structures = (() => {
       out.push(seg('desk', ox + 400, oy + 280, 2.4, 'h', 0.2));
       out.push(prop('crate', ox + 160, oy + 180, 28, 1.0));
       out.push(prop('ammoBox', ox + 620, oy + 180, 28, 1.0));
+      // emergency exit corridors into the surrounding terrain
+      out.push(seg('door', ox + 40, oy + 320, 1.5, 'h'));
+      out.push(seg('door', ox + w - 40, oy + 320, 1.5, 'h'));
       return out;
     },
 
@@ -654,8 +672,12 @@ const Structures = (() => {
         { side: 's', at: 200, type: 'rdoor', len: 2 },
         { side: 'w', at: 240, type: 'door' },
       ]);
-      // industrial floor: metal racking and partitions
       out.push(seg('metal', ox + 150, oy + 50, 5.5, 'v', 0.3));
+      // inner hidden chamber under the vault core
+      const v1 = seg('rwall', ox + 300, oy + 230, 2, 'h', 0.5); v1.underground = true; out.push(v1);
+      const v2 = seg('rwall', ox + 300, oy + 270, 2, 'h', 0.5); v2.underground = true; out.push(v2);
+      const v3 = seg('rwall', ox + 280, oy + 250, 1.6, 'v', 0.5); v3.underground = true; out.push(v3);
+      const v4 = seg('rwall', ox + 320, oy + 250, 1.6, 'v', 0.5); v4.underground = true; out.push(v4);
       out.push(seg('metal', ox + 300, oy + 150, 5.5, 'v', 0.3));
       out.push(seg('metal', ox + 500, oy + 80, 5.5, 'v', 0.3));
       out.push(seg('barricade', ox + 100, oy + 320, 6, 'h', 0.3));
@@ -742,6 +764,8 @@ const Structures = (() => {
       }
       // guard corridor
       out.push(seg('metal', ox + 50, oy + 300, 7.2, 'h', 0.3));
+      // hidden hatch under the corridor leading to prisoner holding cell
+      const hatch = seg('door', ox + 120, oy + 300, 1.2, 'h'); hatch.secret = true; hatch.underground = true; out.push(hatch);
       // watchtower (corner)
       out.push(seg('rwall', ox + 650, oy + 450, 2, 'h', 0.4));
       out.push(seg('rwall', ox + 650, oy + 450, 2, 'v', 0.4));
@@ -757,10 +781,14 @@ const Structures = (() => {
       ]);
       // front lobby (reinforced)
       out.push(seg('metal', ox + 120, oy + 80, 2.8, 'h', 0.4));
+      // teller windows and secure counter lines
+      out.push(seg('barricade', ox + 140, oy + 120, 2.2, 'h', 0.25));
+      out.push(seg('window', ox + 180, oy + 110, 1.2, 'h', 0.12));
       // vault room (ultra-secure)
       out.push(seg('rwall', ox + 320, oy + 120, 4, 'h', 0.5));
       out.push(seg('rwall', ox + 320, oy + 120, 3.2, 'v', 0.5));
-      out.push(seg('rdoor', ox + 360, oy + 120, 1, 'h'));  // narrow vault entrance
+      const vd = seg('rdoor', ox + 360, oy + 120, 1, 'h');  // narrow vault entrance
+      vd.locked = true; out.push(vd);
       // teller stations + secure boxes
       out.push(seg('metal', ox + 150, oy + 200, 2.2, 'h', 0.3));
       out.push(seg('metal', ox + 300, oy + 280, 2.2, 'v', 0.3));
@@ -869,10 +897,11 @@ const Structures = (() => {
       const out = shell(ox, oy, w, h, 'rwall', 0.55, [
         { side: 's', at: 150, type: 'rdoor', len: 1.5 },
       ]);
-      // weapon racks (metal storage)
+      // weapon racks (metal storage) and firing ports
       out.push(seg('metal', ox + 100, oy + 80, 1.8, 'h', 0.4));
       out.push(seg('metal', ox + 220, oy + 100, 1.8, 'h', 0.4));
       out.push(seg('metal', ox + 340, oy + 110, 1.8, 'h', 0.4));
+      out.push(seg('window', ox + 60, oy + 40, 1.2, 'h', 0.12));
       // ammo vault (ultra-secure)
       out.push(seg('rwall', ox + 320, oy + 200, 2.2, 'h', 0.5));
       out.push(seg('rwall', ox + 320, oy + 200, 2, 'v', 0.5));

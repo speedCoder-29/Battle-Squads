@@ -734,6 +734,8 @@ const Game = (() => {
     a.bloom = 0; a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
     a.toolCd = 0; a.toolActive = false; a.swingT = 0;
     a.respawnTimer = 0;
+    // you never respawn still sitting in something
+    if (a.riding) { a.riding.driver = null; a.riding = null; }
     // One ejection pass can push you out of one wall and straight into another,
     // so push until you're clear; if the spot is hopeless, clear it.
     for (let i = 0; i < 6 && pointInObstacle(a.x, a.y); i++) resolveObstacles(a);
@@ -823,7 +825,7 @@ const Game = (() => {
         case 'KeyS': case 'ArrowDown': input.down = true; break;
         case 'KeyA': case 'ArrowLeft': input.left = true; break;
         case 'KeyD': case 'ArrowRight': input.right = true; break;
-        case 'KeyR': startReload(player); break;
+        case 'KeyR': startReload(hudSubject()); break;   // the gun you're actually firing
         case 'ShiftLeft': case 'ShiftRight': dash(); break;
         case 'KeyQ': throwGrenade(); break;
         case 'KeyF': useHeal(); break;
@@ -895,13 +897,17 @@ const Game = (() => {
      hipfire, 1 = as steady as a scoped player). */
   const BOT_STEADY = 0.55;
 
+  /* True for the player, and for a vehicle the player is driving — both are
+     "your gun" as far as sound, the ammo counter and auto-reload go. */
+  const isYours = (a) => a.isPlayer || !!(a.driver && a.driver.isPlayer);
+
   function startReload(a) {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
     // online our magazine belongs to the host, so ask rather than assume
     if (online && a.isPlayer) online.transport.send('reload', {});
     a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline).reload;   // Adren%/2 reload speedup
     a.burstLeft = 0;
-    if (a.isPlayer) SFX.reload();
+    if (isYours(a)) { SFX.reload(); updateWeaponHud(); }
   }
 
   /* Pull the trigger: routes to a burst or a single shot depending on action. */
@@ -963,7 +969,7 @@ const Game = (() => {
     spawnFx(a.x + Math.cos(a.angle) * a.r, a.y + Math.sin(a.angle) * a.r, '#ffd36a', pellets > 1 ? 5 : 3);
     // a suppressor really does keep you quiet: bots only "hear" loud shots
     if (!w.audio || w.audio > 0.5) alertNearbyBots(a);
-    if (a.isPlayer) { SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud(); }
+    if (isYours(a)) { SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud(); }
   }
 
   /* Gunfire is a giveaway: bots within earshot of an unsuppressed shot look
@@ -1689,9 +1695,10 @@ const Game = (() => {
 
   /* --- interact (E): doors, crates, ammo boxes --- */
   function interact() {
+    // in a vehicle, E is the way out — checked before canAct(), which is false
+    // for anyone in a seat
+    if (running && !paused && player && player.alive && player.riding) { exitVehicle(false); return; }
     if (!canAct()) return;
-    // in a vehicle, E is the way out — nothing else is in reach from the seat
-    if (player.riding) { exitVehicle(false); return; }
     // standing next to a friendly vehicle, E means get in: it outranks loot,
     // because nobody presses E beside a tank hoping for a bandage
     const ride = nearestRide(player.x, player.y, 110);
@@ -1770,7 +1777,10 @@ const Game = (() => {
     }
   }
 
-  const canAct = () => running && !paused && player && player.alive && player.inv;
+  /* Item slots, tools and call-ins are all on-foot actions — you can't reach
+     any of them from a driver's seat. Getting out (E) is handled before this
+     check, so it stays available. */
+  const canAct = () => running && !paused && player && player.alive && player.inv && !player.riding;
 
   /* --- per-frame updates for the tactical entities --- */
   function updateGrenades(dt) {
@@ -2338,7 +2348,7 @@ const Game = (() => {
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
       a.wireSlow = (a.alive && !a.isVehicle && !a.riding) ? wireAt(a, dt) : 1;
       if (!a.isPlayer) a.stillT = Math.hypot(a.vx || 0, a.vy || 0) < 12 ? (a.stillT || 0) + dt : 0;
-      if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { a.ammo = a.weapon.mag; if (a.isPlayer) updateWeaponHud(); } }
+      if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { a.ammo = a.weapon.mag; if (isYours(a)) updateWeaponHud(); } }
       // drive an in-progress burst
       if (a.burstLeft > 0) {
         a.burstCd -= ms;

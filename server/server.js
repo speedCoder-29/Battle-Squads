@@ -101,6 +101,9 @@ function findRoom(mode, needSeats) {
     if (r.mode === mode && !r.over && r.players.size + seats <= ROOM_MAX) return r;
   }
   const r = new Room('room-' + (rooms.size + 1), mode);
+  // ROOM_SEED pins the map every room generates, which makes a match
+  // reproducible when you are chasing a bug on a particular piece of ground
+  if (process.env.ROOM_SEED) r.seed = (+process.env.ROOM_SEED) >>> 0;
   /* Build the room's map here, from its own seed, so the server simulates the
      same buildings the clients draw. If generation ever fails the match still
      runs — just on open ground — rather than taking the server down with it. */

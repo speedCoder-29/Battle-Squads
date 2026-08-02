@@ -186,7 +186,7 @@ const Weapons = (() => {
     ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',60,25,'Bullpup: wide from the hip but rock-steady on the move',0.5],
     ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',24,20,'Lobbed HE round - arcs into cover',3],
     ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
-    ['QLZ-87','Launcher','40',4,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',26,22,'Automatic grenade launcher - area denial on a tripod',6],
+    ['QLZ-87','Launcher','60',4,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',26,22,'Automatic grenade launcher - area denial on a tripod',6],
   ];
 
   /* ---------- parsing helpers ---------- */
