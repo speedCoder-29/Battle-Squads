@@ -106,7 +106,7 @@ function findRoom(mode, needSeats) {
      runs — just on open ground — rather than taking the server down with it. */
   try {
     const n = r.setWorld(buildWorld(mode, r.seed));
-    console.log(`[room] created ${r.id} (${mode}) seed ${r.seed}, ${n} walls`);
+    console.log(`[room] created ${r.id} (${mode}) seed ${r.seed}, ${n} walls, ${r.objectives.length} objectives`);
   } catch (e) {
     console.warn(`[room] ${r.id}: could not build the map (${e.message}) — running without cover`);
   }

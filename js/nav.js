@@ -20,21 +20,72 @@ const Nav = (() => {
   const DIAG = Math.SQRT2;
   const MAX_STEPS = 6000;            // A* node budget, so a hopeless path bails
 
+  /* Half a player, plus a little. A cell counts as walkable when someone
+     standing at its centre would actually fit there, so this is the distance
+     every sample has to keep from a wall. */
+  const PAD = 18;
+
   /* ---------- build ---------- */
-  /* rects: everything solid. costAt(x, y): optional extra cost per cell. */
+  /* rects: everything solid. costAt(x, y): optional extra cost per cell.
+
+     A cell used to be blocked if a wall touched it anywhere. On a map with
+     1500 pieces of cover that marked three quarters of the world impassable —
+     one 12px wall closed a 90px corridor, one crate closed the cell it sat in
+     — and A* simply failed, which is why bots ground into buildings instead
+     of walking round them.
+
+     So a cell is blocked when a player at its *centre* would be inside
+     something, and a move between two cells is blocked when the midpoint
+     between them would be. Cover you can walk past no longer seals the
+     corridor it stands in, and a wall still can't be walked through: padded by
+     PAD, even the thinnest one covers more ground than the 45px between
+     samples, so there is nowhere for it to hide. */
   function build(w, h, rects, costAt) {
     const cols = Math.ceil(w / CELL), rows = Math.ceil(h / CELL);
     const blocked = new Uint8Array(cols * rows);
+    const eastWall = new Uint8Array(cols * rows);    // move to (cx+1, cy) blocked
+    const southWall = new Uint8Array(cols * rows);   // move to (cx, cy+1) blocked
     const cost = new Float32Array(cols * rows).fill(1);
 
+    /* the padded rects, bucketed, so a straight-line test can ask about a
+       point exactly rather than about the cell it happens to land in */
+    const solids = new Map();
+    const bucket = (cx, cy) => {
+      const k = cy * cols + cx;
+      let a = solids.get(k);
+      if (!a) { a = []; solids.set(k, a); }
+      return a;
+    };
+
     for (const r of rects) {
-      // pad by half a cell so bots don't clip corners they can't fit through
-      const x0 = Math.max(0, Math.floor((r.x - CELL * 0.35) / CELL));
-      const x1 = Math.min(cols - 1, Math.floor((r.x + r.w + CELL * 0.35) / CELL));
-      const y0 = Math.max(0, Math.floor((r.y - CELL * 0.35) / CELL));
-      const y1 = Math.min(rows - 1, Math.floor((r.y + r.h + CELL * 0.35) / CELL));
+      const x0 = Math.max(0, Math.floor((r.x - PAD) / CELL) - 1);
+      const x1 = Math.min(cols - 1, Math.floor((r.x + r.w + PAD) / CELL) + 1);
+      const y0 = Math.max(0, Math.floor((r.y - PAD) / CELL) - 1);
+      const y1 = Math.min(rows - 1, Math.floor((r.y + r.h + PAD) / CELL) + 1);
+      const l = r.x - PAD, t = r.y - PAD, ri = r.x + r.w + PAD, b = r.y + r.h + PAD;
+      const hits = (px, py) => px >= l && px <= ri && py >= t && py <= b;
       for (let cy = y0; cy <= y1; cy++) {
-        for (let cx = x0; cx <= x1; cx++) blocked[cy * cols + cx] = 1;
+        for (let cx = x0; cx <= x1; cx++) {
+          if (hits(cx * CELL + CELL / 2, cy * CELL + CELL / 2)) blocked[cy * cols + cx] = 1;
+          // only bucket cells the rect really overlaps
+          if (l < (cx + 1) * CELL && ri > cx * CELL && t < (cy + 1) * CELL && b > cy * CELL) {
+            bucket(cx, cy).push([l, t, ri, b]);
+          }
+        }
+      }
+    }
+
+    /* Now the moves. A step from one cell to the next is only allowed if the
+       line between their centres is clear of everything — checked once here
+       rather than every time A* considers the move. */
+    const grid = { cols, rows, w, h, blocked, eastWall, southWall, cost, solids };
+    for (let cy = 0; cy < rows; cy++) {
+      for (let cx = 0; cx < cols; cx++) {
+        const i = cy * cols + cx;
+        if (blocked[i]) { eastWall[i] = southWall[i] = 1; continue; }
+        const a = centre(cx, cy);
+        if (cx < cols - 1) eastWall[i] = blocked[i + 1] || !clearLine(grid, a, centre(cx + 1, cy)) ? 1 : 0;
+        if (cy < rows - 1) southWall[i] = blocked[i + cols] || !clearLine(grid, a, centre(cx, cy + 1)) ? 1 : 0;
       }
     }
     if (costAt) {
@@ -45,7 +96,7 @@ const Nav = (() => {
         }
       }
     }
-    return { cols, rows, w, h, blocked, cost };
+    return grid;
   }
 
   const idx = (g, cx, cy) => cy * g.cols + cx;
@@ -53,6 +104,15 @@ const Nav = (() => {
   const cellOf = (x, y) => [Math.floor(x / CELL), Math.floor(y / CELL)];
   const centre = (cx, cy) => ({ x: cx * CELL + CELL / 2, y: cy * CELL + CELL / 2 });
   const isBlocked = (g, cx, cy) => !inBounds(g, cx, cy) || !!g.blocked[idx(g, cx, cy)];
+
+  /* is there a wall between these two neighbouring cells? */
+  function edgeBlocked(g, cx, cy, dx, dy) {
+    if (!g.eastWall) return false;                       // grid built before edges existed
+    if (dx > 0) return !!g.eastWall[idx(g, cx, cy)];
+    if (dx < 0) return !!g.eastWall[idx(g, cx - 1, cy)];
+    if (dy > 0) return !!g.southWall[idx(g, cx, cy)];
+    return !!g.southWall[idx(g, cx, cy - 1)];
+  }
 
   /* nearest open cell, for when someone is standing in a wall */
   function nearestOpen(g, cx, cy, maxRing) {
@@ -79,7 +139,9 @@ const Nav = (() => {
     const t = nearestOpen(g, tcx, tcy);
     if (!s || !t) return null;
     [scx, scy] = s; [tcx, tcy] = t;
-    if (scx === tcx && scy === tcy) return [{ x: tx, y: ty }];
+    if (scx === tcx && scy === tcy) {
+      return clearLine(g, { x: sx, y: sy }, { x: tx, y: ty }) ? [{ x: tx, y: ty }] : [centre(tcx, tcy)];
+    }
 
     const n = g.cols * g.rows;
     const gScore = new Float32Array(n).fill(Infinity);
@@ -109,6 +171,13 @@ const Nav = (() => {
           if (isBlocked(g, nx, ny)) continue;
           // don't cut a diagonal through a wall corner
           if (dx && dy && (isBlocked(g, cx + dx, cy) || isBlocked(g, cx, cy + dy))) continue;
+          /* and don't step through a wall standing between the two cells.
+             A diagonal has to have both ways round it clear — a wall that
+             crossed the diagonal would have to cross one of them too. */
+          if (dx && dy) {
+            if (edgeBlocked(g, cx, cy, dx, 0) || edgeBlocked(g, cx + dx, cy, 0, dy)) continue;
+            if (edgeBlocked(g, cx, cy, 0, dy) || edgeBlocked(g, cx, cy + dy, dx, 0)) continue;
+          } else if (edgeBlocked(g, cx, cy, dx, dy)) continue;
           const ni = idx(g, nx, ny);
           const step = (dx && dy ? DIAG : 1) * g.cost[ni];
           const tentative = gScore[cur] + step;
@@ -128,7 +197,11 @@ const Nav = (() => {
     while (cur !== -1) { cells.push(cur); cur = came[cur]; }
     cells.reverse();
     const pts = cells.map(i => centre(i % g.cols, (i / g.cols) | 0));
-    pts.push({ x: tx, y: ty });                 // finish at the real target
+    /* Finish at the real target, but only if we can actually walk the last
+       stretch to it. Asking for somewhere tucked behind a wall used to append
+       it regardless, and that one segment went straight through. */
+    const last = pts[pts.length - 1];
+    if (clearLine(g, last, { x: tx, y: ty })) pts.push({ x: tx, y: ty });
     return simplify(g, pts);
   }
 
@@ -146,13 +219,24 @@ const Nav = (() => {
     }
     return out;
   }
+  /* would a player standing here be inside something? exact, not per-cell */
+  function pointBlocked(g, x, y) {
+    if (!g.solids) return isBlocked(g, ...cellOf(x, y));
+    const arr = g.solids.get(Math.floor(y / CELL) * g.cols + Math.floor(x / CELL));
+    if (!arr) return false;
+    for (const [l, t, r, b] of arr) if (x >= l && x <= r && y >= t && y <= b) return true;
+    return false;
+  }
+
+  /* Walk the line itself rather than the cells it passes over: shortcutting a
+     path is only safe if nothing is actually in the way, and a cell can be
+     walkable at its centre while a wall crosses its corner. */
   function clearLine(g, a, b) {
     const d = Math.hypot(b.x - a.x, b.y - a.y);
-    const steps = Math.max(2, Math.ceil(d / (CELL * 0.5)));
+    const steps = Math.max(2, Math.ceil(d / (PAD * 1.2)));
     for (let k = 1; k < steps; k++) {
       const t = k / steps;
-      const [cx, cy] = cellOf(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-      if (isBlocked(g, cx, cy)) return false;
+      if (pointBlocked(g, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)) return false;
     }
     return true;
   }
@@ -193,5 +277,5 @@ const Nav = (() => {
     }
   }
 
-  return { CELL, build, findPath, cellOf, centre, isBlocked, nearestOpen, clearLine, MinHeap };
+  return { CELL, PAD, build, findPath, cellOf, centre, isBlocked, pointBlocked, nearestOpen, clearLine, MinHeap };
 })();

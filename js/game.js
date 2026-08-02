@@ -287,9 +287,13 @@ const Game = (() => {
   };
   /* the buildings that can be rolled, and how common each is */
   const BUILDING_MIX = [
-    ['house', 16], ['shanty', 12], ['camp', 10], ['checkpoint', 10],
+    ['house', 14], ['shanty', 12], ['camp', 10], ['checkpoint', 10],
     ['farm', 9], ['tower', 9], ['apartments', 7], ['warehouse', 7],
     ['depot', 7], ['bunker', 6], ['mansion', 5], ['hangar', 4], ['base', 4],
+    ['train-station', 4], ['school', 4], ['market', 4], ['power-plant', 4], ['dock', 4],
+    ['workshop', 3], ['museum', 3], ['barracks', 3], ['armory', 3], ['church', 3],
+    ['gas-station', 3], ['fortress', 2], ['arena', 2], ['radio-tower', 2], ['mine', 2],
+    ['vault', 2], ['subway', 2], ['command-center', 2],
   ];
   const COVER_MIX = [
     ['sandbag', 26], ['barricade', 22], ['wire', 20], ['wood', 16], ['metal', 10], ['rwall', 6],
@@ -432,6 +436,23 @@ const Game = (() => {
     depot:      { props: ['ammoBox', 'locker', 'barrel', 'pallet'], n: 10, loot: 4, floor: '#5a5646' },
     camp:       { props: ['shelf', 'table', 'crate', 'tyre'], n: 8, loot: 3, floor: '#5c5a44' },
     checkpoint: { props: ['ammoBox', 'desk', 'sandpile'], n: 5, loot: 2, floor: '#4d5462' },
+    'train-station': { props: ['desk', 'locker', 'crate', 'pallet', 'tyre'], n: 18, loot: 5, floor: '#4a5260' },
+    school:     { props: ['desk', 'table', 'locker', 'crate', 'shelf'], n: 18, loot: 5, floor: '#6b5741' },
+    market:     { props: ['table', 'crate', 'barrel', 'pallet'], n: 18, loot: 5, floor: '#6b5a44' },
+    church:     { props: ['desk', 'table', 'crate'], n: 14, loot: 5, floor: '#5a5f7a' },
+    museum:     { props: ['desk', 'table', 'crate', 'locker'], n: 18, loot: 6, floor: '#5d5c6b' },
+    barracks:   { props: ['locker', 'ammoBox', 'desk', 'crate', 'table'], n: 20, loot: 6, floor: '#4e5666' },
+    armory:     { props: ['locker', 'ammoBox', 'crate', 'desk'], n: 14, loot: 8, floor: '#4a5260' },
+    'power-plant': { props: ['ammoBox', 'crate', 'pallet', 'desk'], n: 20, loot: 6, floor: '#4a5260' },
+    'gas-station': { props: ['barrel', 'crate', 'desk'], n: 10, loot: 4, floor: '#5a5646' },
+    mine:       { props: ['crate', 'pallet', 'barrel'], n: 12, loot: 5, floor: '#5d5852' },
+    vault:      { props: ['locker', 'ammoBox', 'desk', 'crate'], n: 10, loot: 9, floor: '#4b4f60' },
+    subway:     { props: ['crate', 'desk', 'ammoBox', 'locker'], n: 14, loot: 6, floor: '#4a5260' },
+    'command-center': { props: ['desk', 'locker', 'ammoBox', 'table'], n: 18, loot: 7, floor: '#4c5164' },
+    workshop:   { props: ['locker', 'ammoBox', 'crate', 'pallet'], n: 18, loot: 6, floor: '#4b4f5a' },
+    dock:       { props: ['crate', 'barrel', 'pallet', 'ammoBox'], n: 16, loot: 6, floor: '#5a5646' },
+    fortress:   { props: ['crate', 'locker', 'ammoBox'], n: 10, loot: 7, floor: '#545d66' },
+    arena:      { props: ['crate', 'barrel', 'pallet'], n: 16, loot: 5, floor: '#5a5f6b' },
     /* landmarks: much bigger footprints, so much more inside */
     factory:    { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre', 'rubble'], n: 46, loot: 12, floor: '#4a5260' },
     keep:       { props: ['locker', 'ammoBox', 'desk', 'table', 'crate', 'rubble'], n: 40, loot: 11, floor: '#565b6b' },
@@ -876,6 +897,8 @@ const Game = (() => {
 
   function startReload(a) {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
+    // online our magazine belongs to the host, so ask rather than assume
+    if (online && a.isPlayer) online.transport.send('reload', {});
     a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline).reload;   // Adren%/2 reload speedup
     a.burstLeft = 0;
     if (a.isPlayer) SFX.reload();
@@ -959,7 +982,7 @@ const Game = (() => {
   function explode(x, y, baseDmg, radius, team, owner, type = 'explosive') {
     spawnFx(x, y, '#ff9d3b', 22);
     for (const a of agents) {
-      if (!a.alive) continue;
+      if (!a.alive || a.riding) continue;      // the hull eats it, not the driver
       const d = Math.hypot(a.x - x, a.y - y);
       if (d < radius) {
         const dmg = baseDmg * (1 - d / radius) * (a.team === team ? 0.5 : 1);
@@ -1299,6 +1322,9 @@ const Game = (() => {
       };
     });
   }
+  /* capture points, in generation order — the sim reports them back by index */
+  const netObjectives = () => objectives.map(o => ({ name: o.name, x: o.x, y: o.y, r: o.r }));
+
   /* the host said this one came down — take it down here too */
   function netDestroyWall(id) {
     const s = obstacles.find(o => o.nid === id);
@@ -1519,28 +1545,126 @@ const Game = (() => {
     hudMsg('Deployed ' + it.name); SFX.capture();
   }
 
+  /* ---------------- vehicles ----------------
+     One table per vehicle, so what a jeep "is" lives in one place: how tough
+     it is, what it drives like, and what it shoots. HP and the armour profile
+     both come from combat.js — a tank is not hard to kill because of a big
+     health pool, it's hard to kill because rifle rounds do 0% to it, and the
+     HUD reads that straight out of Combat.TARGETS rather than restating it. */
+  const VEHICLES = {
+    jeep: {
+      vtype: 'jeep', name: 'Armored Jeep', icon: '🚙', klass: 'jeep',
+      weapon: 'm249', r: 29, speed: 175,
+      blurb: 'Fast and open-topped — a mounted LMG on wheels',
+    },
+    tank: {
+      vtype: 'tank', name: 'Tank', icon: '🛡️', klass: 'tank',
+      weapon: 'qlz-87', r: 34, speed: 110,
+      blurb: 'Small arms bounce off — only HEAT and explosives bite',
+    },
+  };
+  const vehicleDef = (v) => VEHICLES[v && v.vtype] || VEHICLES.jeep;
+
   /* --- call in a vehicle token at the cursor --- */
   function useToken() {
     if (!canAct()) return;
     if (!player.inv.tokens.length) { hudMsg('No call-in tokens (open crates!)'); return; }
     const t = player.inv.tokens.shift();
     const p = worldMouse();
-    spawnVehicle(player.team, t, p.x, p.y);
-    hudMsg((t === 'tank' ? 'Tank' : 'Armored Jeep') + ' called in!'); SFX.win();
+    const v = spawnVehicle(player.team, t, p.x, p.y);
+    hudMsg(`${vehicleDef(v).name} called in — press E to get in`); SFX.win();
   }
   function spawnVehicle(team, vtype, x, y) {
-    // HP comes from the damage table; what makes a tank tough is that rifle
-    // rounds do 0% to it, not a huge health pool
-    const conf = vtype === 'tank'
-      ? { weapon: 'qlz-87', r: 34, speed: 110 }
-      : { weapon: 'm249', r: 29, speed: 175 };
+    const conf = VEHICLES[vtype] || VEHICLES.jeep;
     const v = makeAgent(team, false, conf.weapon);
-    const hp = Combat.maxHpFor(vtype);
-    v.isVehicle = true; v.vtype = vtype; v.klass = vtype;
+    const hp = Combat.maxHpFor(conf.klass);
+    v.isVehicle = true; v.vtype = conf.vtype; v.klass = conf.klass;
     v.maxHp = hp; v.hp = hp; v.r = conf.r; v.vspeed = conf.speed;
-    v.name = (vtype === 'tank' ? 'Tank' : 'Jeep');
+    v.name = conf.name;
+    v.hullAngle = 0;                       // hull points where it drives, turret where you aim
     v.x = clamp(x, v.r, MAP_W - v.r); v.y = clamp(y, v.r, MAP_H - v.r);
     agents.push(v);
+    return v;
+  }
+
+  /* --- getting in and out ---------------------------------------------
+     Riding is modelled as the player agent being carried by the vehicle: it
+     keeps its position in sync so the camera, the minimap and the capture
+     logic all keep working untouched, and `riding` marks it as no longer a
+     target — you are inside the armour, so the armour is what gets shot. */
+  function nearestRide(x, y, range) {
+    let best = null, bd = range * range;
+    for (const a of agents) {
+      if (!a.isVehicle || !a.alive || a.team !== player.team || a.driver) continue;
+      const d = dist2(x, y, a.x, a.y);
+      if (d < bd) { bd = d; best = a; }
+    }
+    return best;
+  }
+
+  function boardVehicle(v) {
+    player.riding = v; v.driver = player;
+    v.hullAngle = v.angle;
+    player.x = v.x; player.y = v.y;
+    player.vx = player.vy = 0;
+    input.ads = false;                     // no aiming down sights from a turret
+    player.toolActive = false;
+    updateWeaponHud();
+    hudMsg(`${vehicleDef(v).name} — WASD drive · mouse aim · E to get out`);
+    SFX.click();
+  }
+
+  /* `thrown` is the blast that killed the vehicle: you come out hurt and to
+     the side rather than standing on the wreck. */
+  function exitVehicle(thrown) {
+    const v = player.riding;
+    if (!v) return;
+    player.riding = null; v.driver = null;
+    // step out beside the hull, and never inside a wall
+    const side = v.angle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1);
+    player.x = v.x + Math.cos(side) * (v.r + player.r + 6);
+    player.y = v.y + Math.sin(side) * (v.r + player.r + 6);
+    resolveObstacles(player);
+    if (pointInObstacle(player.x, player.y)) { player.x = v.x; player.y = v.y; }
+    updateWeaponHud();
+    if (thrown) {
+      applyDamage(player, 35, null, 'true', 'body');
+      spawnFx(player.x, player.y, '#ff9d3b', 12);
+      hudMsg('Thrown clear of the wreck');
+    } else {
+      hudMsg('Dismounted');
+    }
+    SFX.click();
+  }
+
+  /* Drive: WASD moves the hull, the mouse swings the turret, left click fires
+     whatever the vehicle is armed with. */
+  function driveVehicle(v, dt) {
+    let dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+    const m = Math.hypot(dx, dy);
+    if (m > 0) {
+      const surf = terrain ? Terrain.surfaceAt(terrain, v.x, v.y) : null;
+      const spd = v.vspeed * (surf ? surf.speed : 1) * dt;
+      const px = v.x, py = v.y;
+      v.x += (dx / m) * spd; v.y += (dy / m) * spd;
+      resolveObstacles(v);
+      v.hullAngle = Math.atan2(dy, dx);
+      v.vx = (v.x - px) / dt; v.vy = (v.y - py) / dt;
+    } else { v.vx = 0; v.vy = 0; }
+
+    // the player rides along, so the camera and everything keyed off the
+    // player's position follow the vehicle for free
+    player.x = v.x; player.y = v.y;
+    player.vx = v.vx; player.vy = v.vy;
+
+    const psx = (v.x - camX) * zoom, psy = (v.y - camY) * zoom;
+    v.angle = Math.atan2(input.my - psy, input.mx - psx);
+    player.angle = v.angle;
+
+    if (v.weapon.action === 'auto') { if (input.shooting) triggerFire(v); }
+    else if (input.fireEdge) { triggerFire(v); }
+    input.fireEdge = false;
   }
 
   /* --- doors --- */
@@ -1566,6 +1690,12 @@ const Game = (() => {
   /* --- interact (E): doors, crates, ammo boxes --- */
   function interact() {
     if (!canAct()) return;
+    // in a vehicle, E is the way out — nothing else is in reach from the seat
+    if (player.riding) { exitVehicle(false); return; }
+    // standing next to a friendly vehicle, E means get in: it outranks loot,
+    // because nobody presses E beside a tank hoping for a bandage
+    const ride = nearestRide(player.x, player.y, 110);
+    if (ride) { boardVehicle(ride); return; }
     // dropped kit first — it's what you most often want when you press E
     if (grabDrop()) return;
     const door = nearestDoor(player.x, player.y, 70);
@@ -1672,7 +1802,7 @@ const Game = (() => {
   function flashDetonate(x, y, radius, blind, team) {
     spawnFx(x, y, '#ffffff', 26);
     for (const a of agents) {
-      if (!a.alive) continue;
+      if (!a.alive || a.riding) continue;      // buttoned up behind armour
       const d = Math.hypot(a.x - x, a.y - y);
       if (d < radius && hasLOS(x, y, a.x, a.y)) {
         const dur = blind * (1 - d / radius);
@@ -1812,7 +1942,8 @@ const Game = (() => {
   function nearestEnemy(a) {
     let best = null, bd = Infinity;
     for (const o of agents) {
-      if (!o.alive || o.team === a.team) continue;
+      // someone inside a vehicle isn't a target; the vehicle is
+      if (!o.alive || o.team === a.team || o.riding) continue;
       const d = dist2(a.x, a.y, o.x, o.y);
       if (d < bd) { bd = d; best = o; }
     }
@@ -2015,7 +2146,10 @@ const Game = (() => {
   let navDirty = false, navRebuildIn = 0, navChanges = 0;
 
   function buildNav() {
-    navGrid = Nav.build(MAP_W, MAP_H, solidRects());
+    /* Doors are a way in, not a wall. Route through them and open them on
+       arrival — otherwise every building is sealed, and since the capture
+       points sit inside buildings, nothing could reach an objective at all. */
+    navGrid = Nav.build(MAP_W, MAP_H, solidRects().filter(s => !Structures.isDoor(s)));
     if (!terrain) return;
     // Stamp costs by walking the paths rather than asking the terrain about
     // every cell: surfaceAt does a distance-to-polyline test, and running that
@@ -2088,11 +2222,16 @@ const Game = (() => {
   }
 
   /* Bots walk in straight lines, so a building corner can pin them. If a bot
-     barely moves while trying to, give it a sidestep heading for a moment. */
+     barely moves while trying to, give it a sidestep heading for a moment —
+     unless what stopped it was a door, in which case it opens the door. */
   function trackStuck(a, px, py, spd, dt) {
     const moved = Math.hypot(a.x - px, a.y - py);
     if (a.stuckDir) { a.stuckT -= dt; if (a.stuckT <= 0) a.stuckDir = 0; return; }
     a.stuckAcc = moved < spd * 0.35 ? (a.stuckAcc || 0) + dt : 0;
+    if (a.stuckAcc > 0.2) {
+      const d = nearestDoor(a.x + Math.cos(a.angle) * 40, a.y + Math.sin(a.angle) * 40, 60);
+      if (d && !d.open) { toggleDoor(d, a); a.stuckAcc = 0; return; }
+    }
     if (a.stuckAcc > 0.45) {
       a.stuckDir = a.angle + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
       a.stuckT = 0.9; a.stuckAcc = 0;
@@ -2133,7 +2272,11 @@ const Game = (() => {
     updateKillFeed(dt);
 
     // player control
-    if (player.alive) {
+    if (player.alive && player.riding) {
+      // behind the wheel the whole control scheme changes hands: the vehicle
+      // moves, aims and shoots, and the player just rides along inside it
+      driveVehicle(player.riding, dt);
+    } else if (player.alive) {
       const tool = player.tool, gadget = player.toolActive;
       let dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
       let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
@@ -2175,7 +2318,10 @@ const Game = (() => {
 
     // camera zoom: binoculars pull back, scoping a long gun pulls out to its
     // scope stat (snipers ~0.16 = a lot of magnification, pistols ~2 = none)
-    if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = BASE_ZOOM / player.tool.zoom;
+    // driving pulls the view out a little: you're bigger, faster, and the
+    // things that can hurt you are further away
+    if (player.alive && player.riding) zoomTarget = BASE_ZOOM * 0.85;
+    else if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = BASE_ZOOM / player.tool.zoom;
     else if (player.alive && input.ads) zoomTarget = BASE_ZOOM * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
     else zoomTarget = BASE_ZOOM;
     zoom += (zoomTarget - zoom) * Math.min(1, 9 * dt);
@@ -2190,7 +2336,7 @@ const Game = (() => {
       if (a.markedUntil > 0) a.markedUntil -= dt;
       if (a.swingT > 0) a.swingT -= dt;
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
-      a.wireSlow = (a.alive && !a.isVehicle) ? wireAt(a, dt) : 1;
+      a.wireSlow = (a.alive && !a.isVehicle && !a.riding) ? wireAt(a, dt) : 1;
       if (!a.isPlayer) a.stillT = Math.hypot(a.vx || 0, a.vy || 0) < 12 ? (a.stillT || 0) + dt : 0;
       if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { a.ammo = a.weapon.mag; if (a.isPlayer) updateWeaponHud(); } }
       // drive an in-progress burst
@@ -2205,7 +2351,8 @@ const Game = (() => {
         if (mode === 'domination' && !a.isVehicle) { a.respawnTimer -= dt; if (a.respawnTimer <= 0) respawnAgent(a); }
         continue;
       }
-      if (!a.isPlayer) updateBot(a, dt);
+      // a vehicle the player is driving takes its orders from the player
+      if (!a.isPlayer && !a.driver) updateBot(a, dt);
     }
 
     // bullets
@@ -2231,7 +2378,7 @@ const Game = (() => {
         if (bulletVsWall(b)) { dead = true; break; }
 
         for (const a of agents) {
-          if (!a.alive || a.team === b.team) continue;
+          if (!a.alive || a.team === b.team || a.riding) continue;
           if (dist2(a.x, a.y, b.x, b.y) < a.r * a.r) {
             if (!b.splash) {   // explosives deal their damage via the blast below
               // falloff starts partway into the gun's own effective range
@@ -2264,8 +2411,9 @@ const Game = (() => {
       }
     }
 
-    // objectives (domination)
-    if (mode === 'domination') updateObjectives(dt);
+    // objectives (domination) — online the host owns them, and the snapshot
+    // brings back who holds what
+    if (mode === 'domination' && !online) updateObjectives(dt);
 
     // tactical layer
     updateSquadIntel(dt);
@@ -2405,6 +2553,12 @@ const Game = (() => {
       pushKill(owner, a, hit.zone);
       if (mode === 'domination') a.respawnTimer = 3;
       if (a.isPlayer) SFX.hurt();
+      // brewed up with someone inside: throw the driver clear rather than
+      // leaving them welded to a dead agent with no way out
+      if (a.isVehicle && a.driver && a.driver.riding === a) {
+        explode(a.x, a.y, 60, a.r * 3, a.team, owner, 'explosive');
+        exitVehicle(true);
+      }
     }
   }
 
@@ -2507,6 +2661,22 @@ const Game = (() => {
         <span class="board__num">${kd}</span>
       </div>`;
     }).join('');
+
+  }
+
+  /* Scroll your own row into view. A 24-player board only shows eight rows at a
+     time, and finishing 24th means the one row you actually want to read is the
+     one you'd have to go looking for.
+
+     This has to run *after* the results panel is shown: while it's still
+     hidden the list has no clientHeight, so the arithmetic below lands on
+     scrollTop 0 and the row stays buried. */
+  function scrollBoardToPlayer() {
+    const box = document.getElementById('res-board');
+    const you = box && box.querySelector('.is-you');
+    if (!you || !box.clientHeight) return;
+    const target = you.offsetTop - (box.clientHeight - you.offsetHeight) / 2;
+    box.scrollTop = Math.max(0, Math.min(target, box.scrollHeight - box.clientHeight));
   }
 
   /* ---------------- match end + rewards ---------------- */
@@ -2553,6 +2723,7 @@ const Game = (() => {
     document.getElementById('res-credits').textContent = '+' + (credits + bonusCredits);
     renderLeaderboard(board);
     document.getElementById('game-results').classList.add('is-open');
+    requestAnimationFrame(scrollBoardToPlayer);   // needs the panel laid out first
     won ? SFX.win() : SFX.lose();
   }
 
@@ -2565,17 +2736,25 @@ const Game = (() => {
   }
 
   /* ---------------- HUD ---------------- */
+  /* While driving, the bottom HUD describes the vehicle rather than the
+     player: its gun is the one that fires, its magazine is the one that runs
+     out, and its hull is the health that matters. */
+  const hudSubject = () => (player && player.riding) || player;
+
   function updateWeaponHud() {
     if (!player) return;
-    document.getElementById('hud-weapon').textContent = player.weapon.name;
-    document.getElementById('hud-ammo').textContent = player.reloadTimer > 0 ? '⟳' : player.ammo;
-    document.getElementById('hud-ammomax').textContent = '/' + player.weapon.mag;
+    const s = hudSubject();
+    const name = s.isVehicle ? `${vehicleDef(s).icon} ${s.weapon.name}` : s.weapon.name;
+    document.getElementById('hud-weapon').textContent = name;
+    document.getElementById('hud-ammo').textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
+    document.getElementById('hud-ammomax').textContent = '/' + s.weapon.mag;
   }
 
   function updateHud() {
-    // health
-    document.getElementById('hud-hpfill').style.width = clamp(player.hp / player.maxHp * 100, 0, 100) + '%';
-    document.getElementById('hud-ammo').textContent = player.reloadTimer > 0 ? '⟳' : player.ammo;
+    // health + ammo track whatever you're currently fighting from
+    const s = hudSubject();
+    document.getElementById('hud-hpfill').style.width = clamp(s.hp / s.maxHp * 100, 0, 100) + '%';
+    document.getElementById('hud-ammo').textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
     // timer
     const t = Math.max(0, Math.floor(timeLeft));
     document.getElementById('hud-gametimer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
@@ -2653,6 +2832,7 @@ const Game = (() => {
         continue;
       }
       if (a.isVehicle) { drawUnitShadow(a.x, a.y, a.r * 1.15); drawVehicle(a); continue; }
+      if (a.riding) continue;                 // inside the hull, not on the field
       const hidden = camouflaged(a);
       if (!hidden) drawUnitShadow(a.x, a.y, a.r);
       if (hidden) ctx.globalAlpha = a.isPlayer ? 0.45 : 0.12;   // ghillied: barely there
@@ -3180,21 +3360,38 @@ const Game = (() => {
   }
   function drawVehicle(a) {
     const col = TEAM_COLORS[a.team];
+    const def = vehicleDef(a);
+    // hull points where it's driving, turret where it's aiming — so you can
+    // read a vehicle's heading and its threat separately
     ctx.save();
-    ctx.translate(a.x, a.y); ctx.rotate(a.angle);
-    // hull
+    ctx.translate(a.x, a.y); ctx.rotate(a.hullAngle !== undefined ? a.hullAngle : a.angle);
     roundRect(-a.r, -a.r * 0.8, a.r * 2, a.r * 1.6, 5);
     ctx.fillStyle = a.vtype === 'tank' ? '#2c3a24' : '#243a2c'; ctx.fill();
     ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
-    // barrel
+    ctx.restore();
+    // turret
+    ctx.save();
+    ctx.translate(a.x, a.y); ctx.rotate(a.angle);
     ctx.fillStyle = '#e9f0ff'; ctx.fillRect(0, -3, a.r + 16, 6);
+    ctx.beginPath(); ctx.arc(0, 0, a.r * 0.42, 0, Math.PI * 2);
+    ctx.fillStyle = a.vtype === 'tank' ? '#3a4a30' : '#2f4a38'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke();
     ctx.restore();
     // icon + hp
     ctx.font = '16px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(a.vtype === 'tank' ? '🛡️' : '🚙', a.x, a.y);
+    ctx.fillText(def.icon, a.x, a.y);
     const hpw = 46;
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 14, hpw, 5);
     ctx.fillStyle = col; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 14, hpw * (a.hp / a.maxHp), 5);
+    // you're in this one
+    if (a.driver && a.driver.isPlayer) {
+      ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 7, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(53,224,255,0.65)'; ctx.lineWidth = 2; ctx.stroke();
+    } else if (a.team === player.team && !a.driver && near2(player, a, 110) && !player.riding) {
+      // close enough to climb in
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI';
+      ctx.fillText('[E] ' + def.name, a.x, a.y - a.r - 26);
+    }
   }
 
   /* ---------------- action HUD ----------------
@@ -3212,10 +3409,67 @@ const Game = (() => {
 
   function drawTacticalHud() {
     const p = player; if (!p || !p.inv) return;
-    drawStatusStack(p);
-    drawActionBar(p);
+    if (p.riding) {
+      // the item slots are out of reach from the seat, so the bar is replaced
+      // by what the vehicle brings instead
+      drawVehicleStatus(p.riding);
+    } else {
+      drawStatusStack(p);
+      drawActionBar(p);
+    }
     drawChannelRing(p);
     drawHudMessage();
+  }
+
+  /* ---------------- vehicle panel ----------------
+     What this vehicle actually gives you, while you're in it: its gun, its
+     hull, how fast it is, and — the part that decides whether you should be
+     here at all — which damage types can hurt it. The resistances are read
+     live from combat.js, so this panel can't drift from the calculator. */
+  function drawVehicleStatus(v) {
+    const def = vehicleDef(v);
+    const x = HUD.statusLeft;
+    let y = H - 78;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+
+    // what can hurt it: every damage type that does anything, and how much
+    const mult = Combat.targetOf(v).mult;
+    const names = { normal: 'Bullets', ap: 'AP', explosive: 'Explosive', heat: 'HEAT' };
+    const parts = Object.keys(names).map(k => {
+      const pct = Math.round((mult[k] !== undefined ? mult[k] : 1) * 100);
+      return { label: names[k], pct };
+    });
+    ctx.font = 'bold 11px Segoe UI';
+    let px = x;
+    for (const p of parts) {
+      const txt = `${p.label} ${p.pct}%`;
+      ctx.fillStyle = p.pct === 0 ? '#4be08a' : p.pct <= 25 ? '#9fd8ff' : p.pct <= 50 ? '#ffcf4a' : '#ff6b78';
+      ctx.fillText(txt, px, y);
+      px += ctx.measureText(txt).width + 14;
+    }
+    y -= HUD.rowH;
+
+    // hull integrity, separate from the HTML bar so the number is readable
+    const bw = 200;
+    ctx.fillStyle = 'rgba(20,30,55,0.8)'; roundRect(x, y - 5, bw, 10, 5); ctx.fill();
+    const frac = clamp(v.hp / v.maxHp, 0, 1);
+    ctx.fillStyle = frac > 0.5 ? '#4be08a' : frac > 0.25 ? '#ffcf4a' : '#ff4b5c';
+    roundRect(x, y - 5, bw * frac, 10, 5); ctx.fill();
+    ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#cfd8ee';
+    ctx.fillText(`HULL ${Math.round(v.hp)}/${v.maxHp}  ·  ${Math.round(v.vspeed)} px/s`, x + bw + 10, y);
+    y -= HUD.rowH;
+
+    // name, gun and the way out
+    ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = TEAM_COLORS[v.team];
+    const title = `${def.icon} ${def.name}`;
+    ctx.fillText(title, x, y);
+    const tw = ctx.measureText(title).width;
+    ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#cfd8ee';
+    ctx.fillText(`${v.weapon.icon} ${v.weapon.name}  ·  ${v.ammo}/${v.weapon.mag}   [E] get out`, x + tw + 12, y);
+    y -= HUD.rowH;
+
+    ctx.font = '11px Segoe UI'; ctx.fillStyle = 'rgba(207,216,238,0.7)';
+    ctx.fillText(def.blurb, x, y);
   }
 
   /* left column: class → armour → adrenaline, one aligned stack */
@@ -3525,7 +3779,9 @@ const Game = (() => {
   }
 
   function publishWorld() {
-    if (typeof P2P !== 'undefined' && P2P.isHosting()) P2P.provideWorld(netWorld());
+    if (typeof P2P !== 'undefined' && P2P.isHosting()) {
+      P2P.provideWorld({ walls: netWorld(), objectives: netObjectives() });
+    }
   }
 
   /* Throw away the world we generated locally and rebuild it exactly as the
@@ -3570,6 +3826,18 @@ const Game = (() => {
       online.transport.snapshots.push({ at: performance.now(), data: msg });
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
       timeLeft = msg.timeLeft;
+      /* Captures are decided by the host, not by each client guessing from the
+         handful of players it can see. Everything about a point except where
+         it is comes down the wire. */
+      if (msg.objectives) {
+        msg.objectives.forEach((s, i) => {
+          const o = objectives[i];
+          if (!o) return;
+          if (o.owner !== s.o && s.o >= 0) Toast.show(`${TEAM_NAMES[s.o]} captured objective ${o.name}`);
+          o.owner = s.o; o.progress = s.p; o.capTeam = s.c;
+        });
+      }
+      if (msg.scores) for (let t = 0; t < teamScores.length; t++) teamScores[t] = msg.scores[t] || 0;
       for (const e of msg.events || []) {
         if (e.e === 'kill') onlineKill(e);
         else if (e.e === 'wall') netDestroyWall(e.id);
@@ -3682,6 +3950,6 @@ const Game = (() => {
     start, startOnline, isOnline,
     setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
     // the map, as the simulation needs to see it (see netWorld above)
-    netWorld,
+    netWorld, netObjectives,
   };
 })();

@@ -42,6 +42,7 @@
   const MAP_SIZES = { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
   const ROOM_MAX = 24;
   const MATCH_SECONDS = 8 * 60;
+  const SCORE_CAP = 1000;              // domination win score, as offline
 
   /* Ballistics, mirroring game.js. These belong with the simulation rather
      than the weapon table, and now that the sim is shared they live here
@@ -117,6 +118,8 @@
       this.walls = [];                   // world geometry, empty until setWorld
       this.wallIndex = null;
       this.downed = [];                  // walls destroyed so far, for late joiners
+      this.objectives = [];              // domination capture points
+      this.scores = [0, 0, 0, 0];        // domination score per team
       this.bullets = [];
       this.events = [];                  // things clients should hear about
       this.timeLeft = MATCH_SECONDS;
@@ -130,7 +133,13 @@
     /* Hand the room the map. Whoever hosts has already built this world from
        this room's seed, so the rects — and their ids — are the ones every
        client is looking at. Safe to call before or after players join. */
-    setWorld(rects) {
+    setWorld(world) {
+      const rects = Array.isArray(world) ? world : (world && world.walls) || [];
+      const objs = (!Array.isArray(world) && world && world.objectives) || [];
+      this.objectives = objs.map(o => ({
+        name: o.name, x: o.x, y: o.y, r: o.r,
+        owner: -1, progress: 0, capTeam: -1,
+      }));
       this.walls = (rects || []).map(r => ({
         id: r.id, x: r.x, y: r.y, w: r.w, h: r.h,
         solid: !!r.solid,                        // stops a player walking through
@@ -282,15 +291,14 @@
         if (m > 0) {
           let spd = p.weapon.moveSpeed * p.cls.speed * C.armorSpeed(p) * C.adrenaline(p.adrenaline).speed;
           if (i.ads) spd *= 0.55;
-          /* One axis at a time, so running into a wall at an angle slides
-             along it instead of stopping you dead — the same feel the client
-             gives offline. */
-          const stepX = (dx / m) * spd * dt, stepY = (dy / m) * spd * dt;
-          const fromX = p.x, fromY = p.y;
-          p.x = clamp(p.x + stepX, 16, this.map.w - 16);
-          if (!this.freeSpot(p.x, p.y)) p.x = fromX;
-          p.y = clamp(p.y + stepY, 16, this.map.h - 16);
-          if (!this.freeSpot(p.x, p.y)) p.y = fromY;
+          /* Move, then get pushed back out of anything solid — the same
+             resolution the client runs offline, so a player and the host
+             agree about where a wall stopped them. Pushing out rather than
+             refusing the step is what lets you slide along a wall instead of
+             sticking to it; a step is a few pixels and the thinnest wall is
+             8px, so you are always ejected back the way you came. */
+          p.x = clamp(p.x + (dx / m) * spd * dt, 16, this.map.w - 16);
+          p.y = clamp(p.y + (dy / m) * spd * dt, 16, this.map.h - 16);
           this.resolveWorld(p);
         }
         p.angle = i.angle;
@@ -313,7 +321,39 @@
       }
 
       this.stepBullets(dt);
+      if (this.mode === 'domination') this.stepObjectives(dt);
       if (this.timeLeft <= 0) this.finish();
+    }
+
+    /* ---------- domination ----------
+       Same rules as the offline game (see updateObjectives in game.js): hold a
+       point uncontested to take it, and every point you hold pays out. Run
+       here rather than on each client, because a capture that only half the
+       match agrees with is worse than no capture at all. */
+    stepObjectives(dt) {
+      for (const obj of this.objectives) {
+        const counts = {};
+        for (const p of this.players.values()) {
+          if (!p.alive) continue;
+          if (dist2(p.x, p.y, obj.x, obj.y) < obj.r * obj.r) counts[p.team] = (counts[p.team] || 0) + 1;
+        }
+        const present = Object.keys(counts);
+        if (present.length === 1) {
+          const t = +present[0];
+          if (obj.owner !== t) {
+            obj.capTeam = t;
+            obj.progress += 45 * dt * counts[t];
+            if (obj.progress >= 100) {
+              obj.progress = 100; obj.owner = t;
+              this.pushEvent({ e: 'capture', name: obj.name, team: t });
+            }
+          }
+        } else if (!present.length && obj.owner === -1) {
+          obj.progress = Math.max(0, obj.progress - 20 * dt);
+        }
+        if (obj.owner >= 0) this.scores[obj.owner] += 4 * dt;
+      }
+      for (let t = 0; t < this.scores.length; t++) if (this.scores[t] >= SCORE_CAP) return this.finish();
     }
 
     fire(p) {
@@ -445,6 +485,9 @@
         bullets: this.bullets.slice(0, 120).map(b => ({
           x: Math.round(b.x), y: Math.round(b.y), team: b.team,
         })),
+        // capture points, in the order the client generated them
+        objectives: this.objectives.map(o => ({ o: o.owner, p: Math.round(o.progress), c: o.capTeam })),
+        scores: this.scores.map(s => Math.round(s)),
         events: this.events.splice(0, this.events.length),
       };
     }
@@ -454,9 +497,15 @@
     }
 
     finish() {
+      if (this.over) return;
       this.over = true;
       const scores = {};
-      for (const p of this.players.values()) scores[p.team] = (scores[p.team] || 0) + p.kills;
+      // domination is won on ground held; elimination on kills
+      if (this.mode === 'domination' && this.objectives.length) {
+        this.scores.forEach((s, t) => { scores[t] = Math.round(s); });
+      } else {
+        for (const p of this.players.values()) scores[p.team] = (scores[p.team] || 0) + p.kills;
+      }
       this.broadcast({ t: 'end', scores, roster: this.roster() });
     }
   }

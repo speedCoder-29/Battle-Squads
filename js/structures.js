@@ -28,6 +28,10 @@
      ✓ gas-station (compact convenience store, fuel pump cover, explosive hazard)
      ✓ mine (underground quarry, vertical drops, tight passages, ore/explosives)
 
+   Building design note:
+     • Each blueprint is tuned to a gameplay role, cover density, and engagement style.
+       Combat inside these structures is meant to feel distinct from open terrain.
+
    Engine mapping notes:
      • Thickness/length are design metres; PX_PER_M converts them.
        A "0.3 thickness, 1.5 length" door is 12px thick and 60px wide.
@@ -143,6 +147,48 @@ const Structures = (() => {
       fill: '#9ca5b5', stroke: '#6a7382',
       effect: 'Hard cover — takes HEAT or a hammer',
     },
+    window: {
+      name: 'Window', height: 'high', hp: 80, toughness: 1,
+      bullets: 'pen', flatLoss: 0.35,
+      fill: 'rgba(130,170,220,0.35)', stroke: 'rgba(210,235,255,0.80)',
+      effect: 'Light cover and visibility; shatters when shot.',
+    },
+    desk: {
+      name: 'Desk', height: 'low', hp: 60, toughness: 1, prop: 'desk',
+      bullets: 'stop',
+      fill: '#5c4a34', stroke: '#3e2f1f',
+      effect: 'Furniture that blocks bullets and provides cover.',
+    },
+    locker: {
+      name: 'Locker', height: 'low', hp: 100, toughness: 2, prop: 'locker',
+      bullets: 'stop',
+      fill: '#4b4f5f', stroke: '#2e323d',
+      effect: 'Sturdy storage used as cover and loot furniture.',
+    },
+    ammoBox: {
+      name: 'Ammo Box', height: 'low', hp: 70, toughness: 1, prop: 'ammoBox',
+      bullets: 'stop',
+      fill: '#4f4e35', stroke: '#2f2d1f',
+      effect: 'Ammo crate: durable cover with tactical clutter.',
+    },
+    pallet: {
+      name: 'Pallet', height: 'low', hp: 40, toughness: 1, prop: 'pallet',
+      bullets: 'pen', flatLoss: 0.4,
+      fill: 'rgba(110,84,42,0.9)', stroke: '#46371d',
+      effect: 'Stacked goods cover with weak protection.',
+    },
+    tyre: {
+      name: 'Tyre', height: 'low', hp: 35, toughness: 1, prop: 'tyre',
+      bullets: 'through', passable: true,
+      fill: '#2d2d2d', stroke: '#0f0f0f',
+      effect: 'Light cover with visibility gaps.',
+    },
+    rubble: {
+      name: 'Rubble', height: 'low', hp: 45, toughness: 1, prop: 'rubble',
+      bullets: 'through', passable: true,
+      fill: '#8f8f8f', stroke: '#5d5d5d',
+      effect: 'Debris that slows movement and blocks little.',
+    },
     container: {
       name: 'Container', height: 'high', hp: 500, toughness: 4, prop: 'container',
       bullets: 'reflect',
@@ -157,7 +203,7 @@ const Structures = (() => {
     },
   };
   /* wall types that are really world props, drawn with a sprite */
-  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush'];
+  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush', 'desk', 'locker', 'ammoBox', 'pallet', 'tyre', 'rubble'];
 
   /* ---------- derived stats ---------- */
   const def = (type) => WALL_TYPES[type] || WALL_TYPES.wood;
@@ -223,6 +269,9 @@ const Structures = (() => {
 
   /* ---------- BUILDING BLUEPRINTS ----------
      Each returns wall segments in world space for an origin (ox, oy).
+     Every blueprint is designed with a role, cover density, and engagement style:
+       - tactical choke points, open halls, reinforced vaults, or low-cover camps.
+       - entry count, sightline complexity, and internal cover are all deliberate.
      Door gaps are left in the runs and filled with door segments. */
 
   // A four-sided shell with optional gaps; `doors` are {side, at, len, type}
@@ -504,6 +553,63 @@ const Structures = (() => {
       return out;
     },
 
+    /* command-center: hardened command hub with briefing room, offices, and secure core */
+    'command-center'(ox, oy) {
+      const w = 680, h = 520;
+      const out = shell(ox, oy, w, h, 'metal', 0.5, [
+        { side: 'n', at: 260, type: 'rdoor', len: 2.5 },
+        { side: 'e', at: 220, type: 'door' },
+      ]);
+      out.push(seg('metal', ox + 180, oy + 60, 5.4, 'v', 0.35)); // office corridor
+      out.push(seg('metal', ox + 180, oy + 60, 3.6, 'h', 0.35));
+      out.push(seg('metal', ox + 180, oy + 220, 3.6, 'h', 0.35));
+      out.push(seg('window', ox + 40, oy + 260, 2.6, 'h', 0.2));
+      out.push(seg('window', ox + 420, oy + 260, 2.6, 'h', 0.2));
+      out.push(seg('rwall', ox + 380, oy + 140, 4, 'h', 0.4));
+      out.push(seg('rwall', ox + 380, oy + 140, 3.2, 'v', 0.4));
+      out.push(seg('rdoor', ox + 430, oy + 140, 1.2, 'h'));
+      const desk = seg('desk', ox + 120, oy + 100, 1.5, 'h', 0.2);
+      out.push(desk);
+      out.push(seg('locker', ox + 140, oy + 260, 1.8, 'h', 0.25));
+      return out;
+    },
+
+    /* vault: underground-style reinforced vault with a secret inner room */
+    vault(ox, oy) {
+      const w = 520, h = 520;
+      const out = shell(ox, oy, w, h, 'rwall', 0.6, [
+        { side: 'n', at: 240, type: 'rdoor', len: 1.8 },
+      ]);
+      out.push(seg('window', ox + 80, oy + 120, 2.2, 'h', 0.2));
+      out.push(seg('window', ox + 80, oy + 400, 2.2, 'h', 0.2));
+      out.push(seg('rwall', ox + 180, oy + 160, 3.4, 'h', 0.5));
+      out.push(seg('rwall', ox + 180, oy + 160, 2.8, 'v', 0.5));
+      const secret = seg('door', ox + 320, oy + 210, 1.4, 'v');
+      secret.secret = true;
+      out.push(secret);
+      out.push(seg('desk', ox + 220, oy + 380, 2.2, 'h', 0.2));
+      out.push(seg('locker', ox + 120, oy + 320, 2.2, 'h', 0.25));
+      return out;
+    },
+
+    /* subway: underground transport hub with platforms, corridors, and exits */
+    subway(ox, oy) {
+      const w = 820, h = 360;
+      const out = shell(ox, oy, w, h, 'metal', 0.45, [
+        { side: 'n', at: 220 }, { side: 'n', at: 580 },
+        { side: 's', at: 240 }, { side: 's', at: 620 },
+      ]);
+      // platform edges and rail barriers
+      out.push(seg('metal', ox + 60, oy + 140, 7.2, 'h', 0.35));
+      out.push(seg('metal', ox + 60, oy + 220, 7.2, 'h', 0.35));
+      out.push(seg('window', ox + 260, oy + 70, 3.4, 'h', 0.2));
+      out.push(seg('window', ox + 520, oy + 70, 3.4, 'h', 0.2));
+      out.push(seg('desk', ox + 400, oy + 280, 2.4, 'h', 0.2));
+      out.push(prop('crate', ox + 160, oy + 180, 28, 1.0));
+      out.push(prop('ammoBox', ox + 620, oy + 180, 28, 1.0));
+      return out;
+    },
+
     /* camp: a cluster of low tents behind sandbags and wire */
     camp(ox, oy) {
       const out = [];
@@ -540,8 +646,8 @@ const Structures = (() => {
       return out;
     },
 
-    /* factory: industrial metal structure, tight corridors, high loot density */
-    factory(ox, oy) {
+    /* workshop: industrial metal structure, tight corridors, high loot density */
+    workshop(ox, oy) {
       const w = 760, h = 520;
       const out = shell(ox, oy, w, h, 'metal', 0.5, [
         { side: 'n', at: 300, type: 'rdoor', len: 3 },
@@ -887,6 +993,55 @@ const Structures = (() => {
     },
   };
 
+  const BUILDING_DESCRIPTIONS = {
+    house: 'Two-room wooden house with front and back doors. Good for quick loot and tight fights.',
+    mansion: 'Large multi-wing estate with a reinforced strongroom. Great for multi-angle engagement.',
+    base: 'Metal military base with wire and sandbags. Ricochets favor careful ranged play.',
+    warehouse: 'Wide metal hall with staggered racks and low cover. Avoid spraying down its long axis.',
+    bunker: 'Small reinforced bunker with firing step and wire apron. Doors are the real weak point.',
+    tower: 'Tiny reinforced watchtower with external sandbags. Simple to hold and hard to clear.',
+    shanty: 'Cluster of flimsy wooden huts. Low toughness encourages breaching and fast entry.',
+    depot: 'Fuel depot with metal tanks and sandbag revetments. Open layout with low cover.',
+    apartments: 'Dense residential block with central corridor. Close-quarters fights dominate here.',
+    hangar: 'Massive open metal shed with blast doors. Approach paths matter more than inside cover.',
+    farm: 'Wooden barn and fenced yard. Breachers and melee can make this easy to assault.',
+    checkpoint: 'Sandbag chicane with a reinforced post. Controls a lane and breaks up open ground.',
+    camp: 'Low tent cluster with sandbag support. Soft cover with plenty of flanking routes.',
+    hospital: 'Medical complex with low walls and corridor flow. Healing loot and mobile combat.',
+    factory: 'Industrial metal structure with tight corridors and reinforced control room.',
+    dock: 'Waterfront warehouse with container cover. Wide exterior and enclosed warehouse interior.',
+    fortress: 'Multi-layer reinforced strongpoint with sandbag perimeter. Hard to assault directly.',
+    'radio-tower': 'Small fortified tower with wire perimeter. Isolated loot and strong sightlines.',
+    prison: 'High-security cell block with reinforced walls. Long corridors and multiple breach points.',
+    bank: 'Ultra-secure vault with minimal access. High reward for breaching the core.',
+    market: 'Open trading hall with many stalls. Multiple entrances create high-risk play.',
+    school: 'Classrooms, gym, and cafeteria with open wings. Good for medium-range skirmishes.',
+    church: 'Tall sanctuary with pew-line cover. Long sightlines through an open nave.',
+    museum: 'Gallery halls and display cases. High-value loot with deliberate sightline funnels.',
+    barracks: 'Military dormitory with many rooms and a reinforced corner armory.',
+    armory: 'Heavily fortified weapons cache with sparse interior cover.',
+    arena: 'Open ring with spectator barrier cover. Designed for wide engagements around a central pit.',
+    'bridge-fort': 'Linear fortified bridge with sandbag strongpoints. Forces a narrow, intense fight.',
+    'train-station': 'Platform terminal with multiple entrances and long horizontal sightlines.',
+    'power-plant': 'Large industrial complex with turbine halls and a reinforced control room.',
+    'gas-station': 'Compact convenience store and pump islands. Explosive hazard with quick loot.',
+    mine: 'Underground quarry with tight passages and vertical shafts. Mixed cover and choke points.',
+    workshop: 'Industrial workshop with metal racks and a reinforced control corner.',
+    'command-center': 'Hardened command hub with briefing room, offices, and secure communications.',
+    vault: 'Reinforced vault with a secret inner room and a heavy inner door.',
+    subway: 'Underground transit hub with platforms, corridors, and emergency exits.',
+  };
+
+  const BUILDING_CATEGORIES = {
+    tactical: ['tower', 'checkpoint', 'bunker', 'bridge-fort', 'keep'],
+    residential: ['house', 'mansion', 'shanty', 'apartments', 'camp', 'farm'],
+    industrial: ['warehouse', 'factory', 'workshop', 'dock', 'power-plant', 'silos', 'depot', 'hangar'],
+    institutional: ['hospital', 'school', 'church', 'museum', 'prison', 'bank', 'vault', 'command-center'],
+    commercial: ['market', 'gas-station', 'train-station'],
+    military: ['base', 'fortress', 'barracks', 'armory'],
+    unique: ['radio-tower', 'arena', 'mine', 'subway'],
+  };
+
   /* ---------- DECOR PLACEMENT ----------
      The props themselves (their look, radius and shadow) live in sprites.js;
      this is only the scattering helper the map generator uses. */
@@ -905,7 +1060,7 @@ const Structures = (() => {
   }
 
   return {
-    WALL_TYPES, PROP_TYPES, BUILDINGS, scatter, prop, PX_PER_M, HP_SCALE,
+    WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
     /* place a named building and tag every piece with it */
     place(name, ox, oy) {

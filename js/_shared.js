@@ -90,12 +90,14 @@ function worldSandbox() {
   return worldCtx;
 }
 
-/* Generate `mode`'s map from `seed` and return it as collision rects.
-   Deterministic: the same seed gives the players the same world. */
+/* Generate `mode`'s map from `seed` and return what the simulation needs of
+   it: collision rects and the capture points. Deterministic — the same seed
+   gives the players the same world. */
 function buildWorld(mode, seed) {
   const c = worldSandbox();
   c.__mode = mode; c.__seed = seed >>> 0;
-  return vm.runInContext('Game.start(__mode, __seed), Game.netWorld()', c);
+  return vm.runInContext(
+    'Game.start(__mode, __seed), ({ walls: Game.netWorld(), objectives: Game.netObjectives() })', c);
 }
 
 module.exports.buildWorld = buildWorld;
