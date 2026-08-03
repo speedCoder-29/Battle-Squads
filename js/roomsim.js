@@ -43,6 +43,7 @@
   const ROOM_MAX = 24;
   const MATCH_SECONDS = 8 * 60;
   const SCORE_CAP = 1000;              // domination win score, as offline
+  const COMMS_GAP = 550;               // ms between one player's pings/emotes
 
   /* Ballistics, mirroring game.js. These belong with the simulation rather
      than the weapon table, and now that the sim is shared they live here
@@ -265,6 +266,37 @@
       return last;
     }
 
+    /* ---------- comms ----------
+       A ping is your team's business, so it goes straight to their sockets
+       rather than into the snapshot everyone reads — a modified client can't
+       learn where the other squad is being warned about. Emotes are for
+       everyone, so those ride along with the events. Both are rate limited:
+       one message every COMMS_GAP, or the map fills up with someone leaning
+       on a key. */
+    sendTeam(team, msg) {
+      for (const p of this.players.values()) if (p.team === team) p.send(msg);
+    }
+    mark(p, x, y, kind) {
+      if (!p || !p.alive) return false;
+      const t = now();
+      if (t < (p.commsUntil || 0)) return false;
+      if (!(x >= 0 && x <= this.map.w && y >= 0 && y <= this.map.h)) return false;
+      p.commsUntil = t + COMMS_GAP;
+      this.sendTeam(p.team, {
+        t: 'mark', x: Math.round(x), y: Math.round(y),
+        kind: String(kind || 'enemy').slice(0, 12), by: p.name, byId: p.id,
+      });
+      return true;
+    }
+    emote(p, id) {
+      if (!p || !p.alive) return false;
+      const t = now();
+      if (t < (p.commsUntil || 0)) return false;
+      p.commsUntil = t + COMMS_GAP;
+      this.pushEvent({ e: 'emote', id: String(id || 'gg').slice(0, 12), byId: p.id, by: p.name });
+      return true;
+    }
+
     roster() {
       return [...this.players.values()].map(p => ({
         id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths,
@@ -481,6 +513,9 @@
           angle: +p.angle.toFixed(3), hp: Math.round(p.hp), alive: p.alive,
           team: p.team, name: p.name, ammo: p.ammo, adrenaline: Math.round(p.adrenaline),
           vest: p.vest, helmet: p.helmet, weaponId: p.weaponId, skin: p.skin,
+          kills: p.kills, deaths: p.deaths,
+          // seconds until this one is back on their feet, for the HUD
+          respawn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - now()) / 1000)),
         })),
         bullets: this.bullets.slice(0, 120).map(b => ({
           x: Math.round(b.x), y: Math.round(b.y), team: b.team,

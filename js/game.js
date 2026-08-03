@@ -299,6 +299,12 @@ const Game = (() => {
     ['sandbag', 26], ['barricade', 22], ['wire', 20], ['wood', 16], ['metal', 10], ['rwall', 6],
   ];
 
+  const BUILDING_CATEGORIES = Structures.BUILDING_CATEGORIES;
+  const BUILDING_WEIGHT_BY_NAME = Object.fromEntries(BUILDING_MIX);
+  const BUILDING_CATEGORY_LIST = Object.fromEntries(
+    Object.entries(BUILDING_CATEGORIES).map(([cat, names]) => [cat, names.filter(name => BUILDING_WEIGHT_BY_NAME[name] !== undefined)])
+  );
+
   function buildMap() { withSeed(worldSeed, buildMapInner); }
   function buildMapInner() {
     obstacles = []; trenches = []; decor = []; grass = [];
@@ -443,6 +449,10 @@ const Game = (() => {
     museum:     { props: ['desk', 'table', 'crate', 'locker'], n: 18, loot: 6, floor: '#5d5c6b' },
     barracks:   { props: ['locker', 'ammoBox', 'desk', 'crate', 'table'], n: 20, loot: 6, floor: '#4e5666' },
     armory:     { props: ['locker', 'ammoBox', 'crate', 'desk'], n: 14, loot: 8, floor: '#4a5260' },
+    workshop:   { props: ['locker', 'ammoBox', 'desk', 'crate', 'pallet'], n: 20, loot: 7, floor: '#4b4f5a' },
+    vault:      { props: ['locker', 'desk', 'crate', 'ammoBox'], n: 12, loot: 8, floor: '#4b4f60' },
+    subway:     { props: ['crate', 'desk', 'ammoBox', 'locker'], n: 16, loot: 7, floor: '#4a5260' },
+    'command-center': { props: ['desk', 'locker', 'crate', 'table'], n: 18, loot: 8, floor: '#4c5164' },
     'power-plant': { props: ['ammoBox', 'crate', 'pallet', 'desk'], n: 20, loot: 6, floor: '#4a5260' },
     'gas-station': { props: ['barrel', 'crate', 'desk'], n: 10, loot: 4, floor: '#5a5646' },
     mine:       { props: ['crate', 'pallet', 'barrel'], n: 12, loot: 5, floor: '#5d5852' },
@@ -517,9 +527,17 @@ const Game = (() => {
       // leaves a small map with only three or four kinds on it; this guarantees
       // variety without flattening the weights once every type is represented.
       const missing = BUILDING_MIX.filter(m => !seen[m[0]]);
+      const missingCategoryLists = Object.values(BUILDING_CATEGORY_LIST)
+        .map(names => names.filter(name => !seen[name]))
+        .filter(list => list.length);
+      let categoryName = null;
+      if (missingCategoryLists.length && placed.length < count * 0.6) {
+        const choice = missingCategoryLists[Math.floor(Math.random() * missingCategoryLists.length)];
+        categoryName = choice[Math.floor(Math.random() * choice.length)];
+      }
       const name = (missing.length && placed.length < count * 0.7)
         ? missing[Math.floor(Math.random() * missing.length)][0]
-        : rollMix(BUILDING_MIX);
+        : categoryName || rollMix(BUILDING_MIX);
       const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
       const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
       const parts = placeBuilding(name, x, y);
@@ -766,6 +784,7 @@ const Game = (() => {
     zoom = zoomTarget = BASE_ZOOM;
     hudMessage = ''; hudMessageT = 0;
     killFeed = []; killBanner = null;
+    marks = []; emotes = []; wheel = null; commsCd = 0;
     online = null;
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
     // Last of all, once every generator and spawner has run: clear the ground
@@ -834,7 +853,21 @@ const Game = (() => {
         case 'KeyE': interact(); break;
         case 'KeyV': useTool(); break;
         case 'KeyG': callAirstrike(); break;
-        case 'Escape': togglePause(); break;
+        case 'KeyZ': openWheel('ping'); break;
+        case 'KeyX': openWheel('emote'); break;
+        case 'Tab': showScores = true; e.preventDefault(); break;
+        case 'Escape': wheel ? closeWheel(false) : togglePause(); break;
+        default:
+          // 1-8 pick straight off an open wheel, for anyone who'd rather not aim
+          if (wheel && e.code.startsWith('Digit')) {
+            const n = +e.code.slice(5) - 1;
+            const items = wheel.kind === 'ping' ? Comms.PINGS : Comms.EMOTES;
+            if (n >= 0 && n < items.length) {
+              const w = wheel; wheel = null;
+              if (w.kind === 'ping') sendMark(w.at.x / zoom + camX, w.at.y / zoom + camY, items[n].id);
+              else sendEmote(items[n].id);
+            }
+          }
       }
     });
     window.addEventListener('keyup', e => {
@@ -843,6 +876,10 @@ const Game = (() => {
         case 'KeyS': case 'ArrowDown': input.down = false; break;
         case 'KeyA': case 'ArrowLeft': input.left = false; break;
         case 'KeyD': case 'ArrowRight': input.right = false; break;
+        // let go of the wheel key and whatever you were pointing at is sent
+        case 'KeyZ': if (wheel && wheel.kind === 'ping') closeWheel(true); break;
+        case 'KeyX': if (wheel && wheel.kind === 'emote') closeWheel(true); break;
+        case 'Tab': showScores = false; e.preventDefault(); break;
       }
     });
     canvas.addEventListener('mousemove', e => {
@@ -851,13 +888,17 @@ const Game = (() => {
     });
     canvas.addEventListener('mousedown', e => {
       if (!running || paused) return;
+      if (wheel) { if (e.button === 0) closeWheel(true); e.preventDefault(); return; }
       if (e.button === 0) { input.shooting = true; input.fireEdge = true; }   // left = fire
+      if (e.button === 1) { quickMark(); e.preventDefault(); }                // middle = quick ping
       if (e.button === 2) input.ads = true;                                    // right = aim
     });
     window.addEventListener('mouseup', e => {
       if (e.button === 0) input.shooting = false;
       if (e.button === 2) input.ads = false;
     });
+    // middle-click scrolls the page otherwise, which drags the whole match
+    canvas.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
     canvas.addEventListener('contextmenu', e => e.preventDefault());  // don't pop menu on right-click
     // buttons
     document.getElementById('btn-resume').addEventListener('click', togglePause);
@@ -936,7 +977,13 @@ const Game = (() => {
        Partway leaves them dangerous when they set up and sloppy on the move,
        which is what the difficulty traits in botai.js are trying to say. */
     const speed = Math.hypot(a.vx || 0, a.vy || 0);
-    const settled = !a.isPlayer && a.contactT > 0.35 && speed < 40;
+    /* A vehicle's gun is on a mount, so it settles on its own terms — slow
+       down and it steadies, whoever is driving. Keying it off contactT the way
+       a bot does would leave a player-driven vehicle reading whatever aim
+       state the bot happened to leave behind. */
+    const settled = a.isVehicle
+      ? speed < 60
+      : (!a.isPlayer && a.contactT > 0.35 && speed < 40);
     const ads = a.isPlayer ? input.ads : settled;
     const aimMult = a.isPlayer
       ? (ads ? w.adsMult : 1)
@@ -1626,6 +1673,10 @@ const Game = (() => {
     const v = player.riding;
     if (!v) return;
     player.riding = null; v.driver = null;
+    /* Hold the AI off it for a few seconds. Without this the squad takes the
+       vehicle over on the very next frame and drives away, so hopping out to
+       grab a crate means losing it — you couldn't even get back in. */
+    v.aiHold = 6;
     // step out beside the hull, and never inside a wall
     const side = v.angle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1);
     player.x = v.x + Math.cos(side) * (v.r + player.r + 6);
@@ -1962,6 +2013,91 @@ const Game = (() => {
 
   /* ---------------- squad intel (teamwork trait) ----------------
      High-teamwork bots share contacts and pile onto the same target. */
+  /* ---------------- pings and emotes ----------------
+     Marks are your squad's, so offline they go straight in and online they
+     come back from the host, which is the only thing that decides who hears
+     them. Either way nothing renders until the mark exists on this client, so
+     what you see is what your team sees. */
+  let showScores = false;                    // Tab: who's winning, and who's carrying
+  let marks = [];                            // pings on the field
+  let emotes = [];                           // bubbles over heads, by agent id
+  let wheel = null;                          // { kind: 'ping'|'emote', at, hot }
+  let commsCd = 0;                           // local cooldown, mirrors the room's
+
+  function addMark(x, y, kind, by, mine) {
+    // one ping per person at a time: a new one replaces the last
+    if (by) marks = marks.filter(m => m.by !== by);
+    marks.push({ x, y, kind, by, life: Comms.MARK_LIFE, mine: !!mine });
+    if (marks.length > 12) marks.shift();
+    SFX.click();
+    const def = Comms.pingById[kind];
+    if (def && by) hudMsg(`${by}: ${def.say}`);
+    // bots hear an enemy call and go and look
+    if ((kind === 'enemy' || kind === 'attack') && player) {
+      squadIntel[player.team] = { target: null, x, y, t: 6 };
+    }
+  }
+  function addEmote(agentId, id) {
+    emotes = emotes.filter(e => e.agentId !== agentId);
+    emotes.push({ agentId, id, life: Comms.EMOTE_LIFE });
+  }
+  function updateComms(dt) {
+    if (commsCd > 0) commsCd -= dt;
+    for (let i = marks.length - 1; i >= 0; i--) { marks[i].life -= dt; if (marks[i].life <= 0) marks.splice(i, 1); }
+    for (let i = emotes.length - 1; i >= 0; i--) { emotes[i].life -= dt; if (emotes[i].life <= 0) emotes.splice(i, 1); }
+  }
+
+  /* Send a ping, or place it ourselves when there is nobody to ask. */
+  function sendMark(x, y, kind) {
+    if (commsCd > 0 || !player.alive) return;
+    commsCd = Comms.COOLDOWN;
+    if (online) online.transport.send('mark', { x: Math.round(x), y: Math.round(y), kind });
+    else addMark(x, y, kind, 'You', true);
+  }
+  function sendEmote(id) {
+    if (commsCd > 0 || !player.alive) return;
+    commsCd = Comms.COOLDOWN;
+    if (online) online.transport.send('emote', { id });
+    else addEmote('me', id);
+  }
+
+  /* The quick ping reads what you pointed at, so the common calls need no
+     wheel at all: an enemy under the cursor is "enemy", a crate or a drop is
+     "loot", open ground is "on my way". */
+  function quickMark() {
+    const w = worldMouse();
+    let kind = 'going';
+    const enemy = agents.find(a => a.alive && a.team !== player.team && dist2(a.x, a.y, w.x, w.y) < 90 * 90);
+    const remoteEnemy = online && (online.remote || []).find(
+      a => a.alive && a.team !== player.team && dist2(a.x, a.y, w.x, w.y) < 90 * 90);
+    const loot = crates.find(c => dist2(c.x, c.y, w.x, w.y) < 70 * 70)
+      || drops.find(d => dist2(d.x, d.y, w.x, w.y) < 70 * 70);
+    if (enemy || remoteEnemy) kind = 'enemy';
+    else if (loot) kind = 'loot';
+    sendMark(w.x, w.y, kind);
+  }
+
+  /* Wheels open where the cursor is and resolve on release. */
+  function openWheel(kind) {
+    if (wheel || !running || paused) return;
+    wheel = { kind, at: { x: input.mx, y: input.my }, hot: -1 };
+  }
+  function closeWheel(commit) {
+    if (!wheel) return;
+    const items = wheel.kind === 'ping' ? Comms.PINGS : Comms.EMOTES;
+    const hot = Comms.pick(items, wheel.at.x, wheel.at.y, input.mx, input.my);
+    const w = wheel;
+    wheel = null;
+    if (!commit || hot < 0) return;
+    if (w.kind === 'ping') {
+      // the ping lands where the wheel was opened, not where you released
+      const pt = { x: w.at.x / zoom + camX, y: w.at.y / zoom + camY };
+      sendMark(pt.x, pt.y, items[hot].id);
+    } else {
+      sendEmote(items[hot].id);
+    }
+  }
+
   let squadIntel = [];                       // one entry per team
   function shareContact(a, enemy) {
     if (!a.diff.teamwork.sharesContacts) return;
@@ -2361,7 +2497,9 @@ const Game = (() => {
         if (mode === 'domination' && !a.isVehicle) { a.respawnTimer -= dt; if (a.respawnTimer <= 0) respawnAgent(a); }
         continue;
       }
-      // a vehicle the player is driving takes its orders from the player
+      // a vehicle the player is driving takes its orders from the player, and
+      // one they just stepped out of waits a moment before the squad claims it
+      if (a.aiHold > 0) { a.aiHold -= dt; a.vx = a.vy = 0; continue; }
       if (!a.isPlayer && !a.driver) updateBot(a, dt);
     }
 
@@ -2426,6 +2564,7 @@ const Game = (() => {
     if (mode === 'domination' && !online) updateObjectives(dt);
 
     // tactical layer
+    updateComms(dt);
     updateSquadIntel(dt);
     updateGrenades(dt);
     updateDrops(dt);
@@ -2911,6 +3050,8 @@ const Game = (() => {
 
     drawRemotePlayers();  // server-owned players in an online match
     drawVisionTools();   // heat / night vision markers sit over the units
+    drawMarks();         // your squad's pings, over the world they point at
+    drawEmotes();        // and what everyone is saying about it
 
     // damage numbers
     for (const d of dmgNums) {
@@ -2932,7 +3073,12 @@ const Game = (() => {
     if (!player.alive && running) {
       ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(0, 0, W, H);
       ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 34px Segoe UI';
-      ctx.fillText(mode === 'domination' ? 'RESPAWNING…' : 'ELIMINATED — spectating', W / 2, H / 2);
+      // online the host decides when you're back, so show its count, not ours
+      const left = online ? online.respawn : Math.ceil(player.respawnTimer || 0);
+      ctx.fillText(
+        mode === 'domination' ? (left > 0 ? `RESPAWNING IN ${left}` : 'RESPAWNING…')
+          : 'ELIMINATED — spectating',
+        W / 2, H / 2);
     }
 
     // night-vision tint is a screen-space wash
@@ -2944,6 +3090,9 @@ const Game = (() => {
     drawMinimap();
     drawKillFeed();
     drawKillBanner();
+    drawOffscreenMarks();   // pings behind you still have to be findable
+    drawScoreboard();       // hold Tab
+    drawWheel();            // the ping / emote wheel, when one is open
 
     // flashbang whiteout (screen space, over everything)
     if (flashOverlay > 0) { ctx.fillStyle = `rgba(255,255,255,${clamp(flashOverlay / 1.5, 0, 0.96)})`; ctx.fillRect(0, 0, W, H); }
@@ -3466,7 +3615,8 @@ const Game = (() => {
     ctx.fillStyle = frac > 0.5 ? '#4be08a' : frac > 0.25 ? '#ffcf4a' : '#ff4b5c';
     roundRect(x, y - 5, bw * frac, 10, 5); ctx.fill();
     ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#cfd8ee';
-    ctx.fillText(`HULL ${Math.round(v.hp)}/${v.maxHp}  ·  ${Math.round(v.vspeed)} px/s`, x + bw + 10, y);
+    // speed in tiles/s, the unit weapon ranges and blast radii are quoted in
+    ctx.fillText(`HULL ${Math.round(v.hp)}/${v.maxHp}  ·  ${(v.vspeed / TILE).toFixed(1)} tiles/s`, x + bw + 10, y);
     y -= HUD.rowH;
 
     // name, gun and the way out
@@ -3710,7 +3860,146 @@ const Game = (() => {
       ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, a.isPlayer ? 3 : 2, 0, Math.PI * 2);
       ctx.fillStyle = a.isPlayer ? '#fff' : TEAM_COLORS[a.team]; ctx.fill();
     }
+    /* Online the other players come from the host, not from `agents` — without
+       this the minimap showed you alone on an empty island. Only your own
+       squad: an enemy is on there when somebody has pinged them, not always. */
+    if (online) {
+      for (const a of online.remote) {
+        if (!a.alive || a.team !== player.team) continue;
+        ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, 2, 0, Math.PI * 2);
+        ctx.fillStyle = TEAM_COLORS[a.team]; ctx.fill();
+      }
+    }
+    // your squad's pings
+    for (const m of marks) {
+      const def = Comms.pingById[m.kind];
+      if (!def) continue;
+      const mx = ox + m.x * sx, my = oy + m.y * sy;
+      ctx.globalAlpha = clamp(m.life / 1.5, 0, 1);
+      ctx.beginPath(); ctx.arc(mx, my, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = def.color; ctx.fill();
+      ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2);
+      ctx.strokeStyle = def.color; ctx.lineWidth = 1; ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     ctx.restore();
+  }
+
+  /* ---------------- pings and emotes on screen ---------------- */
+  function drawMarks() {
+    const t = performance.now() / 1000;
+    for (const m of marks) if (onScreen(m.x, m.y, 80)) Comms.drawMark(ctx, m, t);
+  }
+  function drawOffscreenMarks() {
+    for (const m of marks) {
+      if (onScreen(m.x, m.y, 80)) continue;
+      Comms.drawOffscreenMark(ctx, m, (m.x - camX) * zoom, (m.y - camY) * zoom, W, H);
+    }
+  }
+  /* An emote belongs to whoever sent it, wherever they are now: our own
+     player, a bot, or someone the host is telling us about. */
+  function emoteAnchor(agentId) {
+    if (agentId === 'me') return player;
+    if (online) {
+      const r = (online.remote || []).find(a => a.id === agentId);
+      if (r) return { x: r.x, y: r.y, r: BODY_R };
+    }
+    return agents.find(a => a.netId === agentId || a.id === agentId) || null;
+  }
+  function drawEmotes() {
+    for (const e of emotes) {
+      const a = emoteAnchor(e.agentId);
+      if (!a || !onScreen(a.x, a.y, 60)) continue;
+      Comms.drawEmote(ctx, e, a.x, a.y - (a.r || BODY_R) - 30);
+    }
+  }
+  /* ---------------- scoreboard (hold Tab) ----------------
+     Online this is the roster the host is already sending in every snapshot,
+     so it is live rather than a guess; offline it's the agent list. Either
+     way it's the same table, sorted by kills. */
+  function scoreRows() {
+    if (online) {
+      const mine = { name: 'You', team: player.team, kills: 0, deaths: 0, alive: player.alive, you: true };
+      const rows = (online.remote || []).map(a => ({
+        name: a.name, team: a.team, kills: a.kills || 0, deaths: a.deaths || 0, alive: a.alive,
+      }));
+      const me = (online.transport.snapshots.length
+        ? (online.transport.snapshots.at(-1).data.agents || []).find(a => a.id === online.id) : null);
+      if (me) { mine.kills = me.kills || 0; mine.deaths = me.deaths || 0; }
+      rows.push(mine);
+      return rows;
+    }
+    return agents.filter(a => !a.isVehicle).map(a => ({
+      name: a.isPlayer ? 'You' : a.name, team: a.team,
+      kills: a.kills || 0, deaths: a.deaths || 0, alive: a.alive, you: a.isPlayer,
+    }));
+  }
+  function drawScoreboard() {
+    if (!showScores) return;
+    const rows = scoreRows().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+    const rowH = 24, headH = 62, w = 420;
+    const h = headH + rows.length * rowH + 14;
+    const x = (W - w) / 2, y = Math.max(20, (H - h) / 2 - 40);
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,16,30,0.88)'; roundRect(x, y, w, h, 10); ctx.fill();
+    ctx.strokeStyle = 'rgba(175,210,255,0.45)'; ctx.lineWidth = 1; ctx.stroke();
+
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#dce8ff'; ctx.font = 'bold 15px Segoe UI'; ctx.textAlign = 'left';
+    ctx.fillText(mode === 'domination' ? 'DOMINATION' : 'ELIMINATION', x + 16, y + 20);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#9fb4d8'; ctx.font = '12px Segoe UI';
+    ctx.fillText(online ? `${online.ping}ms · ${rows.length} players` : `${rows.length} operators`, x + w - 16, y + 20);
+
+    // team scores across the top
+    ctx.textAlign = 'left';
+    let tx = x + 16;
+    for (let t = 0; t < teamScores.length; t++) {
+      ctx.fillStyle = TEAM_COLORS[t];
+      ctx.font = 'bold 13px Segoe UI';
+      const label = `${TEAM_NAMES[t]} ${Math.round(teamScores[t])}`;
+      ctx.fillText(label, tx, y + 42);
+      tx += ctx.measureText(label).width + 18;
+    }
+
+    ctx.fillStyle = 'rgba(175,210,255,0.25)';
+    ctx.fillRect(x + 14, y + headH - 8, w - 28, 1);
+    ctx.font = '11px Segoe UI'; ctx.fillStyle = '#9fb4d8';
+    ctx.fillText('OPERATOR', x + 34, y + headH + 4);
+    ctx.textAlign = 'right';
+    ctx.fillText('K', x + w - 92, y + headH + 4);
+    ctx.fillText('D', x + w - 52, y + headH + 4);
+    ctx.fillText('K/D', x + w - 16, y + headH + 4);
+
+    rows.forEach((r, i) => {
+      const ry = y + headH + 22 + i * rowH;
+      if (r.you) {
+        ctx.fillStyle = 'rgba(53,224,255,0.10)';
+        ctx.fillRect(x + 10, ry - rowH / 2 + 2, w - 20, rowH - 4);
+      }
+      ctx.globalAlpha = r.alive === false ? 0.45 : 1;
+      ctx.beginPath(); ctx.arc(x + 24, ry, 5, 0, Math.PI * 2);
+      ctx.fillStyle = TEAM_COLORS[r.team % TEAM_COLORS.length]; ctx.fill();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = r.you ? '#fff' : '#dce8ff';
+      ctx.font = `${r.you ? 'bold ' : ''}13px Segoe UI`;
+      ctx.fillText(r.name, x + 38, ry);
+      ctx.textAlign = 'right'; ctx.fillStyle = '#dce8ff'; ctx.font = '13px Segoe UI';
+      ctx.fillText(r.kills, x + w - 92, ry);
+      ctx.fillText(r.deaths, x + w - 52, ry);
+      ctx.fillStyle = '#9fb4d8';
+      ctx.fillText(r.deaths ? (r.kills / r.deaths).toFixed(2) : r.kills.toFixed(2), x + w - 16, ry);
+      ctx.globalAlpha = 1;
+    });
+    ctx.restore();
+  }
+
+  function drawWheel() {
+    if (!wheel) return;
+    const items = wheel.kind === 'ping' ? Comms.PINGS : Comms.EMOTES;
+    const hot = Comms.pick(items, wheel.at.x, wheel.at.y, input.mx, input.my);
+    Comms.drawWheel(ctx, items, wheel.at.x, wheel.at.y, hot,
+      wheel.kind === 'ping' ? 'PING' : 'EMOTE');
   }
 
   /* ---------------- canvas helpers ---------------- */
@@ -3748,6 +4037,7 @@ const Game = (() => {
      between the 20 snapshots a second. Local simulation of other players is
      off entirely — no prediction of anyone but ourselves. */
   let online = null;
+  let peerStatusBound = false;
 
   /* Takes either a WebSocket to the dedicated server, or a transport object
      from js/p2p.js when another browser is hosting. The rest of the online
@@ -3780,6 +4070,20 @@ const Game = (() => {
     } else {
       // peer transports hand us parsed objects rather than socket frames
       P2P.on('message', (msg) => onlineMessage(msg));
+      /* If the host closes their tab the match simply stopped arriving, and
+         the world froze with no explanation. Say what happened and finish the
+         round locally rather than leaving everyone staring at it. */
+      // once only: P2P keeps status listeners across matches for the lobby
+      if (!peerStatusBound) {
+        peerStatusBound = true;
+        P2P.on('status', (s) => {
+          if (!online || !s || !s.disconnected) return;
+          hudMsg('The host left — match over');
+          const roster = online.roster;
+          online = null;
+          endMatch(false, roster);
+        });
+      }
       hudMsg(P2P.isHosting() ? 'Hosting — waiting for players' : 'Connected to host');
     }
     // hosting: the room was created before the map existed, so give it the
@@ -3832,6 +4136,9 @@ const Game = (() => {
       }
       // cover that was already shot away before we arrived
       for (const id of msg.downed || []) netDestroyWall(id);
+    } else if (msg.t === 'mark') {
+      // only ever sent to our own squad, so anything that arrives is ours
+      addMark(msg.x, msg.y, msg.kind, msg.byId === online.id ? 'You' : msg.by, msg.byId === online.id);
     } else if (msg.t === 'snapshot') {
       online.transport.snapshots.push({ at: performance.now(), data: msg });
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
@@ -3850,6 +4157,7 @@ const Game = (() => {
       if (msg.scores) for (let t = 0; t < teamScores.length; t++) teamScores[t] = msg.scores[t] || 0;
       for (const e of msg.events || []) {
         if (e.e === 'kill') onlineKill(e);
+        else if (e.e === 'emote') addEmote(e.byId === online.id ? 'me' : e.byId, e.id);
         else if (e.e === 'wall') netDestroyWall(e.id);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
@@ -3918,6 +4226,7 @@ const Game = (() => {
     if (mine && player) {
       player.hp = mine.hp;
       player.alive = mine.alive;
+      online.respawn = mine.respawn || 0;   // the host owns the clock, not us
       player.ammo = mine.ammo;
       player.adrenaline = mine.adrenaline;
       player.vest = mine.vest; player.helmet = mine.helmet;

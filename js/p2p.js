@@ -135,10 +135,13 @@ const P2P = (() => {
         player.reloadUntil = Date.now() + player.weapon.reloadMs;
         player.ammo = player.weapon.mag;
       }
+    } else if (msg.t === 'mark') {
+      room.mark(player, msg.x, msg.y, msg.kind);
+    } else if (msg.t === 'emote') {
+      room.emote(player, msg.id);
     } else if (msg.t === 'ping') {
       player.send({ t: 'pong', c: msg.c });
     }
-    void room;
   }
   const rosterNames = () =>
     host ? [...host.room.players.values()].map(p => ({ name: p.name, team: p.team })) : [];

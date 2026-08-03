@@ -601,7 +601,13 @@ const Structures = (() => {
       out.push(seg('rwall', ox + 180, oy + 160, 2.8, 'v', 0.5));
       const secret = seg('door', ox + 320, oy + 210, 1.4, 'v');
       secret.secret = true;
+      secret.underground = true;
       out.push(secret);
+      // hidden subterranean vault chamber
+      const v1 = seg('rwall', ox + 300, oy + 230, 2, 'h', 0.5); v1.underground = true; out.push(v1);
+      const v2 = seg('rwall', ox + 300, oy + 270, 2, 'h', 0.5); v2.underground = true; out.push(v2);
+      const v3 = seg('rwall', ox + 280, oy + 250, 1.6, 'v', 0.5); v3.underground = true; out.push(v3);
+      const v4 = seg('rwall', ox + 320, oy + 250, 1.6, 'v', 0.5); v4.underground = true; out.push(v4);
       out.push(seg('desk', ox + 220, oy + 380, 2.2, 'h', 0.2));
       out.push(seg('locker', ox + 120, oy + 320, 2.2, 'h', 0.25));
       return out;
@@ -673,11 +679,6 @@ const Structures = (() => {
         { side: 'w', at: 240, type: 'door' },
       ]);
       out.push(seg('metal', ox + 150, oy + 50, 5.5, 'v', 0.3));
-      // inner hidden chamber under the vault core
-      const v1 = seg('rwall', ox + 300, oy + 230, 2, 'h', 0.5); v1.underground = true; out.push(v1);
-      const v2 = seg('rwall', ox + 300, oy + 270, 2, 'h', 0.5); v2.underground = true; out.push(v2);
-      const v3 = seg('rwall', ox + 280, oy + 250, 1.6, 'v', 0.5); v3.underground = true; out.push(v3);
-      const v4 = seg('rwall', ox + 320, oy + 250, 1.6, 'v', 0.5); v4.underground = true; out.push(v4);
       out.push(seg('metal', ox + 300, oy + 150, 5.5, 'v', 0.3));
       out.push(seg('metal', ox + 500, oy + 80, 5.5, 'v', 0.3));
       out.push(seg('barricade', ox + 100, oy + 320, 6, 'h', 0.3));
@@ -789,6 +790,12 @@ const Structures = (() => {
       out.push(seg('rwall', ox + 320, oy + 120, 3.2, 'v', 0.5));
       const vd = seg('rdoor', ox + 360, oy + 120, 1, 'h');  // narrow vault entrance
       vd.locked = true; out.push(vd);
+      // subterranean safe-room under the vault core (secret access)
+      const br1 = seg('rwall', ox + 340, oy + 180, 1.8, 'h', 0.5); br1.underground = true; out.push(br1);
+      const br2 = seg('rwall', ox + 340, oy + 220, 1.8, 'h', 0.5); br2.underground = true; out.push(br2);
+      const br3 = seg('rwall', ox + 320, oy + 200, 1.6, 'v', 0.5); br3.underground = true; out.push(br3);
+      const br4 = seg('rwall', ox + 360, oy + 200, 1.6, 'v', 0.5); br4.underground = true; out.push(br4);
+      const sdoor = seg('door', ox + 340, oy + 200, 1, 'h'); sdoor.secret = true; sdoor.underground = true; out.push(sdoor);
       // teller stations + secure boxes
       out.push(seg('metal', ox + 150, oy + 200, 2.2, 'h', 0.3));
       out.push(seg('metal', ox + 300, oy + 280, 2.2, 'v', 0.3));
@@ -1042,7 +1049,7 @@ const Structures = (() => {
     fortress: 'Multi-layer reinforced strongpoint with sandbag perimeter. Hard to assault directly.',
     'radio-tower': 'Small fortified tower with wire perimeter. Isolated loot and strong sightlines.',
     prison: 'High-security cell block with reinforced walls. Long corridors and multiple breach points.',
-    bank: 'Ultra-secure vault with minimal access. High reward for breaching the core.',
+    bank: 'Ultra-secure vault with minimal access and a hidden subterranean safe room beneath.',
     market: 'Open trading hall with many stalls. Multiple entrances create high-risk play.',
     school: 'Classrooms, gym, and cafeteria with open wings. Good for medium-range skirmishes.',
     church: 'Tall sanctuary with pew-line cover. Long sightlines through an open nave.',

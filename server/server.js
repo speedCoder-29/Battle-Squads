@@ -205,6 +205,10 @@ wss.on('connection', (ws) => {
         me.reloadUntil = now() + me.weapon.reloadMs;
         me.ammo = me.weapon.mag;
       }
+    } else if (msg.t === 'mark') {
+      room.mark(me, msg.x, msg.y, msg.kind);        // team-only, and rate limited
+    } else if (msg.t === 'emote') {
+      room.emote(me, msg.id);
     } else if (msg.t === 'ping') {
       ws.send(JSON.stringify({ t: 'pong', c: msg.c }));
     }
