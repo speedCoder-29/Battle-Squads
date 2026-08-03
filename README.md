@@ -115,9 +115,9 @@ This baseline runs **entirely in the browser** so you can ship it immediately:
    (Postgres, Supabase, Firebase, etc.). Never store plain-text passwords server-side —
    hash them (bcrypt/argon2). The local version is for prototyping only.
 
-2. **Move the rest of the sim server-side** — grenades, deployables, class tools,
-   structures/doors and objective capture still run on the client. Weapons, the damage
-   calculator and classes are already shared with the server.
+2. **Move the rest of the sim server-side** — grenades, deployables, class tools and
+   doors still run on the client. Weapons, the damage calculator, classes, the map
+   itself, wall destruction and objective capture are all shared with the server.
 
 ---
 
@@ -221,7 +221,32 @@ predicted so aiming is responsive, snapping back if it drifts too far.
 
 Movement, shooting, damage and deaths are authoritative — a modified client can't
 teleport or claim kills. Not yet moved server-side: the tactical layer (grenades,
-deployables, tools), structures/doors, and objective capture.
+deployables, tools) and doors.
+
+### One world, not two
+
+The map is never sent over the wire. Every client generates it, and the room hands
+out the **seed** it was generated from, so everyone builds the same one — same
+buildings, same river, same loot, down to the pixel. A client that has already built
+a world when the welcome arrives throws it away and rebuilds from the host's seed.
+
+Generation is seeded end to end: `Math.random` is swapped for a small deterministic
+generator while the map is built, so two machines that start from one number finish
+with byte-identical worlds. `ROOM_SEED=<n>` pins the seed on the dedicated server when
+you want to fight the same ground twice.
+
+The simulation knows about that world too:
+
+- **Walls stop players and rounds.** The host hands the room its geometry
+  (`Game.netWorld()`); the Node server generates the same thing headlessly through
+  `buildWorld()` in [js/_shared.js](js/_shared.js). Without it players walked through
+  buildings everyone could see.
+- **Cover is destroyed once, for everyone.** Wall HP lives in the room. Each wall
+  carries the index it had at generation time, so "wall 214 is down" is one number on
+  the wire, and a player joining halfway is told which walls have already come down.
+- **Capture points are decided by the host.** Progress, ownership and score come back
+  in the snapshot instead of each client guessing from the handful of players it can
+  see.
 
 ## Bot difficulty
 
@@ -238,6 +263,23 @@ nine identical robots.
 Level 1 is a distracted rookie who never retreats and fights alone. Level 10 reacts
 in 90ms, leads every shot, breaks contact at 45% HP, heals, and focus-fires with its
 squad. Contact-sharing unlocks at level 5; heals at level 3.
+
+### Getting around the map
+
+Routing is A* over a coarse grid ([js/nav.js](js/nav.js)). A cell counts as walkable
+when a player standing at its **centre** would fit, and a step between two cells is
+allowed only if the line between their centres is clear — checked once when the grid
+is built, diagonals included.
+
+The obvious rule (block a cell if a wall touches it anywhere) does not survive a map
+with 1500 pieces of cover: a 12px wall closed a 90px corridor and a crate closed the
+cell it sat in, three quarters of the world came out impassable, and A* simply failed
+— which is why bots used to grind into buildings instead of walking round them. With
+the centre rule, 30% of cells are blocked and a route is found most of the time.
+
+Doors are routed **through** rather than around, and a bot that finds itself stopped
+at one opens it. Otherwise every building — and every capture point inside one — is
+sealed.
 
 ## Weapon stats & survev
 

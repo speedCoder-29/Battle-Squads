@@ -45,6 +45,8 @@ const Nav = (() => {
     const blocked = new Uint8Array(cols * rows);
     const eastWall = new Uint8Array(cols * rows);    // move to (cx+1, cy) blocked
     const southWall = new Uint8Array(cols * rows);   // move to (cx, cy+1) blocked
+    const seWall = new Uint8Array(cols * rows);      // move to (cx+1, cy+1) blocked
+    const neWall = new Uint8Array(cols * rows);      // move to (cx+1, cy-1) blocked
     const cost = new Float32Array(cols * rows).fill(1);
 
     /* the padded rects, bucketed, so a straight-line test can ask about a
@@ -78,14 +80,21 @@ const Nav = (() => {
     /* Now the moves. A step from one cell to the next is only allowed if the
        line between their centres is clear of everything — checked once here
        rather than every time A* considers the move. */
-    const grid = { cols, rows, w, h, blocked, eastWall, southWall, cost, solids };
+    const grid = { cols, rows, w, h, blocked, eastWall, southWall, seWall, neWall, cost, solids };
+    const shut = (i) => { eastWall[i] = southWall[i] = seWall[i] = neWall[i] = 1; };
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < cols; cx++) {
         const i = cy * cols + cx;
-        if (blocked[i]) { eastWall[i] = southWall[i] = 1; continue; }
+        if (blocked[i]) { shut(i); continue; }
         const a = centre(cx, cy);
-        if (cx < cols - 1) eastWall[i] = blocked[i + 1] || !clearLine(grid, a, centre(cx + 1, cy)) ? 1 : 0;
-        if (cy < rows - 1) southWall[i] = blocked[i + cols] || !clearLine(grid, a, centre(cx, cy + 1)) ? 1 : 0;
+        const to = (nx, ny) => blocked[ny * cols + nx] || !clearLine(grid, a, centre(nx, ny)) ? 1 : 0;
+        if (cx < cols - 1) eastWall[i] = to(cx + 1, cy);
+        if (cy < rows - 1) southWall[i] = to(cx, cy + 1);
+        // the diagonals get their own test: a crate sitting exactly on a cell
+        // corner blocks neither neighbour and neither way round, but a route
+        // cutting the corner would still walk straight into it
+        if (cx < cols - 1 && cy < rows - 1) seWall[i] = to(cx + 1, cy + 1);
+        if (cx < cols - 1 && cy > 0) neWall[i] = to(cx + 1, cy - 1);
       }
     }
     if (costAt) {
@@ -105,13 +114,17 @@ const Nav = (() => {
   const centre = (cx, cy) => ({ x: cx * CELL + CELL / 2, y: cy * CELL + CELL / 2 });
   const isBlocked = (g, cx, cy) => !inBounds(g, cx, cy) || !!g.blocked[idx(g, cx, cy)];
 
-  /* is there a wall between these two neighbouring cells? */
+  /* is there a wall between these two neighbouring cells? each edge is stored
+     once, so a move west asks its western neighbour's east edge */
   function edgeBlocked(g, cx, cy, dx, dy) {
     if (!g.eastWall) return false;                       // grid built before edges existed
-    if (dx > 0) return !!g.eastWall[idx(g, cx, cy)];
-    if (dx < 0) return !!g.eastWall[idx(g, cx - 1, cy)];
-    if (dy > 0) return !!g.southWall[idx(g, cx, cy)];
-    return !!g.southWall[idx(g, cx, cy - 1)];
+    if (!dy) return !!g.eastWall[idx(g, cx + (dx > 0 ? 0 : -1), cy)];
+    if (!dx) return !!g.southWall[idx(g, cx, cy + (dy > 0 ? 0 : -1))];
+    // diagonals: south-east and north-east, read from whichever end owns it
+    if (dx > 0 && dy > 0) return !!g.seWall[idx(g, cx, cy)];
+    if (dx < 0 && dy < 0) return !!g.seWall[idx(g, cx - 1, cy - 1)];
+    if (dx > 0 && dy < 0) return !!g.neWall[idx(g, cx, cy)];
+    return !!g.neWall[idx(g, cx - 1, cy + 1)];
   }
 
   /* nearest open cell, for when someone is standing in a wall */
@@ -171,13 +184,8 @@ const Nav = (() => {
           if (isBlocked(g, nx, ny)) continue;
           // don't cut a diagonal through a wall corner
           if (dx && dy && (isBlocked(g, cx + dx, cy) || isBlocked(g, cx, cy + dy))) continue;
-          /* and don't step through a wall standing between the two cells.
-             A diagonal has to have both ways round it clear — a wall that
-             crossed the diagonal would have to cross one of them too. */
-          if (dx && dy) {
-            if (edgeBlocked(g, cx, cy, dx, 0) || edgeBlocked(g, cx + dx, cy, 0, dy)) continue;
-            if (edgeBlocked(g, cx, cy, 0, dy) || edgeBlocked(g, cx, cy + dy, dx, 0)) continue;
-          } else if (edgeBlocked(g, cx, cy, dx, dy)) continue;
+          // and don't step through a wall standing between the two cells
+          if (edgeBlocked(g, cx, cy, dx, dy)) continue;
           const ni = idx(g, nx, ny);
           const step = (dx && dy ? DIAG : 1) * g.cost[ni];
           const tentative = gScore[cur] + step;
