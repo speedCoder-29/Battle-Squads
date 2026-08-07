@@ -40,10 +40,22 @@
      too. They were 3400x2300 here and 6400x6400 there, which meant an online
      match was simulated in one coordinate space and drawn in another. */
   const MAP_SIZES = { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
-  const ROOM_MAX = 24;
+  /* How many squads each mode is fought between, matching TEAM_SETUP in
+     game.js. This used to be the literal 4 in three separate places — the
+     team-balancing loop, the score array and the spawn ring — so an
+     elimination room quietly put everyone into four squads while every client
+     drew six, and the fifth and sixth never got a spawn corner or a score. */
+  const TEAM_COUNT = { domination: 4, elimination: 6 };
+  /* A 6400px map is 128 tiles across; two dozen people on it are specks. The
+     ceiling is per-squad rather than a flat number so that adding a squad adds
+     room for a squad, and no team can be more than one player larger than the
+     smallest. */
+  const SQUAD_MAX = 8;
+  const ROOM_MAX = 48;
   const MATCH_SECONDS = 8 * 60;
   const SCORE_CAP = 1000;              // domination win score, as offline
   const COMMS_GAP = 550;               // ms between one player's pings/emotes
+  const DOOR_REACH = 110;              // how close you must be to work a door
 
   /* Ballistics, mirroring game.js. These belong with the simulation rather
      than the weapon table, and now that the sim is shared they live here
@@ -58,6 +70,32 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
   const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+  /* ---------- one movement model ----------
+     The client predicts its own movement and the room decides it for real, so
+     the two have to compute the same number or the player drifts away from
+     where the room says they are and gets yanked back. They used to disagree:
+     the client multiplied in terrain, barbed wire and tool slows that the room
+     had never heard of, and the room ran on the *unmodified* weapon while the
+     client ran on the one with attachments bolted on. Measured on a guest
+     walking off a beach spawn, the room moved them roughly three times as fast
+     as their own screen did.
+
+     Everything both sides can agree on lives here now, and game.js calls this
+     exact function while online. Terrain is the one term the room can't derive
+     on its own, so whoever hosts hands it a lookup (see setSurface) — the host
+     generated the map from the room's seed, so it has one. */
+  function moveSpeedFor(p, ads) {
+    // a guest never constructs a Room, so this can be the first thing in the
+    // file anyone touches — resolve the shared tables here too
+    deps();
+    let spd = p.weapon.moveSpeed * p.cls.speed * C.armorSpeed(p) * C.adrenaline(p.adrenaline).speed;
+    if (ads) {
+      spd *= 0.55;
+      if (typeof p.weapon.scopeMoveMult === 'number') spd *= p.weapon.scopeMoveMult;
+    }
+    return spd;
+  }
 
   /* ---------- the world the match is fought in ----------
      The simulation used to know nothing about the map: players walked through
@@ -111,6 +149,8 @@
       this.id = id;
       this.mode = mode || 'domination';
       this.map = MAP_SIZES[this.mode] || MAP_SIZES.domination;
+      this.teams = TEAM_COUNT[this.mode] || 4;
+      this.capacity = Math.min(ROOM_MAX, this.teams * SQUAD_MAX);
       /* Every client generates its own copy of the world, so they all need the
          same seed to end up with the same map. The room owns it and hands it
          out with the welcome. */
@@ -120,16 +160,52 @@
       this.wallIndex = null;
       this.downed = [];                  // walls destroyed so far, for late joiners
       this.objectives = [];              // domination capture points
-      this.scores = [0, 0, 0, 0];        // domination score per team
+      this.scores = new Array(this.teams).fill(0);   // domination score per team
       this.bullets = [];
       this.events = [];                  // things clients should hear about
-      this.timeLeft = MATCH_SECONDS;
+      this.timeLeft = MATCH_SECONDS;     // see the accessor below — this sets endsAt
+      /* Rooms open in a lobby and only start fighting when whoever is hosting
+         says so. Deploying the host straight into the match meant everybody
+         after them was a late joiner into a round already in progress, on a
+         clock that had been running since before they clicked anything. */
+      this.phase = 'lobby';
       this.tick = 0;
       this.over = false;
       this.lastSim = now();
+      /* Terrain speed lookup, supplied by whoever hosts. A browser host has
+         the terrain (it generated the same map from this room's seed); the
+         Node server does not, and falls back to flat ground. */
+      this.surface = null;
     }
 
-    get full() { return this.players.size >= ROOM_MAX; }
+    /* ---------- the match clock ----------
+       Anchored to wall time rather than accumulated from the simulation's own
+       dt. The room used to count down by subtracting each step's dt, which is
+       capped at 50ms so one slow tick can't teleport everybody — but that cap
+       also meant every hitch on whoever hosts *added* time to the match: a
+       browser host generating its map, a garbage collection pause, or a tab
+       the OS decided to throttle all made the round run long, and every guest
+       inherited the stretched clock because the countdown ships in the
+       snapshot. An end time in milliseconds can't drift: the match is over
+       when it's over, whatever the host's frame rate did in between.
+
+       Still assignable, because "end this round now" is just a shorter match. */
+    get timeLeft() {
+      // a lobby isn't burning match time, however long people take to arrive
+      if (this.phase === 'lobby') return MATCH_SECONDS;
+      return Math.max(0, (this.endsAt - now()) / 1000);
+    }
+    set timeLeft(seconds) { this.endsAt = now() + Math.max(0, seconds) * 1000; }
+
+    /* fn(x, y) -> speed multiplier, or null for flat ground everywhere */
+    setSurface(fn) { this.surface = typeof fn === 'function' ? fn : null; }
+    surfaceAt(x, y) {
+      if (!this.surface) return 1;
+      const s = this.surface(x, y);
+      return typeof s === 'number' && s > 0 ? s : 1;
+    }
+
+    get full() { return this.players.size >= this.capacity; }
 
     /* Hand the room the map. Whoever hosts has already built this world from
        this room's seed, so the rects — and their ids — are the ones every
@@ -149,7 +225,11 @@
         hp: r.hp > 0 ? r.hp : Infinity,          // Infinity = indestructible
         type: r.type, toughness: r.toughness || 1,
         dead: false,
+        /* A door is the one wall that changes its mind. Remember what it is
+           when shut, so opening and closing it is reversible. */
+        door: !!r.door, open: false, baseSolid: !!r.solid, baseMode: r.mode || 'stop',
       }));
+      this.wallById = new Map(this.walls.map(w => [w.id, w]));
       this.wallIndex = worldIndex(this.walls, this.map.w, this.map.h);
       // anyone already standing in a wall gets pushed out of it
       for (const p of this.players.values()) if (p.alive) this.resolveWorld(p);
@@ -190,29 +270,42 @@
       return true;
     }
 
+    /* how many are on each squad right now */
+    teamCounts() {
+      const counts = new Array(this.teams).fill(0);
+      for (const p of this.players.values()) if (counts[p.team] !== undefined) counts[p.team]++;
+      return counts;
+    }
     /* the emptiest team that can seat a whole party together */
     freeTeam(size) {
-      const counts = [0, 0, 0, 0];
-      for (const p of this.players.values()) counts[p.team]++;
+      const counts = this.teamCounts();
       let best = 0;
       for (let t = 1; t < counts.length; t++) if (counts[t] < counts[best]) best = t;
       return best;
     }
 
     join(send, info, forceTeam) {
+      /* A full room says so instead of seating someone anyway. Silently
+         over-filling gave the extra players a team index nothing else knew
+         about — no spawn corner, no score slot, no colour. */
+      if (this.full) {
+        send({ t: 'rejected', reason: 'This game is full (' + this.capacity + ' players).' });
+        return null;
+      }
       const id = nextId++;
-      const weapon = W.byId[info.weapon] || W.byId[W.default];
+      /* Take the weapon the player is actually carrying, attachments and all.
+         Running the base gun here while their client ran the configured one
+         meant the two disagreed about damage, magazine size and — because a
+         suppressor or a bipod changes the weight — how fast they walk. */
+      const base = W.byId[info.weapon] || W.byId[W.default];
+      const weapon = (info.attachments || info.ammo)
+        ? W.configure(base, { attachments: info.attachments, ammo: info.ammo })
+        : base;
       const cls = K.forWeapon(weapon);
       // a party is handed a team so it stays together; otherwise the smallest
       // team wins the new player, keeping squads even
       let team = forceTeam;
-      if (team === undefined) {
-        const counts = {};
-        for (const p of this.players.values()) counts[p.team] = (counts[p.team] || 0) + 1;
-        team = 0;
-        let best = Infinity;
-        for (let t = 0; t < 4; t++) { const c = counts[t] || 0; if (c < best) { best = c; team = t; } }
-      }
+      if (team === undefined || team < 0 || team >= this.teams) team = this.freeTeam(1);
 
       const spawn = this.spawnPoint(team);
       const p = {
@@ -230,12 +323,27 @@
       this.players.set(id, p);
       p.send({
         t: 'welcome', id, team, mode: this.mode, map: this.map, seed: this.seed,
+        // how many squads this match is fought between, and how many can be in
+        // it — the client sizes its scoreboard from these rather than guessing
+        teams: this.teams, capacity: this.capacity, phase: this.phase,
         tickRate: 1000 / TICK, roster: this.roster(),
+        /* How long is left of *this* match, not of a fresh one. Join eight
+           minutes into a round and your clock has to start where everyone
+           else's is, rather than at 8:00 until the first snapshot lands. */
+        timeLeft: Math.max(0, Math.round(this.timeLeft)),
+        /* Where the room put you. The client spawned itself the moment it
+           joined — before it knew which team it was on — so without this it
+           stands at another squad's spawn until the reconciler drags it
+           across the map. */
+        x: Math.round(p.x), y: Math.round(p.y),
         // join halfway through and the cover that has already been shot away
-        // should be gone on your screen too
+        // should be gone on your screen too — and the doors people have opened
+        // should be open, or you'd walk into one that isn't there
         downed: this.downed.slice(),
+        openDoors: this.openDoors(),
       });
       this.pushEvent({ e: 'join', id, name: p.name, team });
+      this.pushLobby();
       return p;
     }
 
@@ -244,6 +352,7 @@
       if (!p) return;
       this.players.delete(id);
       this.pushEvent({ e: 'leave', id, name: p.name });
+      this.pushLobby();
     }
 
     /* Each team gets its own quarter of the map, and nobody spawns inside a
@@ -252,7 +361,8 @@
     spawnPoint(team) {
       const cx = this.map.w / 2, cy = this.map.h / 2;
       const rx = this.map.w / 2 - 240, ry = this.map.h / 2 - 240;
-      const ang = -Math.PI / 2 + (team / 4) * Math.PI * 2;
+      // squads are spaced evenly around the island, however many there are
+      const ang = -Math.PI / 2 + (team / this.teams) * Math.PI * 2;
       const bx = cx + Math.cos(ang) * rx, by = cy + Math.sin(ang) * ry;
       let last = { x: bx, y: by };
       for (let i = 0; i < 40; i++) {
@@ -306,9 +416,31 @@
     pushEvent(e) { this.events.push(e); if (this.events.length > 40) this.events.shift(); }
 
     /* ---------- simulation ---------- */
+    /* ---------- starting the match ----------
+       The clock is set here, not when the room was created, so the eight
+       minutes are eight minutes of playing rather than eight minutes of
+       waiting for a fourth player to load. */
+    startMatch() {
+      if (this.phase === 'live' || this.over) return false;
+      this.phase = 'live';
+      this.timeLeft = MATCH_SECONDS;
+      this.broadcast({ t: 'start', mode: this.mode, timeLeft: MATCH_SECONDS, roster: this.roster() });
+      return true;
+    }
+
+    /* Who is here, for the lobby. Sent whenever that changes rather than left
+       to the next snapshot, so the list is right the instant someone joins. */
+    pushLobby() {
+      this.broadcast({
+        t: 'lobby', phase: this.phase, roster: this.roster(),
+        teams: this.teams, capacity: this.capacity, mode: this.mode,
+      });
+    }
+
     step(dt) {
-      if (this.over) return;
-      this.timeLeft -= dt;
+      if (this.over || this.phase !== 'live') return;
+      // the clock is wall-anchored (see the accessor above), so nothing to
+      // decrement here — dt only moves players, rounds and captures
 
       for (const p of this.players.values()) {
         if (!p.alive) {
@@ -321,8 +453,7 @@
         let dy = (i.down ? 1 : 0) - (i.up ? 1 : 0);
         const m = Math.hypot(dx, dy);
         if (m > 0) {
-          let spd = p.weapon.moveSpeed * p.cls.speed * C.armorSpeed(p) * C.adrenaline(p.adrenaline).speed;
-          if (i.ads) spd *= 0.55;
+          const spd = moveSpeedFor(p, i.ads) * this.surfaceAt(p.x, p.y);
           /* Move, then get pushed back out of anything solid — the same
              resolution the client runs offline, so a player and the host
              agree about where a wall stopped them. Pushing out rather than
@@ -347,7 +478,12 @@
         // firing
         p.fireCd -= dt * 1000;
         if (now() < p.reloadUntil) continue;
-        if (p.ammo <= 0) { p.reloadUntil = now() + p.weapon.reloadMs; p.ammo = p.weapon.mag; continue; }
+        /* A reload finishes here, not where it starts. Filling the magazine at
+           the moment the reload began meant the ammo counter — which the
+           client reads straight from the snapshot — snapped back to full
+           immediately and then refused to fire for two seconds. */
+        if (p.reloading) { p.ammo = p.weapon.mag; p.reloading = false; }
+        if (p.ammo <= 0) { p.reloadUntil = now() + p.weapon.reloadMs; p.reloading = true; continue; }
         const wantsFire = i.shooting && (p.weapon.action === 'auto' || i.fireEdge);
         if (wantsFire && p.fireCd <= 0) this.fire(p);
       }
@@ -405,7 +541,8 @@
           life: Math.min(2.4, (w.range * 1.15) / w.bulletSpeed),
         });
       }
-      if (p.ammo <= 0) p.reloadUntil = now() + w.reloadMs;
+      // fired the last round: start the reload, and let step() fill it
+      if (p.ammo <= 0) { p.reloadUntil = now() + w.reloadMs; p.reloading = true; }
     }
 
     stepBullets(dt) {
@@ -475,6 +612,33 @@
       return b.dmg < 1;
     }
 
+    /* ---------- doors ----------
+       The one piece of geometry that moves during a match, and until now the
+       room never heard about it. The world is handed over once, with every
+       door shut, so a player who opened one walked through it on their own
+       screen and into a wall the room still believed in — and got dragged back
+       into the doorway. On a map whose capture points are *inside* buildings,
+       that is most of the rubber-banding people actually notice.
+
+       Owned here so both sides agree, and so a round can be fired through a
+       door someone else left open. */
+    toggleDoor(p, id, open) {
+      if (!this.wallById) return false;
+      const w = this.wallById.get(id);
+      if (!w || w.dead || !w.door) return false;
+      // you have to be standing at it — a client can't open a door across the map
+      const cx = clamp(p.x, w.x, w.x + w.w), cy = clamp(p.y, w.y, w.y + w.h);
+      if (dist2(p.x, p.y, cx, cy) > DOOR_REACH * DOOR_REACH) return false;
+      const want = open === undefined ? !w.open : !!open;
+      if (want === w.open) return false;
+      w.open = want;
+      w.solid = want ? false : w.baseSolid;
+      w.mode = want ? 'through' : w.baseMode;
+      this.pushEvent({ e: 'door', id, open: want });
+      return true;
+    }
+    openDoors() { return this.walls.filter(w => w.door && w.open).map(w => w.id); }
+
     destroyWall(wall) {
       if (wall.dead) return;
       wall.dead = true;
@@ -502,7 +666,7 @@
     respawn(p) {
       const s = this.spawnPoint(p.team);
       p.x = s.x; p.y = s.y; p.hp = p.maxHp; p.alive = true;
-      p.ammo = p.weapon.mag; p.reloadUntil = 0; p.adrenaline = 0;
+      p.ammo = p.weapon.mag; p.reloadUntil = 0; p.reloading = false; p.adrenaline = 0;
     }
 
     snapshot() {
@@ -517,8 +681,13 @@
           // seconds until this one is back on their feet, for the HUD
           respawn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - now()) / 1000)),
         })),
+        /* Rounds in flight. `o` is who fired it, so a client can skip its own
+           (it drew those the moment it pulled the trigger) and `a` is the
+           heading, so the tracer can be drawn pointing the right way rather
+           than as a dot. */
         bullets: this.bullets.slice(0, 120).map(b => ({
-          x: Math.round(b.x), y: Math.round(b.y), team: b.team,
+          x: Math.round(b.x), y: Math.round(b.y), team: b.team, o: b.owner,
+          a: +Math.atan2(b.vy, b.vx).toFixed(2),
         })),
         // capture points, in the order the client generated them
         objectives: this.objectives.map(o => ({ o: o.owner, p: Math.round(o.progress), c: o.capTeam })),
@@ -544,5 +713,5 @@
       this.broadcast({ t: 'end', scores, roster: this.roster() });
     }
   }
-  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS };
+  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS, moveSpeedFor, BODY_R };
 }));

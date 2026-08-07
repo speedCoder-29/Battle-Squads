@@ -452,6 +452,7 @@ const Screens = (() => {
     document.getElementById('set-dmgnum').checked = s.dmgNumbers;
     document.getElementById('set-botlevel').value = s.botLevel || BotAI.DEFAULT;
     renderBotLevel(s.botLevel || BotAI.DEFAULT);
+    renderKeybinds();
     // avatar picker
     const picker = document.getElementById('avatar-picker');
     picker.innerHTML = '';
@@ -492,6 +493,78 @@ const Screens = (() => {
       </div>`).join('');
   }
 
+  /* ---- keybinds ----
+     One row per action, two slots each. Click a slot, press a key, done —
+     no modal, no confirm step, and Escape backs out without changing
+     anything. The rows are generated from Controls.ACTIONS so the panel and
+     the game can't disagree about what is bindable. */
+  let listening = null;              // { actionId, slot, el } while capturing
+  function renderKeybinds() {
+    const host = document.getElementById('keybind-list');
+    if (!host) return;
+    const map = Controls.all();
+    let html = '', group = null;
+    for (const a of Controls.ACTIONS) {
+      if (a.group !== group) { group = a.group; html += `<h4 class="keybinds__group">${group}</h4>`; }
+      const slots = [0, 1].map(i => {
+        const code = map[a.id][i];
+        return `<button class="keybind__key${code ? '' : ' is-empty'}" data-act="${a.id}" data-slot="${i}"
+          title="${code ? 'Click to rebind' : 'Click to add a second key'}">${Controls.label(code)}</button>`;
+      }).join('');
+      html += `<div class="keybind"><span class="keybind__name">${a.name}</span>
+        <span class="keybind__keys">${slots}</span></div>`;
+    }
+    host.innerHTML = html;
+    host.querySelectorAll('.keybind__key').forEach(b =>
+      b.addEventListener('click', () => beginCapture(b.dataset.act, +b.dataset.slot, b)));
+  }
+
+  const keyHint = (msg, bad) => {
+    const el = document.getElementById('val-keybind');
+    if (el) { el.textContent = msg; el.classList.toggle('is-bad', !!bad); }
+  };
+
+  function beginCapture(actionId, slot, el) {
+    if (listening) cancelCapture();
+    listening = { actionId, slot, el };
+    el.classList.add('is-listening');
+    el.textContent = 'Press a key…';
+    keyHint(`Press the new key for “${Controls.byId[actionId].name}” · Esc to cancel · Backspace to clear`);
+    /* Capture phase, so the key never reaches the page underneath — otherwise
+       binding Tab would tab out of the panel on the way past. */
+    window.addEventListener('keydown', onCapture, true);
+  }
+  function cancelCapture() {
+    if (!listening) return;
+    window.removeEventListener('keydown', onCapture, true);
+    listening = null;
+    renderKeybinds();
+    keyHint('Click a key, then press the new one');
+  }
+  function onCapture(e) {
+    if (!listening) return;
+    e.preventDefault(); e.stopPropagation();
+    const { actionId, slot } = listening;
+    if (e.code === 'Escape') return cancelCapture();
+    if (e.code === 'Backspace') {
+      Controls.clear(actionId, slot);
+      window.removeEventListener('keydown', onCapture, true);
+      listening = null; renderKeybinds();
+      return keyHint('Cleared.');
+    }
+    if (!Controls.isBindable(e.code)) {
+      return keyHint(`${Controls.label(e.code)} belongs to the browser — pick another`, true);
+    }
+    const res = Controls.bind(actionId, slot, e.code);
+    window.removeEventListener('keydown', onCapture, true);
+    listening = null;
+    renderKeybinds();
+    if (!res.ok) return keyHint(res.error, true);
+    keyHint(res.stolenFrom
+      ? `${Controls.label(e.code)} bound — taken off “${res.stolenFrom}”`
+      : `${Controls.label(e.code)} bound to “${Controls.byId[actionId].name}”`);
+  }
+
   function persistSettings() {
     const s = DB.getSettings();
     s.botLevel = +document.getElementById('set-botlevel').value;
@@ -526,6 +599,12 @@ const Screens = (() => {
     });
     ['set-sfx', 'set-quality', 'set-dmgnum'].forEach(id =>
       document.getElementById(id).addEventListener('change', persistSettings));
+    document.getElementById('btn-keys-reset').addEventListener('click', () => {
+      cancelCapture(); Controls.reset(); renderKeybinds();
+      keyHint('Back to the defaults.'); Toast.show('Keybinds reset.');
+    });
+    // closing the panel mid-capture must not leave the listener armed
+    document.querySelectorAll('[data-close-modal]').forEach(b => b.addEventListener('click', cancelCapture));
     // rename
     document.getElementById('set-name').addEventListener('change', e => {
       const newName = e.target.value.trim();

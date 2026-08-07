@@ -74,6 +74,11 @@ const P2P = (() => {
 
   /* ---------- the authoritative host ---------- */
   function startHost(code, opts) {
+    /* Hosting twice without stopping used to leave the first room running:
+       `host` was simply overwritten, so its two intervals kept stepping a match
+       nobody could see, and the old code stayed registered with the broker —
+       anyone who still had it joined a room the host had forgotten about. */
+    if (host || guest) stop();
     resetBus();
     const room = new RoomSim.Room('p2p-' + code, (opts && opts.mode) || 'domination');
     // A shared code should give a reproducible world, and the host must build
@@ -85,17 +90,42 @@ const P2P = (() => {
     }
     host = { code, room, peers: new Map(), nextPeer: 1, timer: null, simTimer: null };
 
-    // the host plays too — its own send() just loops straight back
+    /* The host plays too — its own send() just loops straight back.
+       Everything a guest tells the room about itself has to be told here as
+       well. Passing only name/weapon/skin meant the room ran the host's *stock*
+       gun while their own client ran the one with attachments on it, so the two
+       disagreed about magazine size, damage and walking speed — the same
+       desync that drags a player away from where they think they are, except
+       it was the host suffering it. */
     host.localPlayer = room.join(
       (msg) => emit('message', msg),
-      { name: (opts && opts.name) || 'Host', weapon: opts && opts.weapon, skin: opts && opts.skin },
+      { ...(opts || {}), name: (opts && opts.name) || 'Host' },
     );
 
-    let last = Date.now();
+    /* ---------- the simulation loop ----------
+       Fixed timestep with an accumulator, rather than "however long since the
+       last tick, capped".
+
+       The cap was the bug. A browser throttles timers in a tab that isn't the
+       visible one, so the moment the host alt-tabbed its ticks arrived late —
+       and every late tick had its excess thrown away by the cap. Measured with
+       the host tab merely in the background: 87% of real time simulated, so
+       every guest walked 13% further on their own screen than the room ever
+       moved them. The reconciler then spent the whole match dragging them back
+       against their own movement, which is what the yanking actually was.
+
+       Banking the leftover and spending it in whole steps loses nothing: a
+       tick that arrives late runs two steps instead of one. The catch-up
+       ceiling is there so a host that was suspended for a minute resumes the
+       match rather than fast-forwarding a minute of bullets into everyone. */
+    const SIM_STEP = 1 / 60;
+    const SIM_CATCHUP_MAX = 1.0;      // seconds of backlog worth replaying
+    let last = Date.now(), backlog = 0;
     host.simTimer = setInterval(() => {
       const t = Date.now();
-      room.step(Math.min(0.05, (t - last) / 1000));
+      backlog = Math.min(SIM_CATCHUP_MAX, backlog + (t - last) / 1000);
       last = t;
+      while (backlog >= SIM_STEP) { room.step(SIM_STEP); backlog -= SIM_STEP; }
     }, 1000 / 60);
     host.timer = setInterval(() => {
       if (!room.players.size) return;
@@ -108,15 +138,20 @@ const P2P = (() => {
 
   /* The room is created before the map is, so the host hands the geometry
      over once game.js has generated it. Until then the sim has no walls. */
-  function provideWorld(rects) {
+  function provideWorld(world) {
     if (!host) return 0;
-    return host.room.setWorld(rects);
+    // the surface lookup is a function, so it never goes on the wire — it only
+    // makes sense in the host's own tab, which is where the room lives
+    if (world && typeof world.surface === 'function') host.room.setSurface(world.surface);
+    return host.room.setWorld(world);
   }
 
   /* accept a peer and wire its messages into the room */
   function acceptPeer(sendFn, info) {
     if (!host) return null;
+    // a full room turns people away with a reason rather than seating them
     const p = host.room.join(sendFn, info || {});
+    if (!p) return null;
     emit('status', { hosting: true, code: host.code, players: host.room.players.size });
     emit('peers', rosterNames());
     return p;
@@ -131,17 +166,35 @@ const P2P = (() => {
       if (msg.fire) i.fireEdge = true;
       if (typeof msg.angle === 'number') i.angle = msg.angle;
     } else if (msg.t === 'reload') {
+      // the magazine fills when the reload ends — room.step() does that
       if (Date.now() >= player.reloadUntil && player.ammo < player.weapon.mag) {
         player.reloadUntil = Date.now() + player.weapon.reloadMs;
-        player.ammo = player.weapon.mag;
+        player.reloading = true;
       }
+    } else if (msg.t === 'door') {
+      room.toggleDoor(player, msg.id, msg.open);
     } else if (msg.t === 'mark') {
       room.mark(player, msg.x, msg.y, msg.kind);
     } else if (msg.t === 'emote') {
       room.emote(player, msg.id);
     } else if (msg.t === 'ping') {
       player.send({ t: 'pong', c: msg.c });
+    } else if (msg.t === 'bye') {
+      /* Someone closing the tab. WebRTC notices this by itself, but a
+         BroadcastChannel has no close event, so without an explicit goodbye a
+         guest who left stood in the room forever — a body everyone could still
+         see, shoot at, and lose a capture to. */
+      dropPlayer(player);
     }
+  }
+
+  /* take a player out of the room and tell the lobby */
+  function dropPlayer(player) {
+    if (!host || !player) return;
+    host.room.leave(player.id);
+    for (const [peerId, p] of host.peers) if (p === player) host.peers.delete(peerId);
+    emit('status', { hosting: true, code: host.code, players: host.room.players.size });
+    emit('peers', rosterNames());
   }
   const rosterNames = () =>
     host ? [...host.room.players.values()].map(p => ({ name: p.name, team: p.team })) : [];
@@ -151,6 +204,7 @@ const P2P = (() => {
     const Peer = await loadPeerLib();
     return new Promise((resolve, reject) => {
       const peer = new Peer(ROOM_PREFIX + code, { debug: 0 });
+      let opened = false;
       const timeout = setTimeout(() => reject(new Error('Broker did not respond — try again')), 12000);
       peer.on('open', () => {
         clearTimeout(timeout);
@@ -163,18 +217,26 @@ const P2P = (() => {
             player = acceptPeer((msg) => { try { conn.send(msg); } catch (e) {} }, conn.metadata || {});
             conn.on('data', (msg) => handleFromPeer(player, msg));
           });
-          conn.on('close', () => {
-            if (player) { host.room.leave(player.id); emit('peers', rosterNames()); }
-          });
+          conn.on('close', () => { if (player) dropPlayer(player); });
         });
         resolve({ code, me, seed: host.room.seed });
+        opened = true;
       });
       peer.on('error', (err) => {
         clearTimeout(timeout);
+        const type = (err && err.type) || 'unknown';
+        /* Once we're hosting the promise is long settled, so rejecting it again
+           is a no-op and the host is told nothing at all. Errors after that
+           point — a peer that couldn't be reached, the broker dropping us — go
+           to the lobby status line instead. */
+        if (opened) {
+          if (type !== 'peer-unavailable') emit('status', { hosting: true, code, error: 'Connection trouble: ' + type });
+          return;
+        }
         // an id clash just means that code is taken
-        reject(new Error(err && err.type === 'unavailable-id'
+        reject(new Error(type === 'unavailable-id'
           ? 'That code is already hosting — pick another'
-          : 'WebRTC error: ' + (err && err.type ? err.type : 'unknown')));
+          : 'WebRTC error: ' + type));
       });
     });
   }
@@ -190,9 +252,10 @@ const P2P = (() => {
         conn.on('open', () => {
           clearTimeout(timeout);
           mode = 'webrtc';
-          guest = { conn, peer };
+          guest = { conn, peer, code };
           conn.on('data', (msg) => emit('message', msg));
           conn.on('close', () => { guest = null; emit('status', { disconnected: true }); });
+          bindGoodbye();
           emit('status', { joined: true, code });
           resolve(conn);
         });
@@ -210,11 +273,32 @@ const P2P = (() => {
   /* ---------- same-machine, two tabs ----------
      No network involved: the quickest way to see whether the netcode is
      behaving before you get two devices together. */
+  /* Which tab is hosting the same-machine game. The claim used to be written
+     once and treated as stale after 15 seconds, so the second tab you opened
+     more than 15s later quietly started a *second* host instead of joining the
+     first — two rooms, two maps, two players who never meet. The host keeps
+     the claim warm for as long as it is actually up, and clears it on the way
+     out, so "is anyone hosting?" is a real answer rather than a stopwatch. */
+  const LOCAL_CLAIM = 'bs-local-host';
+  const CLAIM_FRESH = 4000;
+  function localHostAlive() {
+    try {
+      const at = +localStorage.getItem(LOCAL_CLAIM);
+      return !!at && Date.now() - at < CLAIM_FRESH;
+    } catch (e) { return false; }
+  }
+
   function hostLocal(code, opts) {
     const ch = new BroadcastChannel(CHANNEL);
     mode = 'local';
     const me = startHost(code, opts);
     host.channel = ch;
+    try {
+      localStorage.setItem(LOCAL_CLAIM, String(Date.now()));
+      host.claim = setInterval(() => {
+        try { localStorage.setItem(LOCAL_CLAIM, String(Date.now())); } catch (e) {}
+      }, CLAIM_FRESH / 2);
+    } catch (e) { /* storage disabled — the second tab just can't auto-detect */ }
     ch.onmessage = (ev) => {
       const { peerId, payload } = ev.data || {};
       if (!payload) return;
@@ -223,7 +307,7 @@ const P2P = (() => {
           (msg) => ch.postMessage({ toPeer: peerId, payload: msg }),
           payload.info || {},
         );
-        host.peers.set(peerId, player);
+        if (player) host.peers.set(peerId, player);
       } else {
         const player = host.peers.get(peerId);
         if (player) handleFromPeer(player, payload);
@@ -239,7 +323,7 @@ const P2P = (() => {
     const peerId = 'g' + Math.random().toString(36).slice(2, 8);
     mode = 'local';
     guest = {
-      channel: ch, peerId,
+      channel: ch, peerId, code: 'LOCAL',
       conn: { send: (msg) => ch.postMessage({ peerId, payload: msg }) },
     };
     ch.onmessage = (ev) => {
@@ -248,8 +332,20 @@ const P2P = (() => {
       emit('message', payload);
     };
     ch.postMessage({ peerId, payload: { t: 'hello', info: info || {} } });
+    bindGoodbye();
     emit('status', { joined: true, local: true });
     return guest.conn;
+  }
+
+  /* Tell the host we're going before the tab dies. `pagehide` is the one event
+     that reliably fires on a close, a refresh and a navigation. */
+  let goodbyeBound = false;
+  function bindGoodbye() {
+    if (goodbyeBound || typeof window === 'undefined') return;
+    goodbyeBound = true;
+    window.addEventListener('pagehide', () => {
+      if (guest && guest.conn) { try { guest.conn.send({ t: 'bye' }); } catch (e) {} }
+    });
   }
 
   /* ---------- what the game talks to ---------- */
@@ -272,18 +368,8 @@ const P2P = (() => {
         }
       },
       close() { stop(); },
-      interpolated() {
-        const s = this.snapshots;
-        if (s.length < 2) return s.length ? { a: s[0].data, b: s[0].data, t: 0 } : null;
-        const target = performance.now() - Net.INTERP_DELAY;
-        for (let i = s.length - 1; i > 0; i--) {
-          if (s[i - 1].at <= target && s[i].at >= target) {
-            const span = s[i].at - s[i - 1].at || 1;
-            return { a: s[i - 1].data, b: s[i].data, t: (target - s[i - 1].at) / span };
-          }
-        }
-        return { a: s[s.length - 2].data, b: s[s.length - 1].data, t: 1 };
-      },
+      // one buffering rule for both transports — see Net.interpolate
+      interpolated() { return Net.interpolate(this.snapshots); },
       get status() {
         return { kind: this.kind, ok: true, label: host ? 'Hosting' : 'Connected', ping: this.ping };
       },
@@ -293,11 +379,16 @@ const P2P = (() => {
   function stop() {
     if (host) {
       clearInterval(host.simTimer); clearInterval(host.timer);
+      if (host.claim) clearInterval(host.claim);
+      // stop claiming the same-machine slot, so the next tab can host
+      try { if (host.channel) localStorage.removeItem(LOCAL_CLAIM); } catch (e) {}
       if (host.peer) try { host.peer.destroy(); } catch (e) {}
       if (host.channel) try { host.channel.close(); } catch (e) {}
       host = null;
     }
     if (guest) {
+      // let the host take us out of the room rather than leaving a body behind
+      if (guest.conn) try { guest.conn.send({ t: 'bye' }); } catch (e) {}
       if (guest.peer) try { guest.peer.destroy(); } catch (e) {}
       if (guest.channel) try { guest.channel.close(); } catch (e) {}
       guest = null;
@@ -310,10 +401,31 @@ const P2P = (() => {
   const isGuest = () => !!guest;
   const isActive = () => !!(host || guest);
   const playerCount = () => (host ? host.room.players.size : 0);
+  /* What the HUD puts on screen during a hosted match. The code only ever
+     lived in the lobby status line, which is behind the game the moment you
+     deploy — so a host had no way to read out the thing everybody needs to
+     type in. Local games have no code to share, hence `local`. */
+  const roomInfo = () => {
+    if (host) {
+      return {
+        hosting: true, code: host.code, players: host.room.players.size,
+        capacity: host.room.capacity, phase: host.room.phase, local: mode === 'local',
+      };
+    }
+    if (guest) return { hosting: false, code: guest.code || null, players: 0, local: mode === 'local' };
+    return null;
+  };
+
+  /* The host pressing "Start Match". Only they can — everyone else's copy of
+     this returns false, because only the host has a room to start. */
+  function startMatch() {
+    if (!host) return false;
+    return host.room.startMatch();
+  }
 
   return {
     hostWebRTC, joinWebRTC, hostLocal, joinLocal,
-    transport, stop, on, provideWorld,
+    transport, stop, on, provideWorld, roomInfo, localHostAlive, startMatch,
     isHosting, isGuest, isActive, playerCount, rosterNames,
     ROOM_PREFIX, CHANNEL,
     /* exposed for tests */ _startHost: startHost, _acceptPeer: acceptPeer, _handleFromPeer: handleFromPeer,

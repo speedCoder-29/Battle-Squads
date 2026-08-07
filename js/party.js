@@ -156,6 +156,13 @@ const Party = (() => {
     return {
       name: p.username || 'Operator',
       weapon: p.weapon,
+      /* The gun as it is actually built. Send only the id and the room runs
+         the stock version, so it disagrees with our client about damage,
+         magazine size and — since attachments change the weight — how fast we
+         walk, which is what drags a player away from where they think they
+         are. */
+      attachments: (p.attachments && p.attachments[p.weapon]) || null,
+      ammo: (p.ammo && p.ammo[p.weapon]) || null,
       skin: p.weaponSkins ? p.weaponSkins[p.weapon] : 'default',
       mode: Screens.getSelectedMode(),
     };
@@ -166,7 +173,7 @@ const Party = (() => {
     p2pStatus('Opening a room…');
     try {
       const r = await P2P.hostWebRTC(code, meInfo());
-      p2pStatus(`Hosting ${code} — share the code or the link. Deploying…`);
+      p2pStatus(`Hosting ${code} — share the code, then start the match when your squad is in.`);
       Toast.show(`Hosting game ${code}`, 'reward');
       setInviteLink(code);
       Game.startOnline(P2P.transport(), Screens.getSelectedMode(), r && r.seed);
@@ -192,16 +199,16 @@ const Party = (() => {
   /* two tabs on one machine — no network at all, quickest way to see it work */
   function p2pLocal() {
     if (P2P.isActive()) return p2pStatus('Already in a game.', true);
-    // whoever clicks first hosts; the second tab detects it and joins
-    const claim = 'bs-local-host';
-    const existing = localStorage.getItem(claim);
-    const fresh = existing && Date.now() - +existing < 15000;
-    if (fresh) {
+    /* Whoever clicks first hosts; the second tab detects it and joins. "Is
+       someone hosting" is answered by a claim the host keeps warm while it is
+       up (see P2P.localHostAlive) rather than by how long ago the first click
+       was — a fixed window meant opening the second tab a minute later started
+       a rival host, and the two tabs never saw each other. */
+    if (P2P.localHostAlive()) {
       P2P.joinLocal(meInfo());
       p2pStatus('Joined the other tab as a second player.');
       Game.startOnline(P2P.transport(), Screens.getSelectedMode());
     } else {
-      localStorage.setItem(claim, String(Date.now()));
       const r = P2P.hostLocal('LOCAL', meInfo());
       p2pStatus('Hosting locally — open this page in a second tab and press the same button.');
       Game.startOnline(P2P.transport(), Screens.getSelectedMode(), r && r.seed);

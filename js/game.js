@@ -770,6 +770,9 @@ const Game = (() => {
       ctx = canvas.getContext('2d');
       bindInput();
     }
+    bindRoomChip();
+    bindLobby();
+    showLobby(false);      // an offline match never has one
     resize();
     window.addEventListener('resize', resize);
 
@@ -814,12 +817,36 @@ const Game = (() => {
     document.getElementById('game-results').classList.remove('is-open');
     // legend is loud for the first few seconds, then fades back (hover to read)
     const hint = document.getElementById('hud-hint');
+    renderHint();
     hint.style.display = ''; hint.classList.remove('is-faded');
     setTimeout(() => hint.classList.add('is-faded'), 12000);
     updateWeaponHud();
 
     lastTime = performance.now();
     requestAnimationFrame(loop);
+  }
+
+  /* The on-screen legend, written from the bindings actually in force. It used
+     to be hardcoded markup, so rebinding a key left the HUD confidently
+     telling you to press the wrong one. */
+  function renderHint() {
+    const hint = document.getElementById('hud-hint');
+    if (!hint) return;
+    const k = (id) => Controls.labelFor(id);
+    /* The four movement keys read as one cluster ("W A S D"), unless they've
+       been bound to something long enough that spelling them out is clearer. */
+    const move = [Controls.all().up[0], Controls.all().left[0], Controls.all().down[0], Controls.all().right[0]]
+      .map(Controls.label).join(' ');
+    const groups = [
+      ['MOVE', move, `${k('dash')} dash`],
+      ['FIGHT', 'L-click fire', 'R-click aim', `${k('reload')} reload`],
+      ['ACTIONS', `${k('tool')} tool`, `${k('grenade')} grenade`, `${k('tactical')} tactical`,
+        `${k('heal')} heal`, `${k('token')} call-in`],
+      ['SQUAD', 'Middle-click ping', `${k('ping')} ping wheel`, `${k('emote')} emote`],
+      ['WORLD', `${k('interact')} door/crate/vehicle`, `${k('pause')} pause`],
+    ];
+    hint.innerHTML = groups.map(([head, ...rest]) =>
+      `<span class="hint-group"><b>${head}</b> ${rest.join(' · ')}</span>`).join('');
   }
 
   function togglePause() {
@@ -831,32 +858,43 @@ const Game = (() => {
 
   function quitMatch() {
     running = false; paused = false;
+    /* Leaving an online match has to hang up, not just walk away from the
+       screen. A host that stayed registered kept handing its code out to a
+       room nobody was simulating; a guest that stayed connected left a body
+       standing in everyone else's game. */
+    if (typeof P2P !== 'undefined' && P2P.isActive()) P2P.stop();
+    online = null;
+    showLobby(false);
     document.getElementById('game-pause').classList.remove('is-open');
     Screens.enterHome();
   }
 
-  /* ---------------- input ---------------- */
+  /* ---------------- input ----------------
+     Nothing here knows which physical key does what — it asks Controls, which
+     owns the table and the player's overrides (js/controls.js). Rebinding a
+     key takes effect on the next press; there is no reload and no restart. */
   function bindInput() {
     window.addEventListener('keydown', e => {
       if (!running) return;
-      switch (e.code) {
-        case 'KeyW': case 'ArrowUp': input.up = true; break;
-        case 'KeyS': case 'ArrowDown': input.down = true; break;
-        case 'KeyA': case 'ArrowLeft': input.left = true; break;
-        case 'KeyD': case 'ArrowRight': input.right = true; break;
-        case 'KeyR': startReload(hudSubject()); break;   // the gun you're actually firing
-        case 'ShiftLeft': case 'ShiftRight': dash(); break;
-        case 'KeyQ': throwGrenade(); break;
-        case 'KeyF': useHeal(); break;
-        case 'KeyC': deployTactical(); break;
-        case 'KeyB': useToken(); break;
-        case 'KeyE': interact(); break;
-        case 'KeyV': useTool(); break;
-        case 'KeyG': callAirstrike(); break;
-        case 'KeyZ': openWheel('ping'); break;
-        case 'KeyX': openWheel('emote'); break;
-        case 'Tab': showScores = true; e.preventDefault(); break;
-        case 'Escape': wheel ? closeWheel(false) : togglePause(); break;
+      const act = Controls.actionFor(e.code);
+      switch (act) {
+        case 'up': input.up = true; break;
+        case 'down': input.down = true; break;
+        case 'left': input.left = true; break;
+        case 'right': input.right = true; break;
+        case 'reload': startReload(hudSubject()); break;   // the gun you're actually firing
+        case 'dash': dash(); break;
+        case 'grenade': throwGrenade(); break;
+        case 'heal': useHeal(); break;
+        case 'tactical': deployTactical(); break;
+        case 'token': useToken(); break;
+        case 'interact': interact(); break;
+        case 'tool': useTool(); break;
+        case 'airstrike': callAirstrike(); break;
+        case 'ping': openWheel('ping'); break;
+        case 'emote': openWheel('emote'); break;
+        case 'scoreboard': showScores = true; e.preventDefault(); break;
+        case 'pause': wheel ? closeWheel(false) : togglePause(); break;
         default:
           // 1-8 pick straight off an open wheel, for anyone who'd rather not aim
           if (wheel && e.code.startsWith('Digit')) {
@@ -871,17 +909,20 @@ const Game = (() => {
       }
     });
     window.addEventListener('keyup', e => {
-      switch (e.code) {
-        case 'KeyW': case 'ArrowUp': input.up = false; break;
-        case 'KeyS': case 'ArrowDown': input.down = false; break;
-        case 'KeyA': case 'ArrowLeft': input.left = false; break;
-        case 'KeyD': case 'ArrowRight': input.right = false; break;
+      switch (Controls.actionFor(e.code)) {
+        case 'up': input.up = false; break;
+        case 'down': input.down = false; break;
+        case 'left': input.left = false; break;
+        case 'right': input.right = false; break;
         // let go of the wheel key and whatever you were pointing at is sent
-        case 'KeyZ': if (wheel && wheel.kind === 'ping') closeWheel(true); break;
-        case 'KeyX': if (wheel && wheel.kind === 'emote') closeWheel(true); break;
-        case 'Tab': showScores = false; e.preventDefault(); break;
+        case 'ping': if (wheel && wheel.kind === 'ping') closeWheel(true); break;
+        case 'emote': if (wheel && wheel.kind === 'emote') closeWheel(true); break;
+        case 'scoreboard': showScores = false; e.preventDefault(); break;
       }
     });
+    /* Rebinding mid-match must not leave a key stuck down: if "move left" was
+       held when it stopped being "move left", nothing will ever clear it. */
+    Controls.onChange(() => { input.up = input.down = input.left = input.right = false; });
     canvas.addEventListener('mousemove', e => {
       const rect = canvas.getBoundingClientRect();
       input.mx = e.clientX - rect.left; input.my = e.clientY - rect.top;
@@ -1372,6 +1413,9 @@ const Game = (() => {
         solid: Structures.blocksMove(o),
         mode: bal.mode, keep: bal.keep,
         hp: o.hp, type: o.type, toughness: o.toughness,
+        // the room needs to know which rects can be opened, so it can let
+        // someone walk through one instead of hauling them back into it
+        door: Structures.isDoor(o),
       };
     });
   }
@@ -1738,10 +1782,25 @@ const Game = (() => {
   }
   function toggleDoor(d, who) {
     d.open = !d.open;
+    /* Online the room owns the door too, or we'd be the only ones who can walk
+       through it. We still swing it open here and now — waiting a round trip
+       to touch a door feels broken — and the room's event confirms the same
+       state a moment later, so applying it twice changes nothing. */
+    if (online && who && who.isPlayer) online.transport.send('door', { id: d.nid, open: d.open });
     invalidateRects();
     const c = doorCentre(d);
     spawnFx(c.x, c.y, '#e2b46e', 5);
     if (who && who.isPlayer) { hudMsg((d.open ? 'Opened ' : 'Closed ') + kindOf(d).name); SFX.click(); }
+  }
+
+  /* somebody else worked a door — match it, quietly */
+  function netSetDoor(id, open) {
+    const s = obstacles.find(o => o.nid === id);
+    if (!s || s.open === !!open) return;
+    s.open = !!open;
+    invalidateRects();
+    const c = doorCentre(s);
+    spawnFx(c.x, c.y, '#e2b46e', 4);
   }
 
   /* --- interact (E): doors, crates, ammo boxes --- */
@@ -2395,7 +2454,12 @@ const Game = (() => {
   function update(dt) {
     invalidateRects();
     pathBudget = 2;      // at most two A* runs a frame, spread across the bots          // walls can be built, blown up or opened any frame
-    timeLeft -= dt;
+    /* Online the match clock belongs to whoever is hosting, and we only read
+       it. Counting down locally as well meant the displayed time was our own
+       guess for most of every 50ms between snapshots, and a player who joined
+       late sat on 8:00 until the first one landed. */
+    if (online) timeLeft = onlineClock();
+    else timeLeft -= dt;
     if (input.dashCd > 0) input.dashCd -= dt;
 
     // player status timers
@@ -2417,8 +2481,12 @@ const Game = (() => {
     if (hudMessageT > 0) hudMessageT -= dt;
     updateKillFeed(dt);
 
-    // player control
-    if (player.alive && player.riding) {
+    // player control — frozen while the lobby is up, so nobody gets a head
+    // start wandering off before the match has been started
+    if (lobbyOpen()) {
+      input.shooting = false; input.fireEdge = false;
+      player.vx = player.vy = 0;
+    } else if (player.alive && player.riding) {
       // behind the wheel the whole control scheme changes hands: the vehicle
       // moves, aims and shoots, and the player just rides along inside it
       driveVehicle(player.riding, dt);
@@ -2430,17 +2498,30 @@ const Game = (() => {
       // "standing still" powers the ghillie suit
       player.stillT = m > 0 ? 0 : player.stillT + dt;
       if (m > 0) {
-        const adr = Combat.adrenaline(player.adrenaline);
-        let base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
-        base *= Combat.armorSpeed(player);           // vest + helmet weigh you down
-        base *= adr.speed;                           // Adren%/2 movement speedup
-        if (input.ads) base *= 0.55;                 // aiming slows you
-        if (input.ads && player.weapon.scopeMoveMult !== undefined) base *= player.weapon.scopeMoveMult;  // bipod
-        if (player.channel) base *= 0.4;             // channeling a heal
-        if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
-        if (tool.shield && input.ads) base *= tool.slow;
+        let base;
+        if (online) {
+          /* Online we predict with the room's own formula (roomsim.js
+             moveSpeedFor) rather than our richer local one. The extra terms
+             below — channelling, a raised gadget, barbed wire — are states the
+             room has never been told about, so applying them here only makes
+             our prediction wrong and gets us yanked back. */
+          base = RoomSim.moveSpeedFor(player, input.ads);
+        } else {
+          const adr = Combat.adrenaline(player.adrenaline);
+          base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
+          base *= Combat.armorSpeed(player);           // vest + helmet weigh you down
+          base *= adr.speed;                           // Adren%/2 movement speedup
+          if (input.ads) base *= 0.55;                 // aiming slows you
+          if (input.ads && player.weapon.scopeMoveMult !== undefined) base *= player.weapon.scopeMoveMult;  // bipod
+          if (player.channel) base *= 0.4;             // channeling a heal
+          if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
+          if (tool.shield && input.ads) base *= tool.slow;
+          base *= (player.wireSlow || 1);
+        }
+        // terrain applies either way: the room is handed the same lookup, so
+        // both sides slow down in the same river
         const surf = terrain ? Terrain.surfaceAt(terrain, player.x, player.y) : null;
-        const spd = base * (player.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
+        const spd = base * (surf ? surf.speed : 1) * dt;
         const px = player.x, py = player.y;
         player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
         player.vx = (player.x - px) / dt; player.vy = (player.y - py) / dt;
@@ -2833,6 +2914,7 @@ const Game = (() => {
     if (!running) return;
     running = false;
     input.shooting = false;
+    showLobby(false);
     // snapshot the board before `online` is torn down by the caller
     const board = buildLeaderboard(roster);
 
@@ -2874,6 +2956,14 @@ const Game = (() => {
     document.getElementById('game-results').classList.add('is-open');
     requestAnimationFrame(scrollBoardToPlayer);   // needs the panel laid out first
     won ? SFX.win() : SFX.lose();
+
+    /* Close the room down with the match. It used to outlive it: the two
+       intervals kept stepping, the code stayed registered with the broker, and
+       hosting again just abandoned the first room rather than replacing it —
+       so anyone still holding the old code joined a game that no longer had a
+       host in it. The delay lets the final `end` message reach everyone before
+       the connection they'd receive it on goes away. */
+    if (typeof P2P !== 'undefined' && P2P.isActive()) setTimeout(() => P2P.stop(), 2000);
   }
 
   /* ---------------- fx ---------------- */
@@ -2899,6 +2989,42 @@ const Game = (() => {
     document.getElementById('hud-ammomax').textContent = '/' + s.weapon.mag;
   }
 
+  /* ---------------- hosted-match chip ----------------
+     The join code used to exist only in the lobby's status line, which is
+     behind the game screen from the moment you deploy — so a host had no way
+     to read out the one thing anyone needs in order to join them. It lives on
+     the HUD for the whole match now, with a live headcount, and clicking it
+     copies the invite link. */
+  let roomChipCode = null;
+  function updateRoomChip() {
+    const el = document.getElementById('hud-room');
+    if (!el) return;
+    const info = (typeof P2P !== 'undefined' && online) ? P2P.roomInfo() : null;
+    if (!info || !info.code || info.local) { el.hidden = true; roomChipCode = null; return; }
+    el.hidden = false;
+    const players = info.hosting ? info.players : Math.max(1, (online.remote || []).length + 1);
+    // rebuilding the markup every frame would fight the copy click
+    const label = `${info.hosting ? 'HOSTING' : 'ROOM'} ${info.code} · ${players}`;
+    if (el.dataset.label !== label) {
+      el.dataset.label = label;
+      el.innerHTML = `${info.hosting ? 'HOSTING' : 'ROOM'} ${info.code}`
+        + `<span class="hud__room-n">${players} in game</span>`;
+    }
+    roomChipCode = info.code;
+  }
+
+  function bindRoomChip() {
+    const el = document.getElementById('hud-room');
+    if (!el || el.dataset.bound) return;
+    el.dataset.bound = '1';
+    el.addEventListener('click', () => {
+      if (!roomChipCode) return;
+      const link = `${location.origin}${location.pathname}?game=${roomChipCode}`;
+      if (navigator.clipboard) navigator.clipboard.writeText(link).catch(() => {});
+      Toast.show('Invite link copied — code ' + roomChipCode);
+    });
+  }
+
   function updateHud() {
     // health + ammo track whatever you're currently fighting from
     const s = hudSubject();
@@ -2907,6 +3033,7 @@ const Game = (() => {
     // timer
     const t = Math.max(0, Math.floor(timeLeft));
     document.getElementById('hud-gametimer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+    updateRoomChip();
     // scores
     const wrap = document.getElementById('hud-scores');
     if (mode === 'domination') {
@@ -2963,11 +3090,26 @@ const Game = (() => {
     for (const f of fx) { ctx.globalAlpha = clamp(f.life * 2.5, 0, 1); ctx.fillStyle = f.color; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill(); }
     ctx.globalAlpha = 1;
 
-    // bullets
+    // bullets — ours, predicted locally so firing feels instant
     for (const b of bullets) {
       ctx.strokeStyle = b.ricochet ? 'rgba(255,207,74,0.95)' : hexA(TEAM_COLORS[b.team], 0.9);
       ctx.lineWidth = 3; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02); ctx.stroke();
+    }
+    /* ...and everyone else's, straight from the room. The snapshot has always
+       carried these and nothing ever read them, so in an online match you took
+       fire from an enemy without a single round being drawn — people were
+       being shot by an empty field. Ours are filtered out by owner because we
+       already drew them above. */
+    if (online && online.bullets) {
+      ctx.lineWidth = 3; ctx.lineCap = 'round';
+      for (const b of online.bullets) {
+        ctx.strokeStyle = hexA(TEAM_COLORS[b.team % TEAM_COLORS.length], 0.9);
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.lineTo(b.x - Math.cos(b.a) * 26, b.y - Math.sin(b.a) * 26);
+        ctx.stroke();
+      }
     }
     drawGrenades();
 
@@ -4038,6 +4180,58 @@ const Game = (() => {
      off entirely — no prediction of anyone but ourselves. */
   let online = null;
   let peerStatusBound = false;
+  /* ---------- reconciliation ----------
+     How hard we pull toward where the room says we should be, and the gap past
+     which we stop easing and just accept the jump (a respawn, or being thrown
+     out of a wreck).
+
+     The teleports came from *what* we were pulling toward. The room's position
+     for us was being read out of the interpolated pair — which is deliberately
+     rendered 100ms in the past, because that is what makes everyone else move
+     smoothly. Reconciling against it meant chasing where we were a tenth of a
+     second ago while still walking forward, so the correction never converged:
+     it pulled backwards the whole time we moved, proportional to speed, and
+     every hitch in the snapshot stream turned that steady drag into a visible
+     yank. Walking in a straight line was enough to trigger it.
+
+     What we chase now is the newest snapshot with our own inputs replayed on
+     top of it — see predictedPosition(). In steady state the error is a pixel
+     or two rather than a moving target, so the easing has nothing left to
+     fight and there is nothing to snap. */
+  const NET_EASE = 12, NET_SNAP = 400;
+  const HISTORY_MS = 1500;      // how much of our own input we keep, for replay
+
+  /* ---------- the host's match clock ----------
+     One countdown, owned by the host, read by everyone. We take the host's
+     figure and carry it forward with our own elapsed time between snapshots,
+     which keeps the HUD smooth at 20Hz without ever inventing time of our own.
+
+     The host rounds to whole seconds on the wire, so a fresh reading can land
+     up to half a second *behind* where we already had it and make the clock
+     visibly tick back up. Readings that would do that are ignored in favour of
+     what we already have; only a real correction — a new match, a rejoin, a
+     host that shortened the round — is big enough to win. */
+  const CLOCK_RESET = 3;      // seconds of disagreement that counts as a jump
+  const CLOCK_LAG_MAX = 1;    // how far our smoothing may fall behind the host
+  function onlineClock() {
+    if (!online || online.clockAt == null) return timeLeft;
+    // nothing is running yet in a lobby, so the clock sits where the host put it
+    if (online.phase === 'lobby') return online.clockLeft;
+    return Math.max(0, online.clockLeft - (performance.now() - online.clockAt) / 1000);
+  }
+  function setOnlineClock(left) {
+    if (!online || typeof left !== 'number') return;
+    const current = onlineClock();
+    const jumped = online.clockAt == null || Math.abs(left - current) > CLOCK_RESET;
+    /* Prefer what we already had over a reading that would tick the display
+       upward — but never let that preference accumulate. Carrying our own
+       drifted value forward every time meant the two figures walked apart
+       until they were three seconds out, at which point the correction fired
+       and the clock jumped; it did that over and over. Clamping to within a
+       second of the host keeps the display monotonic *and* honest. */
+    online.clockLeft = jumped ? left : Math.min(left, Math.max(current, left - CLOCK_LAG_MAX));
+    online.clockAt = performance.now();
+  }
 
   /* Takes either a WebSocket to the dedicated server, or a transport object
      from js/p2p.js when another browser is hosting. The rest of the online
@@ -4057,6 +4251,8 @@ const Game = (() => {
       peer: !isSocket,
       id: null, roster: [], lastSend: 0, ping: 0, lastPingAt: 0,
       remote: [],
+      clockLeft: MATCH_SECONDS, clockAt: null,   // filled by the host's welcome
+      history: [], netErr: 0, wasDead: false,    // input replay — see reconcile()
     };
 
     if (isSocket) {
@@ -4094,7 +4290,16 @@ const Game = (() => {
 
   function publishWorld() {
     if (typeof P2P !== 'undefined' && P2P.isHosting()) {
-      P2P.provideWorld({ walls: netWorld(), objectives: netObjectives() });
+      /* The room needs the terrain too, not just the walls. It can't derive it
+         — but we can, because we built this map from the room's own seed, and
+         so did every guest. Handing the lookup over is what stops a player
+         wading through a river at full speed on the host's copy while their
+         own screen slows them to 0.55. */
+      P2P.provideWorld({
+        walls: netWorld(),
+        objectives: netObjectives(),
+        surface: (x, y) => (terrain ? Terrain.surfaceAt(terrain, x, y).speed : 1),
+      });
     }
   }
 
@@ -4103,7 +4308,16 @@ const Game = (() => {
      streaming the map across the wire. */
   function rebuildWorld(seed, hostMode, hostMap) {
     worldSeed = seed >>> 0;
-    if (hostMode) mode = hostMode;
+    if (hostMode && hostMode !== mode) {
+      mode = hostMode;
+      /* The mode came from the host, so the things the menu set from *our*
+         choice have to follow it: how many squads there are, and what the HUD
+         calls the match we're actually in. */
+      nTeams = (TEAM_SETUP[mode] || TEAM_SETUP.domination).teams;
+      teamScores = new Array(nTeams).fill(0);
+      document.getElementById('hud-gamemode').textContent =
+        mode === 'domination' ? 'DOMINATION' : 'ELIMINATION';
+    }
     if (hostMap && hostMap.w && hostMap.h) { MAP_W = hostMap.w; MAP_H = hostMap.h; }
     buildMap();
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
@@ -4126,23 +4340,56 @@ const Game = (() => {
     if (msg.t === 'welcome') {
       online.id = msg.id;
       online.roster = msg.roster || [];
+      online.teams = msg.teams || nTeams;
+      online.capacity = msg.capacity || 0;
+      online.phase = msg.phase || 'live';
       if (player) player.team = msg.team;
+      /* Start this match's clock where the host's already is, rather than at a
+         full 8:00 until the first snapshot arrives. */
+      setOnlineClock(msg.timeLeft);
       /* We built a world the moment we joined, before the host had told us
          which one. Rebuild it from the host's seed so everybody is standing
          on the same map — without this each client generated its own and
-         players appeared to be in completely different places. */
-      if (typeof msg.seed === 'number' && msg.seed !== worldSeed) {
-        rebuildWorld(msg.seed, msg.mode || mode, msg.map);
+         players appeared to be in completely different places.
+
+         The seed is not the only thing that has to match: we picked the mode
+         from our own menu, and domination and elimination are different sizes
+         of map. Joining a host who chose the other one left us simulating a
+         6400px world while they ran a 4500px one. */
+      /* Size the scoreboard to the match we actually joined. With more squads
+         than we assumed, the extra ones had nowhere to put their score. */
+      if (msg.teams > 0 && msg.teams !== nTeams) {
+        nTeams = msg.teams;
+        teamScores = new Array(nTeams).fill(0);
       }
-      // cover that was already shot away before we arrived
+      const wantMode = msg.mode || mode;
+      const wantMap = msg.map && msg.map.w ? msg.map : { w: MAP_W, h: MAP_H };
+      if ((typeof msg.seed === 'number' && msg.seed !== worldSeed)
+        || wantMode !== mode || wantMap.w !== MAP_W || wantMap.h !== MAP_H) {
+        rebuildWorld(typeof msg.seed === 'number' ? msg.seed : worldSeed, wantMode, wantMap);
+      }
+      /* Stand where the room put us. We spawned ourselves on joining, before
+         we knew our team, so without this a guest starts at another squad's
+         spawn point and is dragged across the map by the reconciler. */
+      if (player && typeof msg.x === 'number') {
+        player.x = msg.x; player.y = msg.y;
+        player.vx = player.vy = 0;
+        resolveObstacles(player);
+      }
+      // cover that was already shot away before we arrived, and doors the
+      // people already here have opened
       for (const id of msg.downed || []) netDestroyWall(id);
+      for (const id of msg.openDoors || []) netSetDoor(id, true);
+      // last, so the lobby is drawn against the host's mode and squad count
+      // rather than whatever we had picked on our own menu
+      showLobby(online.phase === 'lobby');
     } else if (msg.t === 'mark') {
       // only ever sent to our own squad, so anything that arrives is ours
       addMark(msg.x, msg.y, msg.kind, msg.byId === online.id ? 'You' : msg.by, msg.byId === online.id);
     } else if (msg.t === 'snapshot') {
       online.transport.snapshots.push({ at: performance.now(), data: msg });
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
-      timeLeft = msg.timeLeft;
+      setOnlineClock(msg.timeLeft);
       /* Captures are decided by the host, not by each client guessing from the
          handful of players it can see. Everything about a point except where
          it is comes down the wire. */
@@ -4159,9 +4406,31 @@ const Game = (() => {
         if (e.e === 'kill') onlineKill(e);
         else if (e.e === 'emote') addEmote(e.byId === online.id ? 'me' : e.byId, e.id);
         else if (e.e === 'wall') netDestroyWall(e.id);
+        else if (e.e === 'door') netSetDoor(e.id, e.open);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
       }
+    } else if (msg.t === 'lobby') {
+      online.roster = msg.roster || [];
+      online.teams = msg.teams || online.teams;
+      online.capacity = msg.capacity || online.capacity;
+      if (lobbyOpen()) renderLobby();
+      updateRoomChip();
+    } else if (msg.t === 'start') {
+      // the host said go: everyone drops in on the same clock, together
+      online.phase = 'live';
+      online.roster = msg.roster || online.roster;
+      online.history.length = 0;              // nothing before this counts
+      setOnlineClock(msg.timeLeft);
+      showLobby(false);
+      hudMsg('Match started — good hunting');
+      SFX.click();
+    } else if (msg.t === 'rejected') {
+      // the room turned us away — say why rather than sitting in an empty world
+      hudMsg(msg.reason || 'The host turned you away');
+      Toast.show(msg.reason || 'Could not join');
+      online = null;
+      quitMatch();
     } else if (msg.t === 'pong') {
       online.ping = Math.round(performance.now() - msg.c);
     } else if (msg.t === 'end') {
@@ -4214,14 +4483,28 @@ const Game = (() => {
       online.transport.send('ping', { c: t });
     }
 
+    // remember what we asked for, so we can replay it over the room's answer
+    recordInput();
+
     // rebuild the visible roster from the two snapshots straddling render time
     const pair = online.transport.interpolated();
     if (!pair) return;
     const lerped = Net.lerpAgents(pair.a, pair.b, pair.t);
     online.remote = lerped.filter(a => a.id !== online.id);
+    /* Rounds other people have in the air. Taken from the newer snapshot
+       rather than interpolated — bullets carry no stable id, so there is
+       nothing to match up between two frames, and at 20Hz a tracer is a
+       streak either way. */
+    online.bullets = (pair.b.bullets || []).filter(b => b.o !== online.id);
 
-    // our own agent is authoritative on the server too: take its HP and ammo,
-    // but keep our locally-predicted position so aiming stays responsive
+    /* Our own agent is authoritative on the server too: take its HP and ammo
+       from the room, but keep a locally-predicted position so aiming and
+       movement stay responsive.
+
+       Everything except position comes from the interpolated pair, because
+       those are cosmetic and smoothness matters more than freshness. Position
+       does not: it comes from the newest snapshot we hold, replayed forward.
+       Mixing the two is what caused the rubber-banding. */
     const mine = lerped.find(a => a.id === online.id);
     if (mine && player) {
       player.hp = mine.hp;
@@ -4230,11 +4513,185 @@ const Game = (() => {
       player.ammo = mine.ammo;
       player.adrenaline = mine.adrenaline;
       player.vest = mine.vest; player.helmet = mine.helmet;
-      // if we've drifted far from the server, snap back
-      if (dist2(player.x, player.y, mine.x, mine.y) > 140 * 140) {
-        player.x = mine.x; player.y = mine.y;
-      }
+      reconcile(dt);
     }
+  }
+
+  /* One entry per distinct thing we asked for, stamped with when we asked.
+     Runs of identical input collapse into one entry, so holding W for ten
+     seconds is a single record rather than three hundred. */
+  function recordInput() {
+    const h = online.history;
+    const last = h[h.length - 1];
+    const same = last && last.up === input.up && last.down === input.down
+      && last.left === input.left && last.right === input.right && last.ads === input.ads;
+    if (!same) {
+      h.push({ at: performance.now(), up: input.up, down: input.down, left: input.left, right: input.right, ads: input.ads });
+    }
+    // keep only what could still be unacknowledged
+    const cutoff = performance.now() - HISTORY_MS;
+    while (h.length > 1 && h[1].at < cutoff) h.shift();
+  }
+
+  /* Where the room would say we are *now*, given where it said we were and
+     everything we have asked for since.
+
+     A snapshot describes the world as it was when the host built it, which is
+     already one network trip in the past by the time we hold it. Replaying our
+     own inputs across that window — from when the host sampled us up to this
+     frame — reconstructs the position the room is about to agree with, instead
+     of the one it has already moved on from. */
+  function predictedPosition(snapAt, ax, ay) {
+    const start = snapAt - online.ping / 2;      // when the host sampled us
+    const nowMs = performance.now();
+    const h = online.history;
+    let x = ax, y = ay;
+    for (let i = 0; i < h.length; i++) {
+      const from = Math.max(h[i].at, start);
+      const to = (i + 1 < h.length ? h[i + 1].at : nowMs);
+      if (to <= from) continue;
+      const dx = (h[i].right ? 1 : 0) - (h[i].left ? 1 : 0);
+      const dy = (h[i].down ? 1 : 0) - (h[i].up ? 1 : 0);
+      const m = Math.hypot(dx, dy);
+      if (!m) continue;
+      // the room's own movement model, terrain and all — see roomsim.moveSpeedFor
+      const surf = terrain ? Terrain.surfaceAt(terrain, x, y).speed : 1;
+      const spd = RoomSim.moveSpeedFor(player, h[i].ads) * surf * ((to - from) / 1000);
+      x = clamp(x + (dx / m) * spd, 16, MAP_W - 16);
+      y = clamp(y + (dy / m) * spd, 16, MAP_H - 16);
+    }
+    return { x, y };
+  }
+
+  function reconcile(dt) {
+    const snaps = online.transport.snapshots;
+    const newest = snaps.length ? snaps[snaps.length - 1] : null;
+    if (!newest) return;
+    const auth = (newest.data.agents || []).find(a => a.id === online.id);
+    if (!auth) return;
+
+    /* Dead players don't predict — there is nothing to predict — and coming
+       back is a genuine teleport, so take the room's word for it outright. */
+    if (!auth.alive) {
+      player.x = auth.x; player.y = auth.y;
+      online.history.length = 0; online.wasDead = true;
+      return;
+    }
+    if (online.wasDead) { online.wasDead = false; online.history.length = 0; }
+
+    const target = predictedPosition(newest.at, auth.x, auth.y);
+    const err = Math.hypot(target.x - player.x, target.y - player.y);
+    online.netErr = err;                       // reported by netDebug()
+    if (err > NET_SNAP) {
+      // a respawn, or a correction so large that easing would look worse
+      player.x = target.x; player.y = target.y;
+      online.history.length = 0;
+    } else if (err > 0.5) {
+      /* Exponential, so the pull is frame-rate independent: at 30fps and at
+         240fps the error decays at the same rate per second rather than per
+         frame. */
+      const k = 1 - Math.exp(-NET_EASE * dt);
+      player.x += (target.x - player.x) * k;
+      player.y += (target.y - player.y) * k;
+    }
+    resolveObstacles(player);
+  }
+
+  /* ================= LOBBY =================
+     Everyone waits here until the host starts the match, so a round begins
+     with the squads that are actually going to play it, on a clock that
+     starts when the fighting does. Drawn over the match rather than as its
+     own screen: the world is already built and the snapshots are already
+     flowing, so there is nothing to tear down when it goes away. */
+  function lobbyOpen() { return !!(online && online.phase === 'lobby'); }
+
+  function showLobby(on) {
+    const el = document.getElementById('game-lobby');
+    if (el) el.classList.toggle('is-open', !!on);
+    if (on) renderLobby();
+  }
+
+  function renderLobby() {
+    if (!online) return;
+    const info = (typeof P2P !== 'undefined' && P2P.roomInfo()) || {};
+    const roster = online.roster || [];
+    const teams = online.teams || nTeams;
+    const cap = online.capacity || 0;
+
+    const codeEl = document.getElementById('lobby-code-v');
+    if (codeEl) codeEl.textContent = info.local ? 'LOCAL' : (info.code || '-----');
+    document.getElementById('lobby-count').textContent =
+      `${roster.length} ${roster.length === 1 ? 'player' : 'players'}${cap ? ` · room fits ${cap}` : ''}`
+      + ` · ${mode === 'domination' ? 'Domination' : 'Elimination'}`;
+
+    const host = info.hosting;
+    const sub = document.getElementById('lobby-sub');
+    sub.textContent = host
+      ? (roster.length > 1
+        ? 'Everyone deploys together when you start.'
+        : 'Share the code — the match starts when you say so.')
+      : 'Waiting for the host to start the match.';
+
+    /* One card per squad, including the empty ones, so it reads as a set of
+       teams filling up rather than a flat list of names. */
+    const box = document.getElementById('lobby-squads');
+    let html = '';
+    for (let t = 0; t < teams; t++) {
+      const members = roster.filter(r => r.team === t);
+      const colour = TEAM_COLORS[t % TEAM_COLORS.length];
+      html += `<div class="lobby__squad" style="border-left-color:${colour}">
+        <h4 style="color:${colour}">${TEAM_NAMES[t % TEAM_NAMES.length].toUpperCase()}</h4><ul>`;
+      html += members.length
+        ? members.map(r => `<li class="${r.id === online.id ? 'is-you' : ''}">${escapeHtml(r.name)}`
+          + `${r.id === online.id ? '<span class="lobby__tag">YOU</span>' : ''}</li>`).join('')
+        : '<li class="is-empty">empty</li>';
+      html += '</ul></div>';
+    }
+    box.innerHTML = html;
+
+    const startBtn = document.getElementById('btn-lobby-start');
+    startBtn.style.display = host ? '' : 'none';
+    startBtn.textContent = roster.length > 1 ? `Start Match · ${roster.length} players` : 'Start Match';
+  }
+
+  const escapeHtml = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  function bindLobby() {
+    const start = document.getElementById('btn-lobby-start');
+    if (!start || start.dataset.bound) return;
+    start.dataset.bound = '1';
+    start.addEventListener('click', () => {
+      if (typeof P2P === 'undefined' || !P2P.startMatch()) return;
+      SFX.click();
+    });
+    document.getElementById('btn-lobby-leave').addEventListener('click', () => {
+      showLobby(false);
+      quitMatch();
+    });
+    document.getElementById('lobby-code').addEventListener('click', () => {
+      const info = (typeof P2P !== 'undefined' && P2P.roomInfo()) || {};
+      if (!info.code || info.local) return;
+      const link = `${location.origin}${location.pathname}?game=${info.code}`;
+      if (navigator.clipboard) navigator.clipboard.writeText(link).catch(() => {});
+      Toast.show('Invite link copied — code ' + info.code);
+    });
+  }
+
+  /* What the netcode currently thinks, for diagnosing sync complaints without
+     having to guess from the outside. */
+  function netDebug() {
+    if (!online) return null;
+    const snaps = online.transport.snapshots;
+    return {
+      id: online.id, ping: online.ping,
+      x: Math.round(player.x), y: Math.round(player.y),
+      err: Math.round((online.netErr || 0) * 10) / 10,
+      players: (online.remote || []).length + 1,
+      snapshots: snaps.length,
+      history: online.history.length,
+      timeLeft: Math.round(timeLeft),
+    };
   }
 
   /* remote players, drawn from the server's snapshot */
@@ -4266,7 +4723,7 @@ const Game = (() => {
   const isOnline = () => !!online;
 
   return {
-    start, startOnline, isOnline,
+    start, startOnline, isOnline, netDebug,
     setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
     // the map, as the simulation needs to see it (see netWorld above)
     netWorld, netObjectives,

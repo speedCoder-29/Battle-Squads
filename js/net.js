@@ -125,20 +125,7 @@ const Net = (() => {
     }
     close() { if (this.ws) try { this.ws.close(); } catch (e) {} this.connected = false; }
 
-    /* Two snapshots either side of "now minus interp delay", so we can
-       render a smooth in-between frame instead of snapping 20x a second. */
-    interpolated() {
-      const target = performance.now() - INTERP_DELAY;
-      const s = this.snapshots;
-      if (s.length < 2) return s.length ? { a: s[0].data, b: s[0].data, t: 0 } : null;
-      for (let i = s.length - 1; i > 0; i--) {
-        if (s[i - 1].at <= target && s[i].at >= target) {
-          const span = s[i].at - s[i - 1].at || 1;
-          return { a: s[i - 1].data, b: s[i].data, t: (target - s[i - 1].at) / span };
-        }
-      }
-      return { a: s[s.length - 2].data, b: s[s.length - 1].data, t: 1 };
-    }
+    interpolated() { return interpolate(this.snapshots); }
 
     get status() {
       return {
@@ -165,19 +152,68 @@ const Net = (() => {
     }
   }
 
-  /* linear interpolation helper the renderer uses on snapshot pairs */
+  /* ---------- picking the pair to render between ----------
+     Two snapshots either side of "now minus a render delay", so the world
+     moves smoothly instead of snapping 20 times a second.
+
+     The delay adapts. A fixed 100ms is right for a steady stream, but a
+     browser host is not a datacentre: it generates its map, it garbage
+     collects, its tab gets throttled, and the snapshots bunch up. When the
+     buffer ran dry the renderer held on the newest frame, and then the next
+     packet dropped it back to a moment it had already drawn — every remote
+     player lurching backwards. Watching the worst recent gap and buffering
+     just behind it means a stuttering host costs a little more latency
+     instead of a visible jolt.
+
+     Shared by both transports so the socket path and the peer path can't
+     drift apart. */
+  const JITTER_WINDOW = 12;      // snapshots of history the estimate looks at
+  const MAX_DELAY = 400;         // never fall further behind than this
+  function interpolate(snaps) {
+    if (!snaps || !snaps.length) return null;
+    if (snaps.length < 2) return { a: snaps[0].data, b: snaps[0].data, t: 0 };
+
+    let worst = 0;
+    for (let i = Math.max(1, snaps.length - JITTER_WINDOW); i < snaps.length; i++) {
+      const gap = snaps[i].at - snaps[i - 1].at;
+      if (gap > worst) worst = gap;
+    }
+    const delay = Math.min(MAX_DELAY, Math.max(INTERP_DELAY, worst * 1.6));
+    const target = performance.now() - delay;
+
+    for (let i = snaps.length - 1; i > 0; i--) {
+      if (snaps[i - 1].at <= target && snaps[i].at >= target) {
+        const span = snaps[i].at - snaps[i - 1].at || 1;
+        return { a: snaps[i - 1].data, b: snaps[i].data, t: (target - snaps[i - 1].at) / span };
+      }
+    }
+    // nothing new enough yet: hold on the freshest frame rather than guessing
+    return { a: snaps[snaps.length - 2].data, b: snaps[snaps.length - 1].data, t: 1 };
+  }
+
+  /* Linear interpolation helper the renderer uses on snapshot pairs.
+
+     Driven by the *newer* snapshot, which is what decides who is in the match
+     right now. Walking the older one instead — as this used to — meant two
+     things went wrong with a changing roster: somebody who joined between the
+     two frames stayed invisible until they aged into the older snapshot, and
+     somebody who left stayed on screen, frozen at their last position, being
+     drawn and aimed at for as long as the old frame lingered in the buffer.
+     Neither is survivable once more than a couple of people are coming and
+     going. Anyone with no previous frame is simply drawn where they are. */
   function lerpAgents(a, b, t) {
-    if (!a || !b) return [];
-    const byId = {};
-    for (const ag of b.agents) byId[ag.id] = ag;
-    return a.agents.map(prev => {
-      const next = byId[prev.id];
-      if (!next) return prev;
+    if (!b) return a ? a.agents.slice() : [];
+    const prevById = {};
+    if (a) for (const ag of a.agents) prevById[ag.id] = ag;
+    const k = Math.max(0, Math.min(1, t));
+    return b.agents.map(next => {
+      const prev = prevById[next.id];
+      if (!prev) return next;             // just joined, or just respawned into view
       return {
         ...next,
-        x: prev.x + (next.x - prev.x) * t,
-        y: prev.y + (next.y - prev.y) * t,
-        angle: prev.angle + angleDelta(prev.angle, next.angle) * t,
+        x: prev.x + (next.x - prev.x) * k,
+        y: prev.y + (next.y - prev.y) * k,
+        angle: prev.angle + angleDelta(prev.angle, next.angle) * k,
       };
     });
   }
@@ -186,6 +222,6 @@ const Net = (() => {
   return {
     SERVER_URL, TICK_RATE, SEND_RATE, INTERP_DELAY,
     LocalTransport, SocketTransport,
-    open, isConfigured, serverUrl, lerpAgents,
+    open, isConfigured, serverUrl, lerpAgents, interpolate,
   };
 })();
