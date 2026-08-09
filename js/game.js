@@ -37,6 +37,9 @@ const Game = (() => {
   const MATCH_SECONDS = 8 * 60;      // time limit
   const TEAM_COLORS = ['#3d7bff', '#ff4b5c', '#4be08a', '#c46bff', '#ffa726', '#35e0ff'];
   const TEAM_NAMES  = ['Blue', 'Red', 'Green', 'Violet', 'Amber', 'Cyan'];
+  /* Colour for a team index, safe for the -1 an unclaimed vehicle carries. */
+  const NEUTRAL_INK = '#9aa3b5';
+  const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t % TEAM_COLORS.length] : NEUTRAL_INK);
   // squad setup per mode
   const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
   let nTeams = 4;
@@ -150,7 +153,7 @@ const Game = (() => {
           const rec = { name, placement: pid, ...bb, floor: '#5a5f70', landmark: true };
           landmarks.push(rec);
           buildings.push(rec);
-          furnish(name, bb);
+          furnish(name, bb, parts.rooms);
           return;
         }
       }
@@ -309,6 +312,7 @@ const Game = (() => {
   function buildMapInner() {
     obstacles = []; trenches = []; decor = []; grass = [];
     buildings = []; landmarks = []; pendingIndoorCrates = [];
+    requiredPlacements = []; pendingRoomVehicles = [];
     genReset();
     invalidateRects();
     terrain = Terrain.generate(MAP_W, MAP_H, worldSeed);
@@ -319,6 +323,7 @@ const Game = (() => {
     const area = (playW * playH) / 1e6;                  // in millions of px
 
     placeLandmarks();                                   // the big one-offs get first pick
+    placeRequiredBuildings();                           // then the ones the map must have
     placeBuildingsProcedural(Math.round(area * DENSITY.buildings));
     placeCover(Math.round(area * DENSITY.cover));
     placeGrass(Math.round(area * DENSITY.grassPatches));
@@ -463,15 +468,93 @@ const Game = (() => {
     dock:       { props: ['crate', 'barrel', 'pallet', 'ammoBox'], n: 16, loot: 6, floor: '#5a5646' },
     fortress:   { props: ['crate', 'locker', 'ammoBox'], n: 10, loot: 7, floor: '#545d66' },
     arena:      { props: ['crate', 'barrel', 'pallet'], n: 16, loot: 5, floor: '#5a5f6b' },
+    /* The table's buildings. `loot` is ignored for these — their rooms say
+       exactly what they hold — but they still want furniture and a floor. */
+    resort:     { props: ['bed', 'table', 'shelf', 'desk', 'toilet', 'crate'], n: 54, loot: 0, floor: '#6b5747' },
+    airfield:   { props: ['crate', 'pallet', 'barrel', 'ammoBox', 'tyre', 'desk'], n: 40, loot: 0, floor: '#4f5560' },
+    harbor:     { props: ['crate', 'pallet', 'barrel', 'ammoBox', 'tyre'], n: 46, loot: 0, floor: '#4a5260' },
+    campground: { props: ['crate', 'bush', 'barrel', 'pallet', 'rubble'], n: 34, loot: 0, floor: '#5c6446' },
     /* landmarks: much bigger footprints, so much more inside */
     factory:    { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre', 'rubble'], n: 46, loot: 12, floor: '#4a5260' },
     keep:       { props: ['locker', 'ammoBox', 'desk', 'table', 'crate', 'rubble'], n: 40, loot: 11, floor: '#565b6b' },
     silos:      { props: ['barrel', 'pallet', 'crate', 'ammoBox'], n: 30, loot: 9, floor: '#5a5646' },
   };
 
+  /* ---------------- rooms ----------------
+     A building that declares rooms is stocked from the sub-building table
+     instead of by the old "n crates at a random tier" rule. That is the
+     difference between knowing a kitchen is worth three crates and finding
+     out by walking in.
+
+     Everything is placed inside the room's own rectangle, so the loot is
+     where the room is rather than scattered through the footprint. */
+  /* Somewhere inside this room a crate will fit. Random darts first, because
+     scattered loot reads better than loot on a grid; a systematic sweep only
+     as the fallback, so a room the table says holds five crates holds five
+     crates even when it is a bathroom with furniture down one wall. */
+  function freeSpotIn(r, inset, spot, taken) {
+    /* Crates aren't obstacles until the map is finished, so the collision
+       probe can't see the ones already put down — without `taken`, a room
+       that falls back to the sweep drops its whole allocation on the first
+       free cell and ten crates become one. */
+    const clear = (x, y) => !genHits({ x: x - 14, y: y - 14, w: 28, h: 28 }, 4)
+      && !taken.some(t => dist2(t.x, t.y, x, y) < 34 * 34);
+    for (let tries = 0; tries < 30; tries++) {
+      const p = spot();
+      if (clear(p.x, p.y)) return p;
+    }
+    const step = 26;
+    for (let y = r.y + inset; y <= r.y + r.h - inset; y += step) {
+      for (let x = r.x + inset; x <= r.x + r.w - inset; x += step) {
+        if (clear(x, y)) return { x, y };
+      }
+    }
+    return null;      // genuinely no room in the room
+  }
+
+  function stockRooms(rooms) {
+    if (!rooms || !rooms.length) return;
+    for (const r of rooms) {
+      const spec = Structures.ROOM_LOOT[r.kind];
+      if (!spec) continue;
+      const inset = Math.min(22, r.w / 4, r.h / 4);
+      const spot = () => ({
+        x: rand(r.x + inset, r.x + r.w - inset),
+        y: rand(r.y + inset, r.y + r.h - inset),
+      });
+      const taken = [];
+      for (const [tier, count] of spec.crates || []) {
+        for (let i = 0; i < count; i++) {
+          /* Small rooms are tight — a bathroom is barely wider than the crate
+             plus its clearance — so keep trying, and probe with the crate's
+             own footprint rather than a padded one. Giving up quietly is how
+             a room ends up holding less than the table says it does. */
+          const p = freeSpotIn(r, inset, spot, taken);
+          if (!p) continue;
+          taken.push(p);
+          /* A shipped container is the one room with a roll in it: fifteen of
+             them, one gold. Everything else is exactly what the table says. */
+          let t = tier;
+          if (spec.chance && Math.random() < spec.chance.odds) t = spec.chance.tier;
+          pendingIndoorCrates.push({ x: p.x, y: p.y, tier: t, room: r.kind, needs: spec.needs });
+        }
+      }
+      for (const [vtype, count] of spec.vehicles || []) {
+        for (let i = 0; i < count; i++) {
+          const p = spot();
+          pendingRoomVehicles.push({ x: p.x, y: p.y, vtype });
+        }
+      }
+    }
+  }
+  let pendingRoomVehicles = [];
+
   /* Fill a building: furniture against the inside of the walls, loot in the
      middle where you have to commit to grabbing it. */
-  function furnish(name, bb) {
+  function furnish(name, bb, rooms) {
+    /* Rooms replace the loot roll entirely — a resort's ten bedrooms are ten
+       crates because the table says so, not because the footprint is big. */
+    if (rooms && rooms.length) stockRooms(rooms);
     const conf = FURNISH[name];
     if (!conf) return;
     const inset = 46;
@@ -492,8 +575,9 @@ const Game = (() => {
         break;
       }
     }
-    // loot crates: the reason to go inside
-    for (let i = 0; i < conf.loot; i++) {
+    // loot crates: the reason to go inside. Skipped for buildings whose rooms
+    // already say precisely what they hold.
+    for (let i = 0; i < (rooms && rooms.length ? 0 : conf.loot); i++) {
       for (let tries = 0; tries < 20; tries++) {
         const p = spot();
         const box = { x: p.x - 20, y: p.y - 20, w: 40, h: 40 };
@@ -518,6 +602,62 @@ const Game = (() => {
 
   /* Scatter buildings across the island: valid terrain, clear of each other,
      clear of the objectives, and never sliced by the river. */
+  /* ---------------- the buildings a map must have ----------------
+     The design table gives counts, not odds: five houses, one mansion, one
+     resort, and so on. Rolling for them means a map that happens to contain
+     no mansion and therefore no gold crate behind a reinforced door, which
+     makes the loot table a suggestion rather than a plan.
+
+     These are placed after the landmarks and before the procedural fill, so
+     they get the pick of the open ground, and each gets a generous number of
+     attempts because the big ones (a harbor is 1700px across) need somewhere
+     that will actually take them. */
+  function placeRequiredBuildings() {
+    /* Biggest first, for the same reason landmarks go before everything else:
+       a harbor is fifteen hundred pixels across and needs an unbroken stretch
+       of ground with no river through it. Placing the five houses first ate
+       exactly the open space it needed, and the harbor — the one building
+       holding thirty containers and both warehouses — never made it onto a
+       single map. */
+    const footprint = (name) => {
+      const parts = Structures.BUILDINGS[name](0, 0);
+      const bb = boundsOf(parts);
+      return bb.w * bb.h;
+    };
+    const order = Structures.ROOM_BUILDINGS
+      .filter(([name]) => Structures.BUILDINGS[name])
+      .map(([name, count]) => [name, count, footprint(name)])
+      .sort((a, b) => b[2] - a[2]);
+    for (const [name, count] of order) {
+      if (!Structures.BUILDINGS[name]) continue;
+      for (let made = 0; made < count;) {
+        let placedOne = false;
+        for (let tries = 0; tries < 400 && !placedOne; tries++) {
+          const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+          const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+          const parts = placeBuilding(name, x, y);
+          if (!parts.length) continue;
+          const bb = boundsOf(parts);
+          if (requiredPlacements.some(b => padOverlap(bb, b, 120))) continue;
+          if (landmarks.some(l => padOverlap(bb, l, 200))) continue;
+          requiredPlacements.push(bb);
+          const pid = 'r' + requiredPlacements.length;
+          for (const part of parts) { part.placement = pid; genAdd(part); }
+          obstacles.push(...parts);
+          invalidateRects();
+          const conf = FURNISH[name];
+          buildings.push({ name, placement: pid, ...bb, floor: conf ? conf.floor : null });
+          furnish(name, bb, parts.rooms);
+          placedOne = true;
+        }
+        // an island can genuinely run out of room; take what fitted
+        if (!placedOne) break;
+        made++;
+      }
+    }
+  }
+  let requiredPlacements = [];
+
   function placeBuildingsProcedural(count) {
     const placed = [];
     const seen = {};
@@ -544,6 +684,7 @@ const Game = (() => {
       if (!parts.length) continue;
       const bb = boundsOf(parts);
       if (placed.some(b => padOverlap(bb, b, 130))) continue;          // breathing room
+      if (requiredPlacements.some(b => padOverlap(bb, b, 130))) continue;
       if (landmarks.some(l => padOverlap(bb, l, 200))) continue;       // don't crowd a landmark
       placed.push(bb);
       seen[name] = (seen[name] || 0) + 1;
@@ -553,7 +694,7 @@ const Game = (() => {
       invalidateRects();
       const conf = FURNISH[name];
       buildings.push({ name, placement: pid, ...bb, floor: conf ? conf.floor : null });
-      furnish(name, bb);
+      furnish(name, bb, parts.rooms);
     }
   }
 
@@ -682,6 +823,8 @@ const Game = (() => {
       klass: 'infantry',                                    // see Combat.TARGETS
       hp: Combat.maxHpFor('infantry'), maxHp: Combat.maxHpFor('infantry'),
       vest: 0, helmet: 0, bag: 0,                           // armour tiers 0-3 (vest, helmet, bag)
+      // the one passive you deploy with; bots run bare (js/perks.js)
+      perk: isPlayer ? ((DB.getProfile() || {}).perk || Perks.DEFAULT) : Perks.DEFAULT,
       weaponId: w.id, weapon: w,
       cls, tool: cls.tool, skin,                            // class kit + weapon skin
       diff: BotAI.individual(botLevel),                     // aim / survival / teamwork
@@ -805,7 +948,7 @@ const Game = (() => {
       tokens: [],
     };
     const kit = Items.CONSUMABLES[player.cls.consumable];
-    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls, player.bag) };
+    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls, carryTier(player)) };
     // everyone also deploys with a couple of bandages so you're never stranded
     if (kit && kit.cat !== 'heal') player.inv.heal = { id: 'bandage', n: 2 };
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
@@ -988,7 +1131,9 @@ const Game = (() => {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
     // online our magazine belongs to the host, so ask rather than assume
     if (online && a.isPlayer) online.transport.send('reload', {});
-    a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline).reload;   // Adren%/2 reload speedup
+    // Adren%/2 reload speedup, and a quarter off again for Quick Hands
+    a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline, a.perk).reload
+      * (Perks.has(a, 'quickhands') ? 0.75 : 1);
     a.burstLeft = 0;
     if (isYours(a)) { SFX.reload(); updateWeaponHud(); }
   }
@@ -1061,7 +1206,7 @@ const Game = (() => {
     a.bloom = Math.min(w.bloomMax, a.bloom + w.recoilKick);
     spawnFx(a.x + Math.cos(a.angle) * a.r, a.y + Math.sin(a.angle) * a.r, '#ffd36a', pellets > 1 ? 5 : 3);
     // a suppressor really does keep you quiet: bots only "hear" loud shots
-    if (!w.audio || w.audio > 0.5) alertNearbyBots(a);
+    if ((!w.audio || w.audio > 0.5) && !Perks.has(a, 'ghost')) alertNearbyBots(a);
     if (isYours(a)) { SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud(); }
   }
 
@@ -1183,13 +1328,17 @@ const Game = (() => {
     if (!kit) return;
     const slot = player.inv[kit.cat];
     if (!slot || slot.id !== player.cls.consumable) return;
-    slot.n = Math.max(slot.n || 0, Classes.startFor(player.cls, player.bag));
+    slot.n = Math.max(slot.n || 0, Classes.startFor(player.cls, carryTier(player)));
   }
+
+  /* How much you can hold, as a bag tier. A Mule counts as wearing one bag
+     better than they are — including no bag at all, which becomes a T1. */
+  const carryTier = (a) => Math.min(3, (a.bag || 0) + (Perks.has(a, 'mule') ? 1 : 0));
 
   function addItem(cat, id, n, at) {
     const slot = player.inv[cat];
     if (!slot) return 0;
-    const cap = Classes.limitFor(player.cls, id, player.bag);
+    const cap = Classes.limitFor(player.cls, id, carryTier(player));
     const where = at || player;
 
     // a different item in this slot? put the old one on the ground, don't bin it
@@ -1241,7 +1390,7 @@ const Game = (() => {
     if (!best) return false;
     const it = Items.CONSUMABLES[best.id];
     const slot = player.inv[best.cat];
-    const cap = Classes.limitFor(player.cls, best.id, player.bag);
+    const cap = Classes.limitFor(player.cls, best.id, carryTier(player));
     // already full of this exact item? leave it where it is
     if (slot && slot.id === best.id && slot.n >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
     drops.splice(bi, 1);
@@ -1271,6 +1420,18 @@ const Game = (() => {
       return;
     }
     if (player.toolCd > 0) return;
+    /* Online the room swings for us. It knows our class, so it knows the tool,
+       its reach and what it can breach — and it is the only place that can see
+       the people we're swinging at, or agree that the wall we just cut is gone.
+       Swinging locally as well would break cover only on our own screen and
+       then have the room push us back out of the hole. */
+    if (online) {
+      online.transport.send('melee', {});
+      player.toolCd = player.tool.cooldown;      // local rate limit, so the arc animates once
+      player.swingT = 0.18;
+      SFX.click();
+      return;
+    }
     swingTool(player);
   }
 
@@ -1429,6 +1590,7 @@ const Game = (() => {
   function netWorld() {
     return obstacles.map(o => {
       const bal = Structures.ballistics(o);
+      const k = kindOf(o);
       return {
         id: o.nid, x: o.x, y: o.y, w: o.w, h: o.h,
         solid: Structures.blocksMove(o),
@@ -1437,21 +1599,51 @@ const Game = (() => {
         // the room needs to know which rects can be opened, so it can let
         // someone walk through one instead of hauling them back into it
         door: Structures.isDoor(o),
+        /* What this piece does beyond being in the way, looked up here so the
+           room never has to know the wall table. Barbed wire slows and cuts;
+           a barrel goes off when it comes apart. Without these the room saw a
+           rect you could walk through and nothing else, so online the wire was
+           a decal and the barrels were crates. */
+        slow: k.slow || 0, dps: k.dps || 0,
+        explodes: k.explodes || null,
       };
     });
   }
+  /* Trenches are dug during the match rather than generated, so this is
+     normally empty at hand-over — it exists so a host that reloads the world
+     mid-match doesn't fill in everyone's cover. */
+  const netTrenches = () =>
+    trenches.map(t => ({ x: t.x, y: t.y, r: t.r, dodge: Structures.WALL_TYPES.trench.dodge }));
   /* capture points, in generation order — the sim reports them back by index */
   const netObjectives = () => objectives.map(o => ({ name: o.name, x: o.x, y: o.y, r: o.r }));
 
   /* the host said this one came down — take it down here too */
   function netDestroyWall(id) {
     const s = obstacles.find(o => o.nid === id);
-    if (s) destroyStructure(s);
+    if (s) destroyStructure(s, true);
+  }
+  /* The room's blast, drawn where the room put it. */
+  function netBoom(x, y, r) {
+    spawnFx(x, y, '#ff9d3b', 22);
+    // only audible if it was near enough to matter — r is the blast radius
+    if (player && dist2(player.x, player.y, x, y) < (r + 400) ** 2) SFX.kill();
+  }
+  /* Somebody dug in. Same circle on every screen, because the room is rolling
+     a dodge against it. */
+  function netTrench(e) {
+    if (trenches.some(t => t.x === e.x && t.y === e.y && t.r === e.r)) return;
+    trenches.push({ x: e.x, y: e.y, r: e.r });
+    spawnFx(e.x, e.y, '#b08a5a', 10);
   }
 
   /* A tool can only work a wall its Structure Pierce out-rates, unless it has
      an explicit clearing effect for that type (bayonet→wire, spade→sandbags). */
-  const canBreach = (t, s) => Combat.canDamageStructure(s, { kind: 'melee', pierce: t.pierce, clears: t.clears });
+  /* A Breacher's tool out-rates one more rung of the toughness ladder than it
+     otherwise would — the difference between bouncing off a metal wall and
+     opening it. */
+  const canBreach = (t, s, who) => Combat.canDamageStructure(s, {
+    kind: 'melee', pierce: t.pierce + (Perks.has(who, 'breacher') ? 1 : 0), clears: t.clears,
+  });
   function toolStructureDamage(t, s) {
     if (t.clears === s.type) return s.maxHp;             // clearing tools cut straight through
     return t.structure * ((t.vs && t.vs[s.type]) || 1);
@@ -1464,21 +1656,28 @@ const Game = (() => {
       const x = a.x + Math.cos(a.angle) * d, y = a.y + Math.sin(a.angle) * d;
       const s = rects.find(r => inRect(x, y, r));
       if (!s || seen.includes(s) || s === tooTough) continue;
-      if (!canBreach(t, s)) { tooTough = s; continue; }
+      if (!canBreach(t, s, a)) { tooTough = s; continue; }
       seen.push(s);
-      damageStructure(s, toolStructureDamage(t, s), x, y);
+      damageStructure(s, toolStructureDamage(t, s), x, y, a);
     }
     if (!seen.length && tooTough && a.isPlayer) {
       hudMsg(`${t.name} can't breach ${kindOf(tooTough).name} (toughness ${tooTough.toughness})`);
     }
     return { hit: seen.length, blocked: !!tooTough };
   }
-  function damageStructure(s, dmg, hx, hy) {
-    s.hp -= dmg;
+  function damageStructure(s, dmg, hx, hy, who) {
+    s.hp -= dmg * (Perks.has(who, 'breacher') ? 2 : 1);
     spawnFx(hx === undefined ? s.x + s.w / 2 : hx, hy === undefined ? s.y + s.h / 2 : hy, '#cfd8ee', 5);
     if (s.hp <= 0) destroyStructure(s);
   }
-  function destroyStructure(s) {
+  /* `echo` = the room already decided this one and we are only catching up.
+     Everything a wall does on the way out — spilling loot, cooking off, taking
+     the barrels beside it with it — is the room's to run when online, and it
+     has already run it: the damage is in the snapshot and the fireball arrives
+     as its own event. Doing it again here would take the health off a second
+     time on our own screen and destroy a neighbouring barrel the room still
+     believes in. */
+  function destroyStructure(s, echo) {
     navDirty = true;                 // a hole in a wall is a new route
     const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
     const k = kindOf(s);
@@ -1486,6 +1685,7 @@ const Game = (() => {
     invalidateRects();
     if (s.dp) { const i = deployables.indexOf(s.dp); if (i >= 0) deployables.splice(i, 1); return; }
     const i = obstacles.indexOf(s); if (i >= 0) obstacles.splice(i, 1);
+    if (echo) return;
 
     // survev-style props do something on the way out
     if (k.drops) spillLoot(cx, cy, k.drops);
@@ -1546,7 +1746,8 @@ const Game = (() => {
   /* Bushes hide you the way the ghillie suit does, but for anyone: stand still
      inside one and bots lose you. */
   function inConcealment(a) {
-    if (a.stillT === undefined || a.stillT < 0.35) return false;
+    // a Ghost doesn't have to stop to disappear into a bush
+    if (!Perks.has(a, 'ghost') && (a.stillT === undefined || a.stillT < 0.35)) return false;
     const arr = gridAt(bulletIndex(), a.x, a.y);
     if (!arr) return false;
     return arr.some(o => kindOf(o).conceals && inRect(a.x, a.y, o));
@@ -1577,8 +1778,14 @@ const Game = (() => {
 
   /* Gunner: dig in — a trench halves incoming damage while you're in it. */
   function digTrench(a) {
-    if (trenches.length > 14) trenches.shift();
     if (trenches.some(t => dist2(t.x, t.y, a.x, a.y) < 40 * 40)) return;
+    /* Online the room owns the hole, because the room is the thing rolling the
+       dodge for anyone standing in it. Ask for it and draw it when the event
+       comes back, rather than digging one only we can see. The offline cap
+       doesn't apply: the room keeps its own, and dropping the oldest here
+       would take away cover the room still honours. */
+    if (online) { online.transport.send('dig', { r: 48 }); return; }
+    if (trenches.length > 14) trenches.shift();
     trenches.push({ x: a.x, y: a.y, r: 48 });
     spawnFx(a.x, a.y, '#b08a5a', 8);
     if (a.isPlayer) hudMsg('Trench dug — take cover');
@@ -1695,9 +1902,14 @@ const Game = (() => {
     const v = spawnVehicle(player.team, t, p.x, p.y);
     hudMsg(`${vehicleDef(v).name} called in — press E to get in`); SFX.win();
   }
+  /* `team` of -1 parks it unclaimed: a garage jeep or one of the four in a
+     camp's car park belongs to whoever reaches it first, and until then it is
+     hostile hardware to everybody — anyone can shoot it, anyone can take it. */
   function spawnVehicle(team, vtype, x, y) {
     const conf = VEHICLES[vtype] || VEHICLES.jeep;
-    const v = makeAgent(team, false, conf.weapon);
+    const v = makeAgent(Math.max(0, team), false, conf.weapon);
+    // parked, not patrolling: the squad AI leaves an unclaimed hull alone
+    if (team < 0) { v.team = -1; v.neutral = true; v.aiHold = Infinity; }
     const hp = Combat.maxHpFor(conf.klass);
     v.isVehicle = true; v.vtype = conf.vtype; v.klass = conf.klass;
     v.maxHp = hp; v.hp = hp; v.r = conf.r; v.vspeed = conf.speed;
@@ -1716,7 +1928,9 @@ const Game = (() => {
   function nearestRide(x, y, range) {
     let best = null, bd = range * range;
     for (const a of agents) {
-      if (!a.isVehicle || !a.alive || a.team !== player.team || a.driver) continue;
+      if (!a.isVehicle || !a.alive || a.driver) continue;
+      // your squad's, or one nobody has claimed yet
+      if (!a.neutral && a.team !== player.team) continue;
       const d = dist2(x, y, a.x, a.y);
       if (d < bd) { bd = d; best = a; }
     }
@@ -1724,6 +1938,8 @@ const Game = (() => {
   }
 
   function boardVehicle(v) {
+    // getting in claims an unclaimed hull for your squad
+    if (v.neutral) { v.neutral = false; v.team = player.team; v.aiHold = 0; }
     player.riding = v; v.driver = player;
     v.hullAngle = v.angle;
     player.x = v.x; player.y = v.y;
@@ -1861,8 +2077,16 @@ const Game = (() => {
     // is final rather than trusting where they were put.
     for (const c of pendingIndoorCrates) {
       if (pointInObstacle(c.x, c.y)) continue;
-      crates.push({ x: c.x, y: c.y, tier: c.tier, opened: false, indoors: true });
+      crates.push({ x: c.x, y: c.y, tier: c.tier, opened: false, indoors: true, room: c.room, needs: c.needs });
     }
+    /* Garages and car parks come with hulls in them. They belong to nobody
+       until someone climbs in, which is what makes a camp's parking lot worth
+       crossing the map for. */
+    for (const v of pendingRoomVehicles) {
+      if (pointInObstacle(v.x, v.y)) continue;
+      spawnVehicle(-1, v.vtype, v.x, v.y);
+    }
+    pendingRoomVehicles = [];
     for (let i = 0; i < n; i++) {
       let x, y, tries = 0;
       do { x = rand(200, MAP_W - 200); y = rand(200, MAP_H - 200); tries++; }
@@ -1871,9 +2095,18 @@ const Game = (() => {
     }
   }
   function openCrate(c) {
+    /* Some crates want a perk. The pool's silver sits at the bottom of the
+       water, so only a Diver gets it — the crate stays shut for everyone else
+       rather than quietly not existing. */
+    if (c.needs && !Perks.has(player, c.needs)) {
+      hudMsg(`Needs the ${Perks.byId(c.needs).name} perk`);
+      SFX.click();
+      return;
+    }
     c.opened = true;
-    const entry = Items.rollLoot(c.tier);
-    grantLoot(entry);
+    grantLoot(Items.rollLoot(c.tier));
+    // a Scavenger finds the thing at the bottom of the box
+    if (Perks.has(player, 'scavenger')) grantLoot(Items.rollLoot(c.tier));
     SFX.reward();
   }
   function grantLoot(entry) {
@@ -2017,19 +2250,45 @@ const Game = (() => {
   }
 
   /* barbed wire: slows and cuts anyone standing in it (damage applied in chunks) */
-  function wireAt(a, dt) {
+  /* What the ground you are standing on does to you, as a plain lookup with no
+     side effects — the prediction path needs to ask this about a position that
+     isn't anybody's yet (see predictedPosition), and the room asks the same
+     question of its own copy of the map (RoomSim hazardAt).
+
+     Indexed rather than swept. This used to walk all ~1700 obstacles for every
+     agent every frame; with a full lobby of bots that is tens of thousands of
+     rect tests a frame, spent almost entirely on walls nowhere near anyone.
+
+     Guarded per field, too: only wire declares `slow`, so a Math.min against a
+     bush's undefined turned the whole thing into NaN and quietly cancelled the
+     slow of any wire you were standing in at the same time. */
+  function hazardAt(x, y) {
+    const arr = gridAt(bulletIndex(), x, y);
+    if (!arr) return null;
     let slow = 1, dps = 0;
-    for (const o of obstacles) {
-      if (isSolid(o) || !inRect(a.x, a.y, o)) continue;
+    for (const o of arr) {
+      if (isSolid(o) || !inRect(x, y, o)) continue;
       const k = kindOf(o);
-      slow = Math.min(slow, k.slow); dps += k.dps;
+      if (k.slow) slow = Math.min(slow, k.slow);
+      if (k.dps) dps += k.dps;
     }
-    if (dps > 0) {
-      a.wireAcc = (a.wireAcc || 0) + dps * dt;
+    return slow < 1 || dps > 0 ? { slow, dps } : null;
+  }
+  /* barbed wire: slows and cuts anyone standing in it (damage applied in chunks) */
+  function wireAt(a, dt) {
+    const hz = hazardAt(a.x, a.y);
+    if (!hz) return 1;
+    /* Online the room is the one that cuts you — it runs this same wire against
+       the same map, and its number is the one the snapshot carries. Applying it
+       here as well would take the HP off twice on our own screen and then have
+       it corrected back, which reads as flickering health. The slow we do keep:
+       both sides predict it, which is what makes it safe to. */
+    if (!online && hz.dps > 0) {
+      a.wireAcc = (a.wireAcc || 0) + hz.dps * dt;
       // environmental: no hit-zone roll, no armour — the wire just cuts you
       if (a.wireAcc >= 4) { applyDamage(a, a.wireAcc, null, 'true'); a.wireAcc = 0; }
     }
-    return slow;
+    return hz.slow;
   }
   function updateSmokes(dt) {
     for (let i = smokes.length - 1; i >= 0; i--) { smokes[i].life -= dt; if (smokes[i].life <= 0) smokes.splice(i, 1); }
@@ -2542,11 +2801,14 @@ const Game = (() => {
         let base;
         if (online) {
           /* Online we predict with the room's own formula (roomsim.js
-             moveSpeedFor) rather than our richer local one. The extra terms
-             below — channelling, a raised gadget, barbed wire — are states the
-             room has never been told about, so applying them here only makes
-             our prediction wrong and gets us yanked back. */
-          base = RoomSim.moveSpeedFor(player, input.ads);
+             moveSpeedFor) rather than our richer local one. The terms it leaves
+             out — channelling, a raised gadget — are states the room has never
+             been told about, so applying them here only makes our prediction
+             wrong and gets us yanked back.
+             Barbed wire used to be in that list, which is why online you walked
+             through it as if it were paint. The room runs it now, so we predict
+             it too: both sides read the same rect off the same map. */
+          base = RoomSim.moveSpeedFor(player, input.ads) * (player.wireSlow || 1);
         } else {
           const adr = Combat.adrenaline(player.adrenaline);
           base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
@@ -2562,7 +2824,7 @@ const Game = (() => {
         // terrain applies either way: the room is handed the same lookup, so
         // both sides slow down in the same river
         const surf = terrain ? Terrain.surfaceAt(terrain, player.x, player.y) : null;
-        const spd = base * (surf ? surf.speed : 1) * dt;
+        const spd = base * RoomSim.surfaceSpeedFor(player, surf) * dt;
         const px = player.x, py = player.y;
         player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
         player.vx = (player.x - px) / dt; player.vy = (player.y - py) / dt;
@@ -2659,7 +2921,7 @@ const Game = (() => {
                special — so the tank behind them no longer gets the bonus. */
             if (b.antiTank && !a.isVehicle) {
               applyDamage(a, Weapons.ANTI_TANK_PASSTHROUGH, b.owner, 'normal');
-              spawnFx(b.x, b.y, TEAM_COLORS[a.team], 6);
+              spawnFx(b.x, b.y, teamInk(a.team), 6);
               b.antiTank = false; b.dmgType = 'normal';
               continue;                      // still flying
             }
@@ -2672,7 +2934,7 @@ const Game = (() => {
               // armour is what this round is for: double against a hull
               const at = b.antiTank && a.isVehicle ? 2 : 1;
               applyDamage(a, b.dmg * mult * at, b.owner, b.dmgType);
-              spawnFx(b.x, b.y, TEAM_COLORS[a.team], 4);
+              spawnFx(b.x, b.y, teamInk(a.team), 4);
             }
             dead = true; break;
           }
@@ -2902,7 +3164,7 @@ const Game = (() => {
       a.hp = 0; a.alive = false;
       a.deaths++; a.streak = 0;
       a.standT = 0;
-      spawnFx(a.x, a.y, TEAM_COLORS[a.team], 14);
+      spawnFx(a.x, a.y, teamInk(a.team), 14);
       if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
       pushKill(owner, a, hit.zone);
       if (mode === 'domination') a.respawnTimer = 3;
@@ -3241,7 +3503,7 @@ const Game = (() => {
     for (const a of agents) {
       if (!a.alive) {
         if (mode === 'domination' && !a.isVehicle) { // respawn marker
-          ctx.globalAlpha = 0.25; ctx.fillStyle = TEAM_COLORS[a.team];
+          ctx.globalAlpha = 0.25; ctx.fillStyle = teamInk(a.team);
           ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
         }
         continue;
@@ -3282,7 +3544,7 @@ const Game = (() => {
       ctx.beginPath(); ctx.arc(bx, by, 2.5, 0, Math.PI * 2); ctx.fill();
       // body
       ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
-      ctx.fillStyle = TEAM_COLORS[a.team]; ctx.fill();
+      ctx.fillStyle = teamInk(a.team); ctx.fill();
       ctx.lineWidth = a.isPlayer ? 4 : 2;
       ctx.strokeStyle = a.isPlayer ? '#fff' : 'rgba(0,0,0,0.4)'; ctx.stroke();
       // player glow ring
@@ -3784,7 +4046,7 @@ const Game = (() => {
     }
   }
   function drawVehicle(a) {
-    const col = TEAM_COLORS[a.team];
+    const col = teamInk(a.team);
     const def = vehicleDef(a);
     // hull points where it's driving, turret where it's aiming — so you can
     // read a vehicle's heading and its threat separately
@@ -3886,7 +4148,7 @@ const Game = (() => {
     y -= HUD.rowH;
 
     // name, gun and the way out
-    ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = TEAM_COLORS[v.team];
+    ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = teamInk(v.team);
     const title = `${def.icon} ${def.name}`;
     ctx.fillText(title, x, y);
     const tw = ctx.measureText(title).width;
@@ -4134,7 +4396,7 @@ const Game = (() => {
       for (const a of online.remote) {
         if (!a.alive || a.team !== player.team) continue;
         ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, 2, 0, Math.PI * 2);
-        ctx.fillStyle = TEAM_COLORS[a.team]; ctx.fill();
+        ctx.fillStyle = teamInk(a.team); ctx.fill();
       }
     }
     // your squad's pings
@@ -4423,7 +4685,8 @@ const Game = (() => {
       P2P.provideWorld({
         walls: netWorld(),
         objectives: netObjectives(),
-        surface: (x, y) => (terrain ? Terrain.surfaceAt(terrain, x, y).speed : 1),
+        trenches: netTrenches(),
+        surface: (x, y) => (terrain ? Terrain.surfaceAt(terrain, x, y) : null),
       });
     }
   }
@@ -4505,6 +4768,9 @@ const Game = (() => {
       // people already here have opened
       for (const id of msg.downed || []) netDestroyWall(id);
       for (const id of msg.openDoors || []) netSetDoor(id, true);
+      // and the cover people have dug, so we can see why they're hard to hit
+      trenches.length = 0;
+      for (const t of msg.trenches || []) trenches.push({ x: t.x, y: t.y, r: t.r });
       // last, so the lobby is drawn against the host's mode and squad count
       // rather than whatever we had picked on our own menu
       showLobby(online.phase === 'lobby');
@@ -4532,6 +4798,12 @@ const Game = (() => {
         else if (e.e === 'emote') addEmote(e.byId === online.id ? 'me' : e.byId, e.id);
         else if (e.e === 'wall') netDestroyWall(e.id);
         else if (e.e === 'door') netSetDoor(e.id, e.open);
+        /* A blast the room worked out. Only the picture arrives — the damage
+           and the cover it tore up are already in the snapshot — so this draws
+           it and nothing else. Without it a barrel going off next to you took
+           half your health with no fireball to explain why. */
+        else if (e.e === 'boom') netBoom(e.x, e.y, e.r);
+        else if (e.e === 'trench') netTrench(e);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
       }
@@ -4666,11 +4938,30 @@ const Game = (() => {
      own inputs across that window — from when the host sampled us up to this
      frame — reconstructs the position the room is about to agree with, instead
      of the one it has already moved on from. */
+  /* The room advances everyone in fixed 1/60s steps and pushes them out of the
+     walls after each one. Replaying in one jump per input instead was the last
+     big source of rubber-banding, and the worst of it was against a wall.
+
+     Walk diagonally into a building: the room slides you along the face, so the
+     authoritative position stops advancing into it. The replay, which knew
+     nothing about walls, kept adding the full diagonal for the whole
+     round-trip — so the target it produced was tens of pixels *inside* the
+     wall. That is well under NET_SNAP (400px), so it never resolved as a jump;
+     instead reconcile() eased toward the wall interior every frame and
+     resolveObstacles() shoved back out every frame, all match. Measured with a
+     100ms round trip and a player leaning into a corner: a standing error of
+     ~35px that never converged, which is the shudder people were reporting.
+
+     Stepping the replay the way the room steps costs nine collision queries per
+     frame for a 150ms window, and produces the position the room is actually
+     going to report. */
+  const REPLAY_STEP = 1 / 60;
   function predictedPosition(snapAt, ax, ay) {
     const start = snapAt - online.ping / 2;      // when the host sampled us
     const nowMs = performance.now();
     const h = online.history;
-    let x = ax, y = ay;
+    // a stand-in body so resolveObstacles can push it around without touching us
+    const probe = { x: ax, y: ay, r: BODY_R };
     for (let i = 0; i < h.length; i++) {
       const from = Math.max(h[i].at, start);
       const to = (i + 1 < h.length ? h[i + 1].at : nowMs);
@@ -4679,13 +4970,22 @@ const Game = (() => {
       const dy = (h[i].down ? 1 : 0) - (h[i].up ? 1 : 0);
       const m = Math.hypot(dx, dy);
       if (!m) continue;
-      // the room's own movement model, terrain and all — see roomsim.moveSpeedFor
-      const surf = terrain ? Terrain.surfaceAt(terrain, x, y).speed : 1;
-      const spd = RoomSim.moveSpeedFor(player, h[i].ads) * surf * ((to - from) / 1000);
-      x = clamp(x + (dx / m) * spd, 16, MAP_W - 16);
-      y = clamp(y + (dy / m) * spd, 16, MAP_H - 16);
+      let left = (to - from) / 1000;
+      while (left > 1e-6) {
+        const step = Math.min(left, REPLAY_STEP);
+        left -= step;
+        // the room's own movement model, terrain and wire and all — see
+        // roomsim.moveSpeedFor, Room.surfaceAt and Room.hazardAt
+        const surf = terrain ? Terrain.surfaceAt(terrain, probe.x, probe.y) : null;
+        const hz = hazardAt(probe.x, probe.y);
+        const spd = RoomSim.moveSpeedFor(player, h[i].ads)
+          * RoomSim.surfaceSpeedFor(player, surf) * (hz ? hz.slow : 1) * step;
+        probe.x = clamp(probe.x + (dx / m) * spd, BODY_R, MAP_W - BODY_R);
+        probe.y = clamp(probe.y + (dy / m) * spd, BODY_R, MAP_H - BODY_R);
+        resolveObstacles(probe);
+      }
     }
-    return { x, y };
+    return { x: probe.x, y: probe.y };
   }
 
   function reconcile(dt) {
@@ -4891,8 +5191,27 @@ const Game = (() => {
       return fired;
     },
     bullets: () => bullets.length,
+    // only the rounds on a timer, so a count isn't polluted by everyone else's
+    fuzedBullets: () => bullets.filter(b => b.fuze).length,
     // the exact number the movement code is using this frame
     moveSpeed: () => (player ? RoomSim.moveSpeedFor(player, false) : 0),
+    /* What the generator actually built: which buildings, and what each kind
+       of room ended up holding. The loot table is a set of counts, and counts
+       are only worth writing down if you can check them. */
+    world() {
+      const byName = {};
+      for (const b of buildings) byName[b.name] = (byName[b.name] || 0) + 1;
+      const byRoom = {};
+      for (const c of crates) {
+        if (!c.room) continue;
+        (byRoom[c.room] = byRoom[c.room] || {})[c.tier] = (byRoom[c.room][c.tier] || 0) + 1;
+      }
+      return {
+        buildings: byName, roomCrates: byRoom,
+        crates: crates.length,
+        neutralVehicles: agents.filter(a => a.isVehicle && a.neutral).length,
+      };
+    },
   };
 
   return {

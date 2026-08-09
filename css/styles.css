@@ -612,6 +612,14 @@ input, select { font-family: inherit; }
   background: rgba(255,255,255,0.12); color: var(--muted); }
 .lobby__foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 18px; }
 
+/* ---- perk cards ----
+   Same chip as an attachment, plus a line of flavour, because a perk is
+   chosen once and lived with rather than swapped per weapon. */
+.gs-perk { position: relative; }
+.gs-perk-blurb { display: block; margin-top: 5px; font-size: 11px; font-style: italic;
+  color: var(--muted); line-height: 1.35; }
+.gs-perk.is-on .gs-perk-blurb { color: var(--text); }
+
 /* ---- keybinds panel ----
    A dense two-column list: the action on the left, its one or two keys on the
    right as buttons you click to rebind. Scrolls, because there are 17 actions

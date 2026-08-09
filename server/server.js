@@ -201,10 +201,23 @@ wss.on('connection', (ws) => {
       if (msg.fire) i.fireEdge = true;
       if (typeof msg.angle === 'number') i.angle = msg.angle;
     } else if (msg.t === 'reload') {
+      /* The magazine fills when the reload *ends* — room.step() does that.
+         Filling it here meant the ammo counter, which the client reads straight
+         out of the snapshot, snapped to full immediately and then refused to
+         fire for two seconds. The browser host has always done it the right way
+         round (see handleFromPeer in js/p2p.js); this is the same code. */
       if (now() >= me.reloadUntil && me.ammo < me.weapon.mag) {
         me.reloadUntil = now() + me.weapon.reloadMs;
-        me.ammo = me.weapon.mag;
+        me.reloading = true;
       }
+    } else if (msg.t === 'door') {
+      // doors were only ever wired up on the browser host, so on the dedicated
+      // server everyone walked into one they had opened on their own screen
+      room.toggleDoor(me, msg.id, msg.open);
+    } else if (msg.t === 'melee') {
+      room.melee(me);
+    } else if (msg.t === 'dig') {
+      room.dig(me, msg.r, msg.dodge);
     } else if (msg.t === 'mark') {
       room.mark(me, msg.x, msg.y, msg.kind);        // team-only, and rate limited
     } else if (msg.t === 'emote') {

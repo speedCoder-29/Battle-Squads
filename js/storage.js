@@ -37,6 +37,7 @@ const DB = (() => {
       weaponSkins: {},           // weaponId -> skin id
       attachments: {},           // weaponId -> [attachment name]
       ammo: {},                  // weaponId -> specialized ammo name
+      perk: 'none',              // the one passive you deploy with (js/perks.js)
       // missions (regenerated daily)
       missions: null,
       missionsDate: null,

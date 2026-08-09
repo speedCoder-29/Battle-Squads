@@ -56,6 +56,17 @@
   const SCORE_CAP = 1000;              // domination win score, as offline
   const COMMS_GAP = 550;               // ms between one player's pings/emotes
   const DOOR_REACH = 110;              // how close you must be to work a door
+  const MAX_TRENCHES = 200;            // a dug map, not a moonscape
+  // Structures.WALL_TYPES.trench.dodge — the room doesn't load the wall table,
+  // so a trench it digs itself carries the figure the client draws it with
+  const TRENCH_DODGE = 0.5;
+  /* Barbed wire cuts in chunks rather than a trickle, matching wireAt() in
+     game.js: whole numbers of damage arriving occasionally read as being hurt,
+     where 0.03 HP a tick reads as nothing at all. */
+  const WIRE_CHUNK = 4;
+  /* A barrel sets off its neighbours a beat later, so a row of them goes up as
+     a run of blasts instead of one lump. */
+  const CHAIN_MIN = 120, CHAIN_JITTER = 180;
 
   /* Ballistics, mirroring game.js. These belong with the simulation rather
      than the weapon table, and now that the sim is shared they live here
@@ -70,6 +81,7 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
   const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  const angleDiff = (x, y) => Math.atan2(Math.sin(x - y), Math.cos(x - y));
 
   /* ---------- one movement model ----------
      The client predicts its own movement and the room decides it for real, so
@@ -89,12 +101,27 @@
     // a guest never constructs a Room, so this can be the first thing in the
     // file anyone touches — resolve the shared tables here too
     deps();
-    let spd = p.weapon.moveSpeed * p.cls.speed * C.armorSpeed(p) * C.adrenaline(p.adrenaline).speed;
+    let spd = p.weapon.moveSpeed * p.cls.speed * C.armorSpeed(p)
+      * C.adrenaline(p.adrenaline, p.perk).speed;
     if (ads) {
       spd *= 0.55;
       if (typeof p.weapon.scopeMoveMult === 'number') spd *= p.weapon.scopeMoveMult;
     }
     return spd;
+  }
+
+  /* What the ground under you does to that speed. Terrain used to be a bare
+     multiplier both sides looked up independently, which was fine while it
+     depended only on the position — but a Diver is not slowed by water, and
+     that makes it depend on *who is standing there*. One function, given the
+     surface and the player, so the client and the room can't disagree. */
+  function surfaceSpeedFor(p, surf) {
+    if (!surf) return 1;
+    const speed = typeof surf === 'number' ? surf : surf.speed;
+    if (typeof speed !== 'number' || !(speed > 0)) return 1;
+    // a diver swims as fast as they walk; a river is no longer a wall
+    if (surf.swim && p && p.perk === 'diver') return 1;
+    return speed;
   }
 
   /* ---------- the world the match is fought in ----------
@@ -162,6 +189,8 @@
       this.objectives = [];              // domination capture points
       this.scores = new Array(this.teams).fill(0);   // domination score per team
       this.bullets = [];
+      this.trenches = [];                // dug cover: {x, y, r, dodge}
+      this.chains = [];                  // barrels waiting their turn to go off
       this.events = [];                  // things clients should hear about
       this.timeLeft = MATCH_SECONDS;     // see the accessor below — this sets endsAt
       /* Rooms open in a lobby and only start fighting when whoever is hosting
@@ -197,12 +226,14 @@
     }
     set timeLeft(seconds) { this.endsAt = now() + Math.max(0, seconds) * 1000; }
 
-    /* fn(x, y) -> speed multiplier, or null for flat ground everywhere */
+    /* fn(x, y) -> the surface there: either a bare speed multiplier or the
+       full { speed, swim } that Terrain reports. The full object is what lets
+       a Diver ignore water — a number alone can't say whether the slowdown is
+       mud or a river. Null means flat ground everywhere. */
     setSurface(fn) { this.surface = typeof fn === 'function' ? fn : null; }
     surfaceAt(x, y) {
-      if (!this.surface) return 1;
-      const s = this.surface(x, y);
-      return typeof s === 'number' && s > 0 ? s : 1;
+      if (!this.surface) return null;
+      return this.surface(x, y);
     }
 
     get full() { return this.players.size >= this.capacity; }
@@ -225,10 +256,28 @@
         hp: r.hp > 0 ? r.hp : Infinity,          // Infinity = indestructible
         type: r.type, toughness: r.toughness || 1,
         dead: false,
+        /* Not every wall is something you bump into. A few act on whoever is
+           standing in them, or on everyone nearby when they come apart, and
+           the room has to own that the same way it owns a wall stopping you —
+           otherwise barbed wire is scenery and a barrel is a crate.
+
+           These arrive already looked up (see Game.netWorld) rather than the
+           room importing the wall table, which keeps the geometry a plain
+           description of itself: the room needs to know that this rect halves
+           your speed, not that it is called `wire`. */
+        slow: r.slow > 0 && r.slow < 1 ? r.slow : 0,      // 0 = doesn't slow you
+        dps: r.dps > 0 ? r.dps : 0,                       // damage/sec while you stand in it
+        explodes: r.explodes || null,                     // { damage, radius }
         /* A door is the one wall that changes its mind. Remember what it is
            when shut, so opening and closing it is reversible. */
         door: !!r.door, open: false, baseSolid: !!r.solid, baseMode: r.mode || 'stop',
       }));
+      /* Dug cover. Circles rather than rects, and not part of the wall list at
+         all — a trench doesn't stop anything, it just makes whoever is in it
+         hard to hit. Usually empty at the start of a match: they get dug as it
+         runs (see `dig`), so handing the world over again must not fill one in. */
+      const dug = (!Array.isArray(world) && world && world.trenches) || null;
+      if (dug) this.trenches = dug.slice();
       this.wallById = new Map(this.walls.map(w => [w.id, w]));
       this.wallIndex = worldIndex(this.walls, this.map.w, this.map.h);
       // anyone already standing in a wall gets pushed out of it
@@ -257,6 +306,114 @@
           else p.y = o.y + o.h + r;
         }
       }
+    }
+
+    /* ---------- what you are standing in ----------
+       Barbed wire is the one bit of the map that does something to you while
+       you walk through it rather than refusing to let you: 90% slower, and it
+       cuts. Online it did neither. The client drew it, computed the slow, and
+       then threw the number away, because applying a slow the room had never
+       heard of only makes the prediction wrong and gets you dragged back — so
+       everyone strolled through the wire at full speed taking nothing.
+
+       Now the room owns it and the client predicts the same figure, which is
+       what makes it safe for the client to apply it again.
+
+       Point query rather than a radius sweep: you are either in the wire or
+       you are not. `cellAt` is exact for a point because addToIndex files a
+       rect under every cell it covers. */
+    hazardAt(x, y) {
+      if (!this.wallIndex) return null;
+      const arr = cellAt(this.wallIndex, x, y);
+      if (!arr) return null;
+      let slow = 1, dps = 0;
+      for (const s of arr) {
+        if (s.dead || s.solid || (!s.slow && !s.dps) || !inRect(x, y, s)) continue;
+        if (s.slow) slow = Math.min(slow, s.slow);
+        dps += s.dps;
+      }
+      return slow < 1 || dps > 0 ? { slow, dps } : null;
+    }
+    /* Dug in: infantry in a trench dodge half of what comes at them. */
+    trenchDodge(x, y) {
+      for (const t of this.trenches) {
+        if (dist2(x, y, t.x, t.y) < t.r * t.r) return t.dodge || 0;
+      }
+      return 0;
+    }
+    /* The trench-spade digging one. Broadcast so every client draws the same
+       hole in the same place — a dodge nobody else can see is indistinguishable
+       from the shooter missing for no reason. */
+    dig(p, r, dodge) {
+      if (!p || !p.alive) return false;
+      if (this.trenches.length >= MAX_TRENCHES) return false;
+      const t = {
+        x: Math.round(p.x), y: Math.round(p.y),
+        r: clamp(r || 48, 16, 120), dodge: clamp(dodge || 0.5, 0, 1),
+      };
+      this.trenches.push(t);
+      this.pushEvent({ e: 'trench', x: t.x, y: t.y, r: t.r, dodge: t.dodge });
+      return true;
+    }
+
+    /* ---------- swinging a tool ----------
+       The bayonet, the axe, the hammer, the spade. Offline these hit people
+       and chew through cover; online they did neither usefully. The swing ran
+       on the client, where the only agent left in the world is you — so it
+       could never touch an enemy — and when it broke a wall it broke it *only*
+       there, leaving the room still holding a wall you had walked into. Being
+       hauled back out of a doorway you had just cut is the same class of
+       rubber-banding closed doors used to cause.
+
+       Nothing about the tool comes over the wire. The room already knows which
+       class the player is (it derived it from their weapon on join), and the
+       class owns the tool, so a modified client cannot claim a longer reach or
+       a bigger number — it can only ask to swing. */
+    melee(p) {
+      if (!p || !p.alive) return false;
+      const t = p.cls && p.cls.tool;
+      if (!t || t.passive || (!t.melee && !t.structure)) return false;
+      const nowT = now();
+      if (nowT < (p.toolUntil || 0)) return false;         // still on cooldown
+      p.toolUntil = nowT + (t.cooldown || 0.5) * 1000;
+
+      const reach = t.range + BODY_R;
+      let hit = false;
+      // enemies in a ~100° arc in front, matching meleeSwing() in game.js
+      for (const o of this.players.values()) {
+        if (!o.alive || o.id === p.id || o.team === p.team) continue;
+        if (dist2(o.x, o.y, p.x, p.y) > (reach + BODY_R) ** 2) continue;
+        if (Math.abs(angleDiff(Math.atan2(o.y - p.y, o.x - p.x), p.angle)) > 0.9) continue;
+        this.damage(o, t.melee, 'normal', p);
+        hit = true;
+      }
+      if (t.structure > 0 && this.meleeWalls(p, t, reach)) hit = true;
+      // the spade digs when the swing found nothing, exactly as it does offline
+      if (!hit && t.digs) this.dig(p, 48, TRENCH_DODGE);
+      this.pushEvent({ e: 'melee', id: p.id, tool: t.id });
+      return true;
+    }
+    /* Walls straight ahead, sampled along the swing — mirrors hitStructures().
+       A tool only works a wall its Structure Pierce out-rates, unless it has an
+       explicit clearing effect for that type (bayonet→wire, spade→sandbags). */
+    meleeWalls(p, t, reach) {
+      if (!this.wallIndex) return false;
+      const seen = [];
+      for (let d = BODY_R; d <= reach; d += 8) {
+        const x = p.x + Math.cos(p.angle) * d, y = p.y + Math.sin(p.angle) * d;
+        const arr = cellAt(this.wallIndex, x, y);
+        if (!arr) continue;
+        for (const s of arr) {
+          if (s.dead || s.hp === Infinity || seen.indexOf(s) >= 0 || !inRect(x, y, s)) continue;
+          if (!C.canDamageStructure(s, { kind: 'melee', pierce: t.pierce, clears: t.clears })) continue;
+          seen.push(s);
+          // a clearing tool cuts straight through whatever it was built for
+          const dmg = t.clears === s.type ? Infinity : t.structure * ((t.vs && t.vs[s.type]) || 1);
+          s.hp -= dmg;
+          if (s.hp <= 0) this.destroyWall(s, p);
+        }
+      }
+      return seen.length > 0;
     }
 
     /* is this spot clear of solid geometry? */
@@ -313,6 +470,10 @@
         x: spawn.x, y: spawn.y, angle: 0,
         hp: C.maxHpFor('infantry'), maxHp: C.maxHpFor('infantry'),
         klass: 'infantry', vest: 0, helmet: 0, bag: 0, adrenaline: 0,
+        /* The perk changes numbers the client computes for itself — swim
+           speed, armour weight, reload — so the room has to hold the same one
+           or the two drift apart. */
+        perk: (info.perk && String(info.perk).slice(0, 16)) || 'none',
         weaponId: weapon.id, weapon, cls,
         ammo: weapon.mag, reloadUntil: 0, fireCd: 0,
         alive: true, respawnAt: 0, kills: 0, deaths: 0,
@@ -341,6 +502,9 @@
         // should be open, or you'd walk into one that isn't there
         downed: this.downed.slice(),
         openDoors: this.openDoors(),
+        // and the holes people have dug, or you'd be shooting at someone the
+        // room is letting dodge you for a reason your screen can't show
+        trenches: this.trenches.slice(),
       });
       this.pushEvent({ e: 'join', id, name: p.name, team });
       this.pushLobby();
@@ -449,20 +613,33 @@
         }
         // movement — the server decides where you are, not your client
         const i = p.input;
+        // wire slows you and cuts you whether or not you are moving
+        const hz = this.hazardAt(p.x, p.y);
         let dx = (i.right ? 1 : 0) - (i.left ? 1 : 0);
         let dy = (i.down ? 1 : 0) - (i.up ? 1 : 0);
         const m = Math.hypot(dx, dy);
         if (m > 0) {
-          const spd = moveSpeedFor(p, i.ads) * this.surfaceAt(p.x, p.y);
+          const spd = moveSpeedFor(p, i.ads)
+            * surfaceSpeedFor(p, this.surfaceAt(p.x, p.y)) * (hz ? hz.slow : 1);
           /* Move, then get pushed back out of anything solid — the same
              resolution the client runs offline, so a player and the host
              agree about where a wall stopped them. Pushing out rather than
              refusing the step is what lets you slide along a wall instead of
              sticking to it; a step is a few pixels and the thinnest wall is
-             8px, so you are always ejected back the way you came. */
-          p.x = clamp(p.x + (dx / m) * spd * dt, 16, this.map.w - 16);
-          p.y = clamp(p.y + (dy / m) * spd * dt, 16, this.map.h - 16);
+             8px, so you are always ejected back the way you came.
+
+             Bounded by BODY_R, not by a hand-written 16. The client clamps to
+             its own radius, and a room that stopped a pixel short of where the
+             client did left a one-pixel argument running along all four edges
+             for the reconciler to keep losing. */
+          p.x = clamp(p.x + (dx / m) * spd * dt, BODY_R, this.map.w - BODY_R);
+          p.y = clamp(p.y + (dy / m) * spd * dt, BODY_R, this.map.h - BODY_R);
           this.resolveWorld(p);
+        }
+        if (hz && hz.dps > 0) {
+          p.wireAcc = (p.wireAcc || 0) + hz.dps * dt;
+          // environmental: no hit-zone roll, no armour — the wire just cuts you
+          if (p.wireAcc >= WIRE_CHUNK) { this.damage(p, p.wireAcc, 'true', null); p.wireAcc = 0; }
         }
         p.angle = i.angle;
 
@@ -489,6 +666,7 @@
       }
 
       this.stepBullets(dt);
+      this.stepChains();
       if (this.mode === 'domination') this.stepObjectives(dt);
       if (this.timeLeft <= 0) this.finish();
     }
@@ -611,7 +789,8 @@
       const src = { kind: b.dmgType === 'heat' ? 'heat' : 'bullet', ap: b.dmgType === 'ap' };
       if (wall.hp !== Infinity && C.canDamageStructure(wall, src)) {
         wall.hp -= b.dmg;
-        if (wall.hp <= 0) this.destroyWall(wall);
+        // credited to whoever fired, so shooting a barrel next to someone is a kill
+        if (wall.hp <= 0) this.destroyWall(wall, this.players.get(b.owner));
       }
       if (wall.mode === 'stop') return true;
       if (wall.mode === 'pen') { b.dmg *= wall.keep; return b.dmg < 1; }
@@ -653,16 +832,84 @@
     }
     openDoors() { return this.walls.filter(w => w.door && w.open).map(w => w.id); }
 
-    destroyWall(wall) {
+    destroyWall(wall, killer) {
       if (wall.dead) return;
       wall.dead = true;
       this.downed.push(wall.id);
       this.pushEvent({ e: 'wall', id: wall.id });
+      // an oil drum doesn't just stop being cover
+      if (wall.explodes) this.cookOff(wall, killer);
+    }
+
+    /* ---------- things that go off ----------
+       Mirrors cookOff() in game.js. Claim the neighbours *before* the blast,
+       because the blast destroys them and gathering them afterwards finds
+       nothing — which is how a row of barrels used to vanish silently instead
+       of chaining. */
+    cookOff(wall, killer) {
+      const x = wall.x + wall.w / 2, y = wall.y + wall.h / 2;
+      const conf = wall.explodes;
+      const chain = [];
+      for (const s of nearRects(this.wallIndex, x, y, conf.radius)) {
+        if (s === wall || s.cooking || !s.explodes) continue;
+        const sx = s.x + s.w / 2, sy = s.y + s.h / 2;
+        if (dist2(sx, sy, x, y) > conf.radius * conf.radius) continue;
+        s.cooking = true;                    // stops destroyWall double-firing it
+        chain.push(s);
+      }
+      this.explode(x, y, conf.damage, conf.radius, -1, killer || null, 'explosive');
+      for (const s of chain) {
+        this.chains.push({ wall: s, at: now() + CHAIN_MIN + Math.random() * CHAIN_JITTER, killer });
+      }
+    }
+    stepChains() {
+      if (!this.chains.length) return;
+      const t = now();
+      for (let i = this.chains.length - 1; i >= 0; i--) {
+        if (t < this.chains[i].at) continue;
+        const c = this.chains.splice(i, 1)[0];
+        if (!c.wall.dead) this.destroyWall(c.wall, c.killer);
+      }
+    }
+
+    /* One blast: everyone near it, and the cover around it. Same shape as
+       explode() in game.js — linear falloff to the edge, half damage to your
+       own squad, and splash always counts as a body hit so a grenade can't
+       roll a lucky headshot. The event is what lets every client draw the
+       fireball in the same place. */
+    explode(x, y, baseDmg, radius, team, owner, type) {
+      this.pushEvent({ e: 'boom', x: Math.round(x), y: Math.round(y), r: Math.round(radius) });
+      if (!radius) return;
+      for (const p of this.players.values()) {
+        if (!p.alive) continue;
+        const d = Math.hypot(p.x - x, p.y - y);
+        if (d >= radius) continue;
+        const dmg = baseDmg * (1 - d / radius) * (p.team === team ? 0.5 : 1);
+        if (dmg > 1) this.damage(p, dmg, type || 'explosive', owner, 'body');
+      }
+      // blasts tear up cover too — that's how you make an entry point
+      if (!this.wallIndex) return;
+      const src = { kind: type === 'heat' ? 'heat' : 'explosive' };
+      for (const s of nearRects(this.wallIndex, x, y, radius)) {
+        if (s.hp === Infinity || !C.canDamageStructure(s, src)) continue;
+        const cx = clamp(x, s.x, s.x + s.w), cy = clamp(y, s.y, s.y + s.h);
+        const d = Math.hypot(cx - x, cy - y);
+        if (d >= radius) continue;
+        s.hp -= baseDmg * (1 - d / radius) * 1.5;
+        if (s.hp <= 0) this.destroyWall(s, owner);
+      }
     }
 
     /* the same calculator the client uses */
-    damage(target, raw, type, attacker) {
-      const hit = C.resolve({ damage: raw, type }, target);
+    damage(target, raw, type, attacker, zone) {
+      /* Dug in: infantry in a trench dodge half of what comes at them. Rolled
+         before the calculator, exactly as applyDamage() does offline — a dodge
+         is the hit not landing, not a hit for less. */
+      if (type !== 'true') {
+        const dodge = this.trenchDodge(target.x, target.y);
+        if (dodge > 0 && Math.random() < dodge) return;
+      }
+      const hit = C.resolve({ damage: raw, type, zone }, target);
       if (hit.damage <= 0) return;
       target.hp -= hit.damage;
       if (target.hp <= 0) {
@@ -681,6 +928,7 @@
       const s = this.spawnPoint(p.team);
       p.x = s.x; p.y = s.y; p.hp = p.maxHp; p.alive = true;
       p.ammo = p.weapon.mag; p.reloadUntil = 0; p.reloading = false; p.adrenaline = 0;
+      p.wireAcc = 0;             // don't carry a part-finished wire cut into the next life
     }
 
     snapshot() {
@@ -727,5 +975,5 @@
       this.broadcast({ t: 'end', scores, roster: this.roster() });
     }
   }
-  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS, moveSpeedFor, BODY_R };
+  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS, moveSpeedFor, surfaceSpeedFor, BODY_R };
 }));

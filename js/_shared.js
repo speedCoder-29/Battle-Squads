@@ -38,9 +38,16 @@ module.exports = vm.runInContext('({ Weapons, Combat, Classes, Items })', ctx);
    what it built.
 
    Costs about half a second per map, once, when a room is created. */
+/* Every global game.js touches on the way to a finished map. The list is
+   load-ordered, and it has to be complete: game.js reaches for these at
+   Game.start() time, so one missing name is a ReferenceError rather than a
+   degraded map. `controls.js` and `comms.js` were exactly that — the server
+   could not build a world at all, and every dedicated-server match was fought
+   in an empty rectangle with no walls and no capture points. */
 const WORLD_FILES = ['weapons.js', 'sprites.js', 'terrain.js', 'nav.js', 'skins.js', 'shop.js',
   'net.js', 'roomsim.js', 'p2p.js', 'botai.js', 'combat.js', 'classes.js', 'structures.js',
-  'items.js', 'storage.js', 'audio.js', 'progression.js', 'screens.js', 'game.js'];
+  'items.js', 'storage.js', 'audio.js', 'controls.js', 'comms.js', 'progression.js',
+  'screens.js', 'game.js'];
 
 let worldCtx = null;
 function worldSandbox() {

@@ -198,6 +198,24 @@ and there's a test asserting a peer can't teleport itself.
 
 Sharing `…/?game=CODE` joins that game straight away.
 
+#### What the room simulates
+
+Anything that decides a fight has to be owned by the room, or two players
+disagree about it. Currently authoritative: movement and collision, terrain
+(the ocean, rivers, bridges, roads and sand all change your speed), barbed wire
+(90% slower, 2 damage/s), doors, destructible cover with per-wall toughness and
+ballistics, barrels cooking off and chaining into each other, trenches and the
+50% dodge for anyone dug into one, melee tools — reach, arc, breaching and wire
+clearing all read off your class, never off the wire — capture points, scores,
+the match clock and respawns.
+
+**Not yet authoritative**, and therefore inert or client-only in a hosted
+match: thrown consumables (frags, smoke, flashbangs, C4, impacts), deployables
+(mines, sentries, ammo boxes, barricades, flags), loot crates and armour
+pickups, healing consumables, and vehicles. These still work offline; online
+the room has never been told about them, so a grenade harms nobody and a vest
+you pick up is overwritten by the next snapshot.
+
 Limits worth knowing: the host carries the simulation, so pick the strongest
 machine, and if the host leaves the match ends.
 

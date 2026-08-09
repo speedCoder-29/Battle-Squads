@@ -332,6 +332,13 @@ const P2P = (() => {
       }
     } else if (msg.t === 'door') {
       room.toggleDoor(player, msg.id, msg.open);
+    } else if (msg.t === 'melee') {
+      /* Swinging a tool. Nothing about the tool travels — the room reads it off
+         the player's class — so this can only ask, never assert. */
+      room.melee(player);
+    } else if (msg.t === 'dig') {
+      // the trench spade. The room owns the hole because it rolls the dodge.
+      room.dig(player, msg.r, msg.dodge);
     } else if (msg.t === 'mark') {
       room.mark(player, msg.x, msg.y, msg.kind);
     } else if (msg.t === 'emote') {

@@ -163,6 +163,8 @@ const Party = (() => {
          are. */
       attachments: (p.attachments && p.attachments[p.weapon]) || null,
       ammo: (p.ammo && p.ammo[p.weapon]) || null,
+      // the perk moves you differently, so the room needs it too (js/perks.js)
+      perk: p.perk || 'none',
       skin: p.weaponSkins ? p.weaponSkins[p.weapon] : 'default',
       mode: Screens.getSelectedMode(),
     };

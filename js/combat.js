@@ -73,9 +73,17 @@ const Combat = (() => {
   const helmet = (t) => HELMETS[clampTier(t)];
   const bag    = (t) => BAGS[clampTier(t)];
   const clampTier = (t) => Math.max(0, Math.min(3, t | 0));
-  /* combined movement penalty from what you're wearing. A bag is weightless
-     as far as the table is concerned — only the vest and helmet slow you. */
-  const armorSpeed = (a) => 1 + vest(a.vest || 0).speed + helmet(a.helmet || 0).speed;
+  /* Combined movement penalty from what you're wearing. A bag is weightless
+     as far as the table is concerned — only the vest and helmet slow you.
+
+     Reads the agent's perk directly rather than taking it as an argument, so
+     every existing caller — including the shared movement model both the
+     client and the room run — picks it up without changing shape. */
+  const armorSpeed = (a) => {
+    if (perkOf(a) === 'juggernaut') return 1;      // plate carries like cloth
+    return 1 + vest(a.vest || 0).speed + helmet(a.helmet || 0).speed;
+  };
+  const perkOf = (a) => (a && a.perk) || 'none';
 
   /* ---------- adrenaline ----------
      A ladder, not a single curve. Each band unlocks one more thing and keeps
@@ -107,10 +115,13 @@ const Combat = (() => {
   const ADREN_REGEN_MAX = 6;      // HP/sec at 100 adrenaline
   const ADREN_BURN = 5;           // adrenaline/sec spent while regenerating
 
-  function adrenaline(amount) {
+  /* `perk` is optional and defaults to none, so the many call sites that pass
+     only a number keep working; the ones that care hand over the agent's. */
+  function adrenaline(amount, perk) {
     const a = Math.max(0, Math.min(ADREN_MAX, amount || 0));
     const boost = 1 + (a / 100) / 2;                 // Adren%/2 speedup
     const band = ADREN_BANDS.find(s => a >= s.at) || {};
+    const medic = perk === 'medic';                  // it goes further, and works harder
     return {
       amount: a,
       speed:    band.speed ? boost : 1,
@@ -119,9 +130,9 @@ const Combat = (() => {
       dr: band.dr || 0,
       // seconds you keep fighting after being taken to 0 HP
       lastStand: band.lastStand ? Math.max(0, (a - 100) / LAST_STAND_PER) : 0,
-      regen: (a / 100) * ADREN_REGEN_MAX,            // HP/sec it heals you for
+      regen: (a / 100) * ADREN_REGEN_MAX * (medic ? 1.5 : 1),   // HP/sec it heals for
       // over 100 it goes twice as quickly — the top band is rented, not owned
-      burn: ADREN_BURN * (a > 100 ? 2 : 1),
+      burn: ADREN_BURN * (a > 100 ? 2 : 1) * (medic ? 0.5 : 1),
     };
   }
 

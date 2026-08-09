@@ -289,6 +289,11 @@ const Screens = (() => {
       </div>
 
       <div class="gs-section">
+        <h4>Perk <span class="gs-hint">one only — carried whatever you're holding</span></h4>
+        <div class="gs-row" id="gs-perks"></div>
+      </div>
+
+      <div class="gs-section">
         <h4>Skin <span class="gs-hint">cosmetic only — never changes a stat</span></h4>
         <div class="gs-row" id="gs-skins"></div>
       </div>
@@ -305,6 +310,26 @@ const Screens = (() => {
         <div class="gs-row" id="gs-ammo"></div>
       </div>` : ''}
     `;
+
+    // --- perks ---
+    /* Not weapon-specific: you carry one perk, whatever you're holding. It
+       lives in the gunsmith panel because that is where a loadout decision
+       belongs, but it is saved on the profile rather than per weapon. */
+    const perkRow = host.querySelector('#gs-perks');
+    if (perkRow) Perks.list.forEach(perk => {
+      const on = (p.perk || Perks.DEFAULT) === perk.id;
+      const b = document.createElement('button');
+      b.className = 'gs-mod gs-perk' + (on ? ' is-on' : '');
+      b.innerHTML = `
+        <span class="gs-mod-head">${perk.icon} ${perk.name}</span>
+        <span class="gs-mod-buff">${perk.effects.map(x => '▲ ' + x).join('<br>') || '—'}</span>
+        <span class="gs-perk-blurb">${perk.blurb}</span>`;
+      b.addEventListener('click', () => {
+        p.perk = on ? Perks.DEFAULT : perk.id;
+        DB.saveProfile(p); SFX.click(); renderGunsmith();
+      });
+      perkRow.appendChild(b);
+    });
 
     // --- skins ---
     const skinRow = host.querySelector('#gs-skins');

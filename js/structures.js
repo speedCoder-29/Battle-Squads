@@ -35,9 +35,8 @@
    Engine mapping notes:
      • Thickness/length are design metres; PX_PER_M converts them.
        A "0.3 thickness, 1.5 length" door is 12px thick and 60px wide.
-     • HP is the table formula × HP_SCALE. The scale exists so
-       "10 × thickness" lands somewhere playable — with it, a wood
-       0.3 door comes out at exactly the table's 30 HP.
+     • HP is the table's number, scaled — see HP_SCALE and
+       FLAT_SCALE below for why there are two scales and not one.
      • Toughness is the minimum tool Structure Pierce needed to
        damage the wall by hand. Tools with an explicit clearing
        effect (bayonet→wire, spade→sandbags) ignore it, and
@@ -47,12 +46,21 @@
    ============================================================ */
 const Structures = (() => {
   const PX_PER_M = 40;
-  /* HP_SCALE turns the design table's "10 x thickness" into playable numbers.
-     It started at 10, which made a 0.3 wood wall 30 HP — one axe swing, or a
-     third of a magazine. Buildings fell apart before a fight got going, so it
-     is now 30: that same wall takes 90, a metal 0.6 takes 360, and reinforced
-     walls take real explosive work. The table's ratios are untouched. */
-  const HP_SCALE = 30;
+  /* ---------- two HP scales, and why ----------
+     The design table measures HP two different ways and they don't meet. Wood
+     is "10 × thickness", so the standard 0.3 wall is 3 HP — a single rifle
+     round. Doors are a flat 30, even though the table's own Effect column
+     describes a door as wood at 0.3 thickness, which by the formula would make
+     it 3. The table disagrees with itself, so no single multiplier can honour
+     all of it.
+
+     What the numbers clearly mean is a ranking, and the ranking is what gets
+     preserved. Thickness-derived HP is scaled by HP_SCALE, flat HP by
+     FLAT_SCALE, both chosen so the two families land in the same playable
+     range: a 0.3 wood wall and a door both come out at 90 — seven rifle rounds
+     — and everything else keeps its position relative to them. */
+  const HP_SCALE = 30;     // for the "N × thickness" rows: wood, metal
+  const FLAT_SCALE = 3;    // for the rows given a flat number
   const m = (v) => v * PX_PER_M;
 
   /* ---------- WALL TYPES ---------- */
@@ -74,44 +82,44 @@ const Structures = (() => {
       effect: 'Penetrable up to 0.5 thickness, then ricochets for 50%',
     },
     door: {
-      name: 'Door', height: 'high', hp: 90, toughness: 1, door: true,
+      name: 'Door', height: 'high', tableHp: 30, toughness: 1, door: true,
       bullets: 'pen', lossPerM: 1.0,            // it's wood, 0.3 thick
       defThickness: 0.3, defLength: 1.5,
       fill: '#9a7244', stroke: 'rgba(255,210,140,0.95)',
       effect: 'Opens and closes',
     },
     rdoor: {
-      name: 'Reinforced Door', height: 'high', hp: 300, toughness: 5, door: true,
+      name: 'Reinforced Door', height: 'high', tableHp: 10, toughness: 5, door: true,
       bullets: 'reflect', defThickness: 0.35, defLength: 1.5,
       fill: '#3d5070', stroke: 'rgba(220,235,255,0.95)',
       effect: 'Opens and closes · bullets ricochet for 50%',
     },
     rwall: {
-      name: 'Reinforced Wall', height: 'high', hp: 300, toughness: 5,
+      name: 'Reinforced Wall', height: 'high', tableHp: 10, toughness: 5,
       bullets: 'reflect',
       fill: '#4a5e80', stroke: 'rgba(200,220,255,0.90)',
       effect: 'Bullets ricochet for 50%',
     },
     wire: {
-      name: 'Barbed Wire', height: 'low', hp: 60, toughness: 5,
+      name: 'Barbed Wire', height: 'low', tableHp: 30, toughness: 5,
       bullets: 'through', passable: true, slow: 0.1, dps: 2,
       fill: 'rgba(180,200,240,0.18)', stroke: 'rgba(220,235,255,0.85)',
       effect: '90% movement slowdown · 2 damage/s',
     },
     sandbag: {
-      name: 'Sand Bags', height: 'low', hp: 300, toughness: 6,
+      name: 'Sand Bags', height: 'low', tableHp: 100, toughness: 6,
       bullets: 'stop',
       fill: '#7a7040', stroke: 'rgba(245,225,140,0.85)',
       effect: 'Stops bullets outright',
     },
     barricade: {
-      name: 'Barricade', height: 'low', hp: 150, toughness: 1,
+      name: 'Barricade', height: 'low', tableHp: 50, toughness: 1,
       bullets: 'pen', flatLoss: 0.5,
       fill: '#6a5a85', stroke: 'rgba(200,140,255,0.80)',
       effect: 'Bullets lose 50% damage passing through',
     },
     trench: {
-      name: 'Trench', height: 'under', hp: 1, toughness: 6,
+      name: 'Trench', height: 'under', tableHp: 1, toughness: 6,
       bullets: 'through', passable: true, dodge: 0.5,
       fill: 'rgba(132,100,62,0.55)', stroke: 'rgba(205,168,116,0.75)',
       effect: 'Infantry inside dodge 50% of incoming fire',
@@ -210,6 +218,9 @@ const Structures = (() => {
 
   function maxHp(type, thickness) {
     const d = def(type);
+    // straight from the design table, on the flat-number scale
+    if (d.tableHp !== undefined) return d.tableHp * FLAT_SCALE;
+    // props are an engine addition, not in the table — their HP is literal
     if (d.hp !== undefined) return d.hp;
     return d.hpPerThickness * thickness * HP_SCALE;
   }
@@ -304,6 +315,68 @@ const Structures = (() => {
       : seg(type, sd.x, sd.y + offsetPx, lengthM, 'v', thickness);
   }
 
+  /* ============================================================
+     SUB-BUILDINGS: what each kind of room is worth going into.
+
+     Until now a building's loot was a count and a tier roll — eight crates
+     somewhere inside a warehouse, rolled the same way whichever eight tiles
+     they landed on. Rooms replace that with the design table: a bathroom
+     holds exactly one regular crate, a safe holds one gold, a plane holds ten
+     regular, and the reason to cross a resort is that the lounge has a silver
+     in it and the bedrooms don't.
+
+     `crates` is a list of [tier, count]. `vehicles` spawn a drivable hull.
+     `chance` is a per-crate upgrade roll, which is how the shipping yard
+     works: fifteen containers, one of which is worth opening.
+     ============================================================ */
+  const ROOM_LOOT = {
+    bathroom:       { name: 'Bathroom',        crates: [['regular', 1]] },
+    bedroom:        { name: 'Bedroom',         crates: [['regular', 1]] },
+    kitchen:        { name: 'Kitchen',         crates: [['regular', 3]] },
+    safe:           { name: 'Safe',            crates: [['gold', 1]] },
+    dining:         { name: 'Dining Room',     crates: [] },
+    pool:           { name: 'Swimming Pool',   crates: [['silver', 1]], needs: 'diver' },
+    garage:         { name: 'Garage',          crates: [['regular', 2]], vehicles: [['jeep', 1]] },
+    washroom:       { name: 'Public Washroom', crates: [['regular', 5]] },
+    diningLobby:    { name: 'Dining Lobby',    crates: [] },
+    backKitchen:    { name: 'Back Kitchen',    crates: [['regular', 5]] },
+    lounge:         { name: 'Lounge',          crates: [['silver', 1]] },
+    dock:           { name: 'Dock',            crates: [['regular', 2]] },
+    gate:           { name: 'Gate',            crates: [] },
+    plane:          { name: 'Plane',           crates: [['regular', 10]] },
+    track:          { name: 'Track',           crates: [['regular', 10]] },
+    warehouse:      { name: 'Warehouse',       crates: [['regular', 8]] },
+    shippedCrate:   { name: 'Shipped Container', crates: [['regular', 1]], chance: { tier: 'gold', odds: 1 / 15 } },
+    shippingCrate:  { name: 'Shipping Container', crates: [] },
+    portapotty:     { name: 'Portapotty',      crates: [['regular', 1]] },
+    mainExhibit:    { name: 'Main Exhibit',    crates: [] },
+    gunExhibit:     { name: 'Gun Exhibit',     crates: [['regular', 5]] },
+    displayHall:    { name: 'Display Hallway', crates: [['gold', 1]] },
+    tent:           { name: 'Tent',            crates: [['regular', 1]] },
+    parkingLot:     { name: 'Parking Lot',     vehicles: [['jeep', 4]] },
+    lodge:          { name: 'Lodge',           crates: [['regular', 3]] },
+    wheatField:     { name: 'Wheat Field',     crates: [['silver', 1]] },
+    barn:           { name: 'Barn',            crates: [['regular', 8]] },
+    chickenCoop:    { name: 'Chicken Coop',    crates: [['gold', 1]] },
+    lobby:          { name: 'Lobby',           crates: [['silver', 1]] },
+  };
+
+  /* A room is a rectangle inside a building that the loot pass fills. Rooms
+     are declarative — they carry no walls of their own, so a blueprint can
+     mark out the space a kitchen occupies without having to box it in. */
+  const room = (kind, x, y, w, h) => ({ kind, x, y, w, h });
+  /* n rooms of one kind laid out in a strip, which is most of what a resort
+     corridor or a row of tents actually is */
+  function roomRow(kind, x, y, w, h, n, axis) {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      out.push(axis === 'v'
+        ? room(kind, x, y + (h / n) * i, w, h / n)
+        : room(kind, x + (w / n) * i, y, w / n, h));
+    }
+    return out;
+  }
+
   const BUILDINGS = {
     /* a plain wooden house: one front door, one back door, a divided interior */
     house(ox, oy) {
@@ -320,6 +393,13 @@ const Structures = (() => {
       out.push(seg('window', ox + 360, oy + 20, 1.2, 'h', 0.15));
       // small pantry/closet off the rear room
       out.push(seg('wood', ox + 320, oy + 220, 1.6, 'v', 0.18));
+      // 1 bathroom, 2 bedrooms, 1 kitchen — the divider at +240 splits them
+      out.rooms = [
+        room('bedroom',  ox + 20,  oy + 20,  200, 140),
+        room('bedroom',  ox + 20,  oy + 175, 200, 145),
+        room('kitchen',  ox + 258, oy + 20,  142, 180),
+        room('bathroom', ox + 258, oy + 215, 142, 105),
+      ];
       return out;
     },
 
@@ -344,6 +424,174 @@ const Structures = (() => {
       out.push(seg('rwall', ox + 460, oy + 330, 6.4, 'h', 0.4));
       out.push(seg('rwall', ox + 460, oy + 330, 4.6, 'v', 0.4));
       out.push(seg('rdoor', ox + 560, oy + 330, 1.5, 'h'));
+      /* 4 bedrooms in the west wing, kitchen and dining east, two bathrooms
+         between them, pool and garage across the back, and the gold crate
+         behind the reinforced door where it takes C4 or a hammer to reach. */
+      out.rooms = [
+        room('bedroom',  ox + 20,  oy + 20,  120, 125),
+        room('bedroom',  ox + 145, oy + 20,  120, 125),
+        room('bedroom',  ox + 20,  oy + 150, 120, 130),
+        room('bedroom',  ox + 145, oy + 150, 120, 130),
+        room('kitchen',  ox + 300, oy + 20,  180, 130),
+        room('dining',   ox + 490, oy + 20,  210, 130),
+        room('bathroom', ox + 300, oy + 160, 180, 120),
+        room('bathroom', ox + 490, oy + 160, 210, 120),
+        room('pool',     ox + 20,  oy + 320, 220, 170),
+        room('garage',   ox + 255, oy + 320, 190, 170),
+        room('safe',     ox + 480, oy + 350, 215, 145),
+      ];
+      return out;
+    },
+
+    /* ---------- resort ----------
+       The biggest residential building on the map and the densest bedroom
+       count: ten rooms off one long corridor, so it fights like a hotel —
+       doorway after doorway, nowhere to shoot from range. The lounge and the
+       dock are what make crossing it worth the risk. */
+    resort(ox, oy) {
+      const w = 1040, h = 620;
+      const out = shell(ox, oy, w, h, 'wood', 0.4, [
+        { side: 'w', at: 260, type: 'door', len: 2 },
+        { side: 's', at: 420, type: 'door', len: 2 },
+        { side: 'n', at: 700, type: 'door' },
+      ]);
+      // spine corridor: bedrooms north of it, public rooms south
+      out.push(seg('wood', ox + 16, oy + 250, 25.2, 'h', 0.3));
+      for (let i = 0; i < 5; i++) out.push(seg('door', ox + 120 + i * 190, oy + 250, 1.6, 'h'));
+      // bedroom partitions, five each side of the corridor
+      for (let i = 1; i < 5; i++) out.push(seg('wood', ox + i * 200, oy + 16, 5.85, 'v', 0.22));
+      for (let i = 1; i < 5; i++) out.push(seg('wood', ox + i * 200, oy + 400, 3.5, 'v', 0.22));
+      // back kitchen behind the dining lobby
+      out.push(seg('wood', ox + 760, oy + 400, 3.5, 'v', 0.3));
+      out.push(seg('door', ox + 760, oy + 330, 1.6, 'v'));
+      out.rooms = [
+        ...roomRow('bedroom', ox + 20, oy + 20, 990, 215, 5, 'h'),
+        ...roomRow('bedroom', ox + 20, oy + 405, 720, 195, 5, 'h'),
+        room('lounge',      ox + 780, oy + 270, 235, 120),
+        room('backKitchen', ox + 780, oy + 405, 235, 195),
+        room('diningLobby', ox + 300, oy + 270, 460, 120),
+        room('washroom',    ox + 20,  oy + 270, 130, 120),
+        room('washroom',    ox + 160, oy + 270, 130, 120),
+        room('pool',        ox + w + 60, oy + 120, 260, 200),
+        room('dock',        ox + w + 60, oy + 360, 300, 150),
+      ];
+      return out;
+    },
+
+    /* ---------- airfield ----------
+       A runway with a parked aircraft on it. The plane and the track are the
+       two richest single rooms in the game — ten regular crates each — and
+       both sit in the open, so it is a lot of loot with nowhere to hide. */
+    airfield(ox, oy) {
+      const out = [];
+      // terminal
+      out.push(...shell(ox, oy, 460, 300, 'metal', 0.45, [
+        { side: 's', at: 200, type: 'door', len: 2 },
+        { side: 'e', at: 140, type: 'door' },
+      ]));
+      out.push(seg('metal', ox + 240, oy + 16, 6.9, 'v', 0.3));
+      out.push(seg('door', ox + 240, oy + 150, 1.6, 'v'));
+      // gate arm and fence out onto the apron
+      out.push(seg('barricade', ox + 520, oy + 40, 6, 'v', 0.3));
+      out.push(seg('wire', ox + 520, oy + 300, 9, 'h', 0.4));
+      // hangar-garage at the far end
+      out.push(...shell(ox + 1180, oy + 40, 340, 280, 'metal', 0.6, [
+        { side: 'w', at: 140, type: 'rdoor', len: 3 },
+      ]));
+      /* The aircraft: a fuselage of metal plate with wings either side. It
+         has to be a genuinely roomy hull — ten crates is the richest room in
+         the game and they need somewhere to sit that isn't inside a wall. */
+      out.push(seg('metal', ox + 620, oy + 400, 12.5, 'h', 0.5));
+      out.push(seg('metal', ox + 620, oy + 560, 12.5, 'h', 0.5));
+      out.push(seg('metal', ox + 620, oy + 400, 4, 'v', 0.5));
+      out.push(seg('metal', ox + 900, oy + 300, 5, 'v', 0.35));
+      out.push(seg('metal', ox + 940, oy + 300, 5, 'v', 0.35));
+      out.rooms = [
+        room('lobby',      ox + 20,   oy + 20,  200, 260),
+        room('gate',       ox + 260,  oy + 20,  180, 260),
+        room('garage',     ox + 1200, oy + 60,  300, 240),
+        room('plane',      ox + 650,  oy + 425, 460, 130),
+        room('track',      ox + 560,  oy + 640, 900, 130),
+      ];
+      return out;
+    },
+
+    /* ---------- harbor ----------
+       Thirty containers in a yard, and only half of them have anything in
+       them — a shipped container holds a crate and one in fifteen holds gold,
+       while an empty shipping container is just cover. Looting it properly
+       means opening a lot of steel boxes in the open. */
+    harbor(ox, oy) {
+      const out = [];
+      /* Every part sits at a positive offset from the origin and on land. The
+         first draft hung the docks and the toilet block off negative offsets
+         and out over the water, and since a building is only placed where
+         every one of its segments is buildable, the harbor could never find
+         anywhere on the island to stand — it simply never appeared on a map. */
+      out.push(...shell(ox, oy, 340, 240, 'metal', 0.45, [{ side: 's', at: 150, type: 'door', len: 2 }]));
+      out.push(...shell(ox + 400, oy, 380, 260, 'metal', 0.5, [{ side: 'w', at: 120, type: 'door', len: 2 }]));
+      out.push(...shell(ox + 820, oy, 380, 260, 'metal', 0.5, [{ side: 'w', at: 120, type: 'door', len: 2 }]));
+      const rooms = [
+        room('lobby',     ox + 20,  oy + 20, 300, 200),
+        room('warehouse', ox + 420, oy + 20, 340, 220),
+        room('warehouse', ox + 840, oy + 20, 340, 220),
+      ];
+      /* The container yard: five columns by six rows of steel, alternating
+         loaded and empty so you can't tell which is which from outside. */
+      let n = 0;
+      for (let cy = 0; cy < 6; cy++) {
+        for (let cx = 0; cx < 5; cx++) {
+          const x = ox + 40 + cx * 215, y = oy + 320 + cy * 125;
+          out.push(seg('metal', x, y, 4.3, 'h', 0.45));
+          out.push(seg('metal', x, y + 86, 4.3, 'h', 0.45));
+          out.push(seg('metal', x, y, 2.15, 'v', 0.45));
+          rooms.push(room(n % 2 ? 'shippingCrate' : 'shippedCrate', x + 24, y + 18, 130, 52));
+          n++;
+        }
+      }
+      // three quays along the seaward edge, and the crew facilities
+      for (let i = 0; i < 3; i++) {
+        out.push(seg('wood', ox + 1240, oy + 360 + i * 200, 5.5, 'h', 0.3));
+        rooms.push(room('dock', ox + 1250, oy + 372 + i * 200, 200, 120));
+      }
+      out.push(...shell(ox + 1240, oy + 40, 100, 100, 'wood', 0.2, [{ side: 's', at: 50 }]));
+      out.push(...shell(ox + 1370, oy + 40, 100, 100, 'wood', 0.2, [{ side: 's', at: 50 }]));
+      rooms.push(room('portapotty', ox + 1254, oy + 54, 72, 72));
+      rooms.push(room('portapotty', ox + 1384, oy + 54, 72, 72));
+      out.rooms = rooms;
+      return out;
+    },
+
+    /* ---------- camping grounds ----------
+       Twenty tents in the trees. Individually each is a single crate, but
+       there are twenty of them and no walls worth the name, so it is the one
+       place on the map where looting is fast and completely exposed. */
+    campground(ox, oy) {
+      const out = [];
+      const rooms = [];
+      const tent = (tx, ty, size) => {
+        out.push(seg('barricade', tx, ty, size / PX_PER_M, 'h', 0.25));
+        out.push(seg('barricade', tx, ty + size, size / PX_PER_M, 'h', 0.25));
+        out.push(seg('barricade', tx, ty, size / PX_PER_M, 'v', 0.25));
+        rooms.push(room('tent', tx + 12, ty + 12, size - 24, size - 24));
+      };
+      for (let i = 0; i < 20; i++) {
+        const col = i % 5, rw = Math.floor(i / 5);
+        tent(ox + col * 175 + (rw % 2) * 40, oy + rw * 165, 110);
+      }
+      // lodge at the top of the site
+      out.push(...shell(ox + 940, oy + 40, 380, 280, 'wood', 0.35, [
+        { side: 'w', at: 140, type: 'door', len: 2 },
+      ]));
+      out.push(seg('wood', ox + 1130, oy + 56, 6.4, 'v', 0.25));
+      out.push(seg('door', ox + 1130, oy + 180, 1.6, 'v'));
+      // washroom block and the car park
+      out.push(...shell(ox + 940, oy + 400, 200, 140, 'wood', 0.3, [{ side: 'n', at: 100 }]));
+      out.push(seg('barricade', ox + 940, oy + 620, 10, 'h', 0.3));
+      rooms.push(room('lodge',      ox + 960,  oy + 60,  340, 240));
+      rooms.push(room('washroom',   ox + 955,  oy + 415, 170, 110));
+      rooms.push(room('parkingLot', ox + 950,  oy + 640, 380, 190));
+      out.rooms = rooms;
       return out;
     },
 
@@ -490,6 +738,21 @@ const Structures = (() => {
       out.push(seg('barricade', ox + 470, oy + 40, 7, 'h', 0.25));
       out.push(seg('barricade', ox + 470, oy + 360, 7, 'h', 0.25));
       out.push(seg('wire', ox - 60, oy + 340, 8, 'h', 0.4));
+      // barn behind the yard fence, and the coop nobody thinks to check
+      out.push(...shell(ox + 500, oy + 60, 320, 260, 'wood', 0.35, [{ side: 'w', at: 120, type: 'door', len: 2 }]));
+      out.push(...shell(ox + 520, oy + 380, 130, 110, 'wood', 0.2, [{ side: 'n', at: 60 }]));
+      out.rooms = [
+        // the farmhouse is a House, so it is furnished as one rather than as
+        // a single room called "house"
+        room('bedroom',     ox + 20,  oy + 20,  170, 125),
+        room('bedroom',     ox + 20,  oy + 155, 170, 125),
+        room('kitchen',     ox + 215, oy + 20,  185, 125),
+        room('bathroom',    ox + 215, oy + 155, 185, 125),
+        room('wheatField',  ox - 40,  oy + 360, 360, 220),
+        room('wheatField',  ox + 340, oy + 360, 340, 220),
+        room('barn',        ox + 520, oy + 80,  280, 220),
+        room('chickenCoop', ox + 535, oy + 395, 100, 80),
+      ];
       return out;
     },
 
@@ -874,6 +1137,17 @@ const Structures = (() => {
       out.push(seg('wood', ox + 280, oy + 300, 3.2, 'h', 0.25));
       // security desk
       out.push(seg('metal', ox + 100, oy + 200, 2.2, 'h', 0.3));
+      /* The display hallway is the prize — a gold crate down the long east
+         wing — and the main exhibit is deliberately empty, so the room that
+         looks most important is the one you shouldn't linger in. */
+      out.rooms = [
+        room('lobby',       ox + 20,  oy + 20,  150, 260),
+        room('mainExhibit', ox + 195, oy + 20,  175, 260),
+        room('gunExhibit',  ox + 395, oy + 20,  170, 260),
+        room('displayHall', ox + 595, oy + 20,  105, 500),
+        room('washroom',    ox + 20,  oy + 320, 260, 235),
+        room('washroom',    ox + 300, oy + 320, 265, 235),
+      ];
       return out;
     },
 
@@ -1068,10 +1342,19 @@ const Structures = (() => {
     subway: 'Underground transit hub with platforms, corridors, and emergency exits.',
   };
 
+  /* ---------- how many of each the map must have ----------
+     The design table gives exact counts, not weights: a map has five houses
+     and exactly one mansion, whatever the dice say. Everything outside this
+     list is still rolled procedurally to fill the space around them. */
+  const ROOM_BUILDINGS = [
+    ['house', 5], ['mansion', 1], ['resort', 1], ['airfield', 1],
+    ['harbor', 1], ['museum', 1], ['campground', 2], ['farm', 2],
+  ];
+
   const BUILDING_CATEGORIES = {
     tactical: ['tower', 'checkpoint', 'bunker', 'bridge-fort', 'keep'],
-    residential: ['house', 'mansion', 'shanty', 'apartments', 'camp', 'farm'],
-    industrial: ['warehouse', 'factory', 'workshop', 'dock', 'power-plant', 'silos', 'depot', 'hangar'],
+    residential: ['house', 'mansion', 'shanty', 'apartments', 'camp', 'campground', 'farm', 'resort'],
+    industrial: ['warehouse', 'factory', 'workshop', 'dock', 'harbor', 'power-plant', 'silos', 'depot', 'hangar', 'airfield'],
     institutional: ['hospital', 'school', 'church', 'museum', 'prison', 'bank', 'vault', 'command-center'],
     commercial: ['market', 'gas-station', 'train-station'],
     military: ['base', 'fortress', 'barracks', 'armory'],
@@ -1097,11 +1380,15 @@ const Structures = (() => {
 
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
+    ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
-    /* place a named building and tag every piece with it */
+    /* place a named building and tag every piece with it. `rooms` rides along
+       on the returned array — blueprints that don't declare any simply don't
+       have the property, so every older blueprint is untouched. */
     place(name, ox, oy) {
       const parts = BUILDINGS[name](ox, oy);
       parts.forEach(p => { p.building = name; });
+      if (parts.rooms) parts.rooms.forEach(r => { r.building = name; });
       return parts;
     },
   };
