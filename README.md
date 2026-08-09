@@ -199,9 +199,39 @@ and there's a test asserting a peer can't teleport itself.
 Sharing `…/?game=CODE` joins that game straight away.
 
 Limits worth knowing: the host carries the simulation, so pick the strongest
-machine; if the host leaves, the match ends; and a few strict corporate or
-mobile networks block direct WebRTC, which normally needs a TURN relay. For
-anything beyond testing, run the dedicated server below.
+machine, and if the host leaves the match ends.
+
+#### If a code won't connect
+
+Two peers need a network path to each other, and STUN alone can't always find
+one. PeerJS ships default relays — `eu-0.turn.peerjs.com` and
+`us-0.turn.peerjs.com` — that **no longer exist**; public DNS returns no
+address for either, so the library's out-of-the-box config is one STUN server
+and two dead entries. [js/p2p.js](js/p2p.js) therefore states its own ICE
+config: four STUN vendors, so one being down doesn't take multiplayer with it.
+
+STUN is enough for two ordinary home routers to punch a hole to one another.
+It is not enough for a **symmetric NAT** — most mobile networks, many
+workplaces and schools — because that kind of router uses a different port per
+destination, so the address STUN reported isn't the one the other side can
+reach. Those joins need a **TURN relay**, and TURN can't be free: the relay
+carries the whole match, so someone pays for the bandwidth. Every public one
+that used to be listed here has since been withdrawn.
+
+Point the game at your own (Metered, Cloudflare Calls, ExpressTurn, or a coturn
+box) either per-session in the URL:
+
+```
+?turn=turn:your.host:3478&turnUser=NAME&turnPass=SECRET
+```
+
+…or permanently, via the `TURN` constant near the top of
+[js/p2p.js](js/p2p.js). Give it a `:443` or `?transport=tcp` entry as well as
+the UDP one — the networks that need a relay usually block UDP too. Without a
+relay the game still works for most pairs of players; it just can't promise it,
+and a failed join now says so instead of blaming your code.
+
+For anything beyond testing, run the dedicated server below.
 
 > **The dedicated server cannot run on Vercel.** Vercel Functions cap at 300 seconds and
 > can't hold a WebSocket open, so <https://battle-squads.vercel.app> serves the

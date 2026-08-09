@@ -137,11 +137,19 @@ const Classes = (() => {
 
   const byName = (name) => CLASSES[name] || CLASSES.Rifleman;
   const forWeapon = (w) => byName(w && w.className);
+  /* A bag multiplies both what you deploy with and what you can hold: T1
+     doubles it, T2 triples, T3 quadruples. Passed as a tier so callers can
+     hand over `player.bag` without knowing the table (see Combat.BAGS). */
+  const bagMult = (tier) =>
+    (typeof Combat !== 'undefined' ? Combat.bag(tier).capacity : 1);
   /* how many of `itemId` this class may carry */
-  const limitFor = (cls, itemId) =>
-    (cls.consumable === itemId ? Math.ceil(cls.limit * CARRY_MULT) : GENERIC_LIMIT);
+  const limitFor = (cls, itemId, bag) => Math.ceil(bagMult(bag)
+    * (cls.consumable === itemId ? Math.ceil(cls.limit * CARRY_MULT) : GENERIC_LIMIT));
   /* what you actually spawn holding */
-  const startFor = (cls) => Math.min(Math.ceil(cls.startCount * CARRY_MULT), limitFor(cls, cls.consumable));
+  const startFor = (cls, bag) => Math.min(
+    Math.ceil(cls.startCount * CARRY_MULT * bagMult(bag)),
+    limitFor(cls, cls.consumable, bag),
+  );
 
   return { TOOLS, CLASSES, list, byName, forWeapon, limitFor, startFor, GENERIC_LIMIT, CARRY_MULT, RANGE_UNIT };
 })();

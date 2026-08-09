@@ -232,7 +232,12 @@ const Party = (() => {
       p2pIn.addEventListener('keydown', e => { if (e.key === 'Enter') p2pJoin(e.target.value); });
     }
     P2P.on('status', (st) => {
-      if (st.hosting) p2pStatus(`Hosting ${st.code} — ${st.players || 1} in the game`);
+      /* The room reports trouble on the same event it reports the player count
+         on, and the count used to win — so "someone tried to join and their
+         network wouldn't reach you" was overwritten by "1 in the game" before
+         anyone could read it. Trouble is the part worth saying. */
+      if (st.error) p2pStatus(st.error, true);
+      else if (st.hosting) p2pStatus(`Hosting ${st.code} — ${st.players || 1} in the game`);
       if (st.disconnected) p2pStatus('The host closed the game.', true);
     });
     // ?game=CODE joins a hosted game straight away

@@ -681,7 +681,7 @@ const Game = (() => {
       x: 0, y: 0, r: BODY_R, angle: 0,
       klass: 'infantry',                                    // see Combat.TARGETS
       hp: Combat.maxHpFor('infantry'), maxHp: Combat.maxHpFor('infantry'),
-      vest: 0, helmet: 0,                                   // armour tiers 0-3
+      vest: 0, helmet: 0, bag: 0,                           // armour tiers 0-3 (vest, helmet, bag)
       weaponId: w.id, weapon: w,
       cls, tool: cls.tool, skin,                            // class kit + weapon skin
       diff: BotAI.individual(botLevel),                     // aim / survival / teamwork
@@ -752,6 +752,7 @@ const Game = (() => {
     a.bloom = 0; a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
     a.toolCd = 0; a.toolActive = false; a.swingT = 0;
     a.respawnTimer = 0;
+    a.standT = 0;                 // a fresh body isn't running on borrowed time
     // you never respawn still sitting in something
     if (a.riding) { a.riding.driver = null; a.riding = null; }
     // One ejection pass can push you out of one wall and straight into another,
@@ -804,7 +805,7 @@ const Game = (() => {
       tokens: [],
     };
     const kit = Items.CONSUMABLES[player.cls.consumable];
-    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls) };
+    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls, player.bag) };
     // everyone also deploys with a couple of bandages so you're never stranded
     if (kit && kit.cat !== 'heal') player.inv.heal = { id: 'bandage', n: 2 };
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
@@ -1047,10 +1048,14 @@ const Game = (() => {
         team: a.team, dmg: w.damage, falloff: w.falloff, range: w.range,
         splash: w.splashRadius, splashR: w.splashRadius,
         dmgType: w.dmgType, pen: w.penetration || 0,
-        // a round dies at its gun's effective range, not on a shared timer
-        life: Math.min(2.4, (w.range * 1.15) / w.bulletSpeed),
+        // a round dies at its gun's effective range, not on a shared timer.
+        // A fuzed round is on a timer instead — it is going off in 5s wherever
+        // it has bounced to by then, so its range never ends the flight.
+        life: w.fuze ? w.fuze : Math.min(2.4, (w.range * 1.15) / w.bulletSpeed),
         owner: a, color: (a.skin && a.skin.tracer) || w.ammoColor,
         tracer: !!w.tracer,
+        // specialized-ammo behaviour the flight loop has to know about
+        hitR: w.hitboxMult || 1, fuze: w.fuze || 0, antiTank: !!w.antiTank,
       });
     }
     a.bloom = Math.min(w.bloomMax, a.bloom + w.recoilKick);
@@ -1073,7 +1078,11 @@ const Game = (() => {
   }
 
   /* Explosion from launcher rounds — AoE damage that falls off with distance. */
-  function explode(x, y, baseDmg, radius, team, owner, type = 'explosive') {
+  /* `kind` overrides how the blast is rated against structures. C4 is the one
+     charge on the toughness ladder that opens tier 5, so it has to say so —
+     rated as an ordinary explosive it would bounce off a vault it is
+     specifically the answer to. */
+  function explode(x, y, baseDmg, radius, team, owner, type = 'explosive', kind = null) {
     spawnFx(x, y, '#ff9d3b', 22);
     for (const a of agents) {
       if (!a.alive || a.riding) continue;      // the hull eats it, not the driver
@@ -1085,7 +1094,7 @@ const Game = (() => {
       }
     }
     // blasts tear up cover and sentries too — that's how you make an entry point
-    const src = { kind: type === 'heat' ? 'heat' : 'explosive' };
+    const src = { kind: kind || (type === 'heat' ? 'heat' : 'explosive') };
     for (const s of structureRects().slice()) {
       const cx = clamp(x, s.x, s.x + s.w), cy = clamp(y, s.y, s.y + s.h);
       const d = Math.hypot(cx - x, cy - y);
@@ -1165,10 +1174,22 @@ const Game = (() => {
   /* Add to a slot. Nothing is ever silently destroyed: if the slot already
      holds something else, that stack is dropped at your feet, and anything
      over the carry limit drops too. Walk over a drop and press E to take it. */
+  /* A bigger bag is worth nothing if it only helps with what you pick up
+     next, so equipping one tops your class kit straight up to its new
+     ceiling. Looted odds and ends keep whatever count they had — the bag
+     raises their cap, it doesn't conjure them. */
+  function refillFromBag() {
+    const kit = Items.CONSUMABLES[player.cls.consumable];
+    if (!kit) return;
+    const slot = player.inv[kit.cat];
+    if (!slot || slot.id !== player.cls.consumable) return;
+    slot.n = Math.max(slot.n || 0, Classes.startFor(player.cls, player.bag));
+  }
+
   function addItem(cat, id, n, at) {
     const slot = player.inv[cat];
     if (!slot) return 0;
-    const cap = Classes.limitFor(player.cls, id);
+    const cap = Classes.limitFor(player.cls, id, player.bag);
     const where = at || player;
 
     // a different item in this slot? put the old one on the ground, don't bin it
@@ -1220,7 +1241,7 @@ const Game = (() => {
     if (!best) return false;
     const it = Items.CONSUMABLES[best.id];
     const slot = player.inv[best.cat];
-    const cap = Classes.limitFor(player.cls, best.id);
+    const cap = Classes.limitFor(player.cls, best.id, player.bag);
     // already full of this exact item? leave it where it is
     if (slot && slot.id === best.id && slot.n >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
     drops.splice(bi, 1);
@@ -1597,7 +1618,10 @@ const Game = (() => {
       t: it.time, total: it.time, label: it.name,
       onDone: () => {
         if (it.hp) player.hp = Math.min(player.maxHp, player.hp + it.hp);
-        if (it.adr) player.adrenaline = Math.min(100, player.adrenaline + it.adr);
+        /* Stacking past 100 is the whole point of the top band: it buys the
+           last stand, and it drains twice as fast while you hold it. Capping
+           at 100 here made that band unreachable. */
+        if (it.adr) player.adrenaline = Math.min(Combat.ADREN_MAX, player.adrenaline + it.adr);
         if (it.revive) reviveTeammate();
         hudMsg(it.name + ' used');
       },
@@ -1868,12 +1892,24 @@ const Game = (() => {
       }
       case 'armorT1': case 'armorT2': case 'armorT3': {
         const tier = +entry.id.slice(-1);
-        // upgrade whichever piece is further behind
-        const slot = (player.vest <= player.helmet) ? 'vest' : 'helmet';
-        if (player[slot] >= tier) { hudMsg('Already better armored'); break; }
+        // upgrade whichever of the three pieces is furthest behind
+        const slots = [
+          { k: 'vest', v: player.vest || 0 },
+          { k: 'helmet', v: player.helmet || 0 },
+          { k: 'bag', v: player.bag || 0 },
+        ].sort((a, b) => a.v - b.v);
+        const slot = slots[0].k;
+        if (player[slot] >= tier) { hudMsg('Already better equipped'); break; }
         player[slot] = tier;
-        const piece = slot === 'vest' ? Combat.vest(tier) : Combat.helmet(tier);
-        hudMsg(`${piece.name} equipped (${Math.round(piece.speed * -100)}% speed)`);
+        if (slot === 'bag') {
+          // a bigger bag tops you straight up to its new ceiling
+          const b = Combat.bag(tier);
+          refillFromBag();
+          hudMsg(`${b.name} equipped (×${b.capacity} carry capacity)`);
+        } else {
+          const piece = slot === 'vest' ? Combat.vest(tier) : Combat.helmet(tier);
+          hudMsg(`${piece.name} equipped (${Math.round(piece.speed * -100)}% speed)`);
+        }
         break;
       }
       case 'jeep': player.inv.tokens.push('jeep'); hudMsg('Jeep token — press B to call in'); break;
@@ -1915,7 +1951,11 @@ const Game = (() => {
   }
   function detonate(g) {
     const it = g.item;
-    if (g.mode === 'fuze' || g.mode === 'impact' || g.mode === 'c4') { explode(g.x, g.y, it.damage, it.radius, g.team, g.owner); SFX.kill(); }
+    if (g.mode === 'fuze' || g.mode === 'impact' || g.mode === 'c4') {
+      // C4 is the demolition charge — it opens what ordinary explosives can't
+      explode(g.x, g.y, it.damage, it.radius, g.team, g.owner, 'explosive', g.mode === 'c4' ? 'c4' : null);
+      SFX.kill();
+    }
     else if (g.mode === 'smoke') smokes.push({ x: g.x, y: g.y, r: it.radius, life: it.duration, max: it.duration });
     else if (g.mode === 'flash') flashDetonate(g.x, g.y, it.radius, it.blind, g.team);
   }
@@ -2466,6 +2506,7 @@ const Game = (() => {
     // adrenaline heals — but spends itself doing it, so it only drains while
     // you're actually hurt. At full health it just sits there buffing you.
     for (const a of agents) {
+      if (a.alive) updateLastStand(a, dt);
       if (!a.alive || a.isVehicle || !a.adrenaline) continue;
       const adr = Combat.adrenaline(a.adrenaline);
       if (a.hp < a.maxHp) {
@@ -2606,16 +2647,31 @@ const Game = (() => {
         if (b.x < 0 || b.y < 0 || b.x > MAP_W || b.y > MAP_H) { dead = true; break; }
         if (bulletVsWall(b)) { dead = true; break; }
 
-        for (const a of agents) {
+        // a fuzed charge goes off on its timer, so it bounces past people too
+        for (const a of (b.fuze ? [] : agents)) {
           if (!a.alive || a.team === b.team || a.riding) continue;
-          if (dist2(a.x, a.y, b.x, b.y) < a.r * a.r) {
+          // Tracer rounds are fatter, so they connect where a normal one misses
+          const hitR = a.r * (b.hitR || 1);
+          if (dist2(a.x, a.y, b.x, b.y) < hitR * hitR) {
+            /* Anti-Tank through a person: it is built for armour and simply
+               isn't stopped by infantry. It punches through for a flat 50 and
+               carries on as an ordinary round, having spent what made it
+               special — so the tank behind them no longer gets the bonus. */
+            if (b.antiTank && !a.isVehicle) {
+              applyDamage(a, Weapons.ANTI_TANK_PASSTHROUGH, b.owner, 'normal');
+              spawnFx(b.x, b.y, TEAM_COLORS[a.team], 6);
+              b.antiTank = false; b.dmgType = 'normal';
+              continue;                      // still flying
+            }
             if (!b.splash) {   // explosives deal their damage via the blast below
               // falloff starts partway into the gun's own effective range
               const travelled = Math.hypot(b.x - b.sx, b.y - b.sy);
               const start = (b.range || FALLOFF_STEP * 6) * FALLOFF_START;
               const steps = Math.max(0, travelled - start) / FALLOFF_STEP;
               const mult = Math.max(FALLOFF_MIN, 1 - b.falloff * steps);
-              applyDamage(a, b.dmg * mult, b.owner, b.dmgType);
+              // armour is what this round is for: double against a hull
+              const at = b.antiTank && a.isVehicle ? 2 : 1;
+              applyDamage(a, b.dmg * mult * at, b.owner, b.dmgType);
               spawnFx(b.x, b.y, TEAM_COLORS[a.team], 4);
             }
             dead = true; break;
@@ -2707,6 +2763,12 @@ const Game = (() => {
       damageStructure(wall, b.dmg, b.x, b.y);
     }
 
+    /* A fuzed round doesn't care what it hit — it is going off on its timer,
+       not on contact — so anything that would normally stop or swallow it
+       becomes something to bounce off instead. That is the whole point of the
+       ammo: put a charge somewhere you have no line on. */
+    if (b.fuze && bal.mode !== 'through') return fuzeBounce(b, wall);
+
     if (bal.mode === 'stop') { if (!b.splash) spawnFx(b.x, b.y, '#8ea0c9', 3); return true; }
 
     if (bal.mode === 'pen') {
@@ -2717,7 +2779,29 @@ const Game = (() => {
       return b.dmg < 1;                          // spent rounds stop in the wall
     }
 
-    // ricochet — bounce off whichever face the round actually crossed
+    return ricochet(b, wall, bal);
+  }
+
+  /* A fuzed round rebounding off cover. Same geometry as a ricochet, but it
+     keeps its damage — it hasn't gone off yet, it has only bounced — and it
+     sheds speed each time so it settles in a room instead of pinballing
+     across the map for the full five seconds. */
+  const FUZE_BOUNCE_KEEP = 0.55;
+  function fuzeBounce(b, wall) {
+    const cameFromSide = b.px === undefined
+      ? wall.w < wall.h
+      : (b.px < wall.x || b.px > wall.x + wall.w);
+    if (cameFromSide) b.vx = -b.vx; else b.vy = -b.vy;
+    b.vx *= FUZE_BOUNCE_KEEP; b.vy *= FUZE_BOUNCE_KEEP;
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    b.x += (b.vx / sp) * BULLET_STEP * 1.5; b.y += (b.vy / sp) * BULLET_STEP * 1.5;
+    b.inWall = null;
+    spawnFx(b.x, b.y, '#ffd36a', 2);
+    return false;                    // still live, still counting down
+  }
+
+  function ricochet(b, wall, bal) {
+    // bounce off whichever face the round actually crossed
     const cameFromSide = b.px === undefined
       ? wall.w < wall.h                                  // no history: use the wall's long axis
       : (b.px < wall.x || b.px > wall.x + wall.w);
@@ -2750,6 +2834,43 @@ const Game = (() => {
 
   /* The one place damage is applied. Everything upstream just says how much
      raw damage of what type; combat.js decides what actually lands. */
+  /* ---------------- last stand ----------------
+     Above 100 adrenaline a hit that would kill you doesn't, yet: you keep
+     fighting on (Adrenaline−100)/5 seconds of borrowed time, held at 1 HP.
+     Heal past it and you keep the life; run out and you drop where you stand.
+
+     It is deliberately a *reward for hoarding* rather than a safety net — the
+     same top band drains twice as fast, so the seconds are being spent the
+     whole time you hold them. */
+  function lastStand(a) {
+    if (a.isVehicle) return false;
+    if (a.standT > 0) { a.hp = 1; return true; }      // already on borrowed time
+    const secs = Combat.adrenaline(a.adrenaline).lastStand;
+    if (secs <= 0) return false;
+    a.standT = secs;
+    a.hp = 1;
+    spawnFx(a.x, a.y, '#ff4b5c', 16);
+    if (a.isPlayer) { hudMsg(`LAST STAND — ${secs.toFixed(1)}s`); SFX.hurt(); }
+    return true;
+  }
+
+  /* Burn down the borrowed time. Ticked for every agent each frame; when it
+     runs out, whatever was keeping them up stops. */
+  function updateLastStand(a, dt) {
+    if (!a.standT || a.standT <= 0) return;
+    a.standT -= dt;
+    if (a.isPlayer && Math.random() < dt * 8) spawnFx(a.x, a.y, '#ff4b5c', 1);
+    if (a.standT <= 0) {
+      a.standT = 0;
+      /* The adrenaline went into staying upright, so it is gone. That is also
+         what stops this repeating: with none left there is no second stand to
+         enter on the way down. */
+      a.adrenaline = 0;
+      // out of time: finish what the killing blow started
+      applyDamage(a, 999, a.lastHitBy || null, 'true');
+    }
+  }
+
   function applyDamage(a, dmg, owner, type = 'normal', zone = null) {
     dmg *= shieldFactor(a, owner);
     // dug in: infantry in a trench dodge half of what comes at them
@@ -2767,6 +2888,7 @@ const Game = (() => {
       return;
     }
     a.hp -= dmg;
+    if (owner) a.lastHitBy = owner;      // credited if a last stand runs out
     if (DB.getSettings().dmgNumbers) {
       dmgNums.push({
         x: a.x, y: a.y - a.r, val: Math.round(dmg), life: 0.7,
@@ -2775,9 +2897,11 @@ const Game = (() => {
     }
     if (hit.zone === 'head' && owner && owner.isPlayer) SFX.reward();
     if (a.isPlayer) SFX.hurt();
+    if (a.hp <= 0 && lastStand(a)) return;   // running on adrenaline, not blood
     if (a.hp <= 0) {
       a.hp = 0; a.alive = false;
       a.deaths++; a.streak = 0;
+      a.standT = 0;
       spawnFx(a.x, a.y, TEAM_COLORS[a.team], 14);
       if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
       pushKill(owner, a, hit.zone);
@@ -3796,11 +3920,12 @@ const Game = (() => {
       y -= HUD.rowH;
     }
     // armour
-    if (p.vest || p.helmet) {
+    if (p.vest || p.helmet || p.bag) {
       ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#9fd8ff';
       const bits = [];
       if (p.vest) bits.push(`🦺 T${p.vest} ${Math.round(Combat.vest(p.vest).body * 100)}% body`);
       if (p.helmet) bits.push(`⛑ T${p.helmet} ${Math.round(Combat.helmet(p.helmet).head * 100)}% head`);
+      if (p.bag) bits.push(`🎒 T${p.bag} ×${Combat.bag(p.bag).capacity} carry`);
       ctx.fillText(bits.join('   '), x, y);
       y -= HUD.rowH;
     }
@@ -4512,7 +4637,7 @@ const Game = (() => {
       online.respawn = mine.respawn || 0;   // the host owns the clock, not us
       player.ammo = mine.ammo;
       player.adrenaline = mine.adrenaline;
-      player.vest = mine.vest; player.helmet = mine.helmet;
+      player.vest = mine.vest; player.helmet = mine.helmet; player.bag = mine.bag || 0;
       reconcile(dt);
     }
   }
@@ -4722,8 +4847,56 @@ const Game = (() => {
 
   const isOnline = () => !!online;
 
+  /* ---------------- tuning hook ----------------
+     A window onto the player and the rounds in flight, and a way to put them
+     into a specific state. The damage tables have a lot of rows that only
+     show themselves in rare moments — a last stand, a fuzed round mid-bounce,
+     an Anti-Tank round meeting a person — and waiting for those to happen
+     naturally is not a way to check them. Read-mostly, and it changes nothing
+     about how the game plays unless something calls it. */
+  const debug = {
+    state() {
+      if (!player) return null;
+      const kit = player.inv && Items.CONSUMABLES[player.cls.consumable];
+      const slot = kit && player.inv[kit.cat];
+      return {
+        hp: Math.round(player.hp), alive: player.alive,
+        adrenaline: Math.round(player.adrenaline), standT: player.standT || 0,
+        vest: player.vest, helmet: player.helmet, bag: player.bag,
+        cls: player.cls.name, weapon: player.weapon.name,
+        ammoName: player.weapon.ammoName || null, fuze: player.weapon.fuze || 0,
+        antiTank: !!player.weapon.antiTank, mag: player.weapon.mag,
+        kit: slot ? slot.n : 0,
+      };
+    },
+    set(patch) {
+      if (!player) return;
+      for (const k of ['hp', 'adrenaline', 'vest', 'helmet', 'bag', 'x', 'y', 'angle']) {
+        if (patch[k] !== undefined) player[k] = patch[k];
+      }
+      if (patch.bag !== undefined) refillFromBag();
+      if (patch.x !== undefined || patch.y !== undefined) resolveObstacles(player);
+    },
+    hit(dmg, type) { if (player) applyDamage(player, dmg, null, type || 'normal', 'body'); },
+    // swap the loaded specialized ammo without going back to the gunsmith
+    setAmmo(name) {
+      if (!player) return;
+      const base = Weapons.byId[player.baseWeapon.id] || player.baseWeapon;
+      equipWeapon(player, Weapons.configure(base, { ammo: name || null }));
+    },
+    respawn() { if (player) { player.alive = true; respawnAgent(player); } },
+    fire(n) {
+      let fired = 0;
+      for (let i = 0; i < (n || 1); i++) { const before = bullets.length; fireOnce(player); if (bullets.length > before) fired++; }
+      return fired;
+    },
+    bullets: () => bullets.length,
+    // the exact number the movement code is using this frame
+    moveSpeed: () => (player ? RoomSim.moveSpeedFor(player, false) : 0),
+  };
+
   return {
-    start, startOnline, isOnline, netDebug,
+    start, startOnline, isOnline, netDebug, debug,
     setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
     // the map, as the simulation needs to see it (see netWorld above)
     netWorld, netObjectives,

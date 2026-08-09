@@ -312,7 +312,7 @@
         id, send, name: (info.name || 'Operator').slice(0, 16), team,
         x: spawn.x, y: spawn.y, angle: 0,
         hp: C.maxHpFor('infantry'), maxHp: C.maxHpFor('infantry'),
-        klass: 'infantry', vest: 0, helmet: 0, adrenaline: 0,
+        klass: 'infantry', vest: 0, helmet: 0, bag: 0, adrenaline: 0,
         weaponId: weapon.id, weapon, cls,
         ammo: weapon.mag, reloadUntil: 0, fireCd: 0,
         alive: true, respawnAt: 0, kills: 0, deaths: 0,
@@ -538,7 +538,12 @@
           vx: Math.cos(ang) * w.bulletSpeed, vy: Math.sin(ang) * w.bulletSpeed,
           sx: p.x, sy: p.y, dmg: w.damage, falloff: w.falloff, range: w.range,
           dmgType: w.dmgType, team: p.team, owner: p.id,
-          life: Math.min(2.4, (w.range * 1.15) / w.bulletSpeed),
+          /* Specialized ammo, mirroring game.js so an online round behaves the
+             way the shooter's own screen showed it: a Tracer is fatter, an
+             Anti-Tank punches through people, a Fuze flies on a timer rather
+             than to its range. */
+          hitR: w.hitboxMult || 1, fuze: w.fuze || 0, antiTank: !!w.antiTank,
+          life: w.fuze ? w.fuze : Math.min(2.4, (w.range * 1.15) / w.bulletSpeed),
         });
       }
       // fired the last round: start the reload, and let step() fill it
@@ -563,9 +568,18 @@
           b.x += b.vx * hop; b.y += b.vy * hop;
           if (b.x < 0 || b.y < 0 || b.x > this.map.w || b.y > this.map.h) { dead = true; break; }
           if (this.wallIndex && this.bulletVsWall(b)) { dead = true; break; }
-          for (const p of this.players.values()) {
+          // a fuzed charge detonates on its timer, so it flies past people
+          for (const p of (b.fuze ? [] : this.players.values())) {
             if (!p.alive || p.team === b.team) continue;
-            if (dist2(p.x, p.y, b.x, b.y) < BODY_R * BODY_R) {
+            const hitR = BODY_R * (b.hitR || 1);
+            if (dist2(p.x, p.y, b.x, b.y) < hitR * hitR) {
+              /* Anti-Tank isn't stopped by infantry: a flat 50 on the way
+                 through, and it comes out an ordinary round. */
+              if (b.antiTank) {
+                this.damage(p, W.ANTI_TANK_PASSTHROUGH, 'normal', this.players.get(b.owner));
+                b.antiTank = false; b.dmgType = 'normal';
+                continue;
+              }
               const travelled = Math.hypot(b.x - b.sx, b.y - b.sy);
               const start = (b.range || FALLOFF_STEP * 6) * FALLOFF_START;
               const steps = Math.max(0, travelled - start) / FALLOFF_STEP;
@@ -676,7 +690,7 @@
           id: p.id, x: Math.round(p.x), y: Math.round(p.y),
           angle: +p.angle.toFixed(3), hp: Math.round(p.hp), alive: p.alive,
           team: p.team, name: p.name, ammo: p.ammo, adrenaline: Math.round(p.adrenaline),
-          vest: p.vest, helmet: p.helmet, weaponId: p.weaponId, skin: p.skin,
+          vest: p.vest, helmet: p.helmet, bag: p.bag, weaponId: p.weaponId, skin: p.skin,
           kills: p.kills, deaths: p.deaths,
           // seconds until this one is back on their feet, for the HUD
           respawn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - now()) / 1000)),

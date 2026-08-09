@@ -169,9 +169,9 @@ const Weapons = (() => {
     ['Vector','SMG','7.5',25,'33, 25      , 33','1.6s',3.97,0.1,'0.15s',2,8,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','Rc,S,H','Rd,A,W','F,M,D',44,12,'Absurd rate of fire, evaporates past a room',4.5],
     ['Uzi','SMG','8.75',21,'20, 32','1.8s',15.9,0.2,'0.2s',4,6,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','F,Rd,W','M,H,D','Rc,A,S',40,11,'Sprays wildly, and worse at a run - a doorway weapon',11],
     ['P90','SMG','12',14,'50','2s',4.76,0.15,'0.25s',3,10,'Yellow','Automatic','12%','None','Suppressor','HP, Tracer','Assault','M,A,D','Rc,F,S','Rd,H,W',48,17,'50-round mag and real accuracy; the SMG with range',4],
-    ['M870','Shotgun','12.5',1.11,'5','0.75s/shell',10,2.1,'0.3s',5,8,'Red','Non-Automatic','10%','9 Pellets','Sawed-Off, Scope','Slug, Birdshot','Breacher','D,H,W','Rd,S,Rc','F,M,A',40,13,'A full 9-pellet hit at contact range kills outright',2],
-    ['BM4','Shotgun','10.5',2.2,'7','0.52s/shell',6,1.75,'0.5s',4,10,'Red','Semi-Automatic','7%','9 Pellets','Sawed-Off, Scope','Slug, Birdshot','Breacher','Rd,A,S','F,M,W','D,H,Rc',46,18,'Flechette loads: the shotgun that still works at range',4],
-    ['SPAS-12','Shotgun','8.75',1.33,'9','0.55s/shell',3,1.4,'0.4s',6,12,'Red','Semi-Automatic','5%','9 Pellets','Sawed-Off, Scope','Slug, Birdshot','Breacher','F,M,Rc','D,A,H','Rd,S,W',42,15,'Semi-auto buckshot - two triggers, two bodies',3],
+    ['M870','Shotgun','12.5',1.11,'5','0.75s/shell',10,2.1,'0.3s',5,8,'Red','Non-Automatic','10%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','D,H,W','Rd,S,Rc','F,M,A',40,13,'A full 9-pellet hit at contact range kills outright',2],
+    ['BM4','Shotgun','10.5',2.2,'7','0.52s/shell',6,1.75,'0.5s',4,10,'Red','Semi-Automatic','7%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','Rd,A,S','F,M,W','D,H,Rc',46,18,'Flechette loads: the shotgun that still works at range',4],
+    ['SPAS-12','Shotgun','8.75',1.33,'9','0.55s/shell',3,1.4,'0.4s',6,12,'Red','Semi-Automatic','5%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','F,M,Rc','D,A,H','Rd,S,W',42,15,'Semi-auto buckshot - two triggers, two bodies',3],
     ['Mk 14 EBR','DMR','28',4.35,'20','2.5s',1.586,0.9,'0.42s',0.55,12,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','D,A,M','Rd,H,W','F,Rc,S',66,38,'20-round DMR mag - the volume marksman rifle',4.25],
     ['SVD Dragunov','DMR','37',3.6,'10','2.5s',1.586,1.05,'0.45s',0.5,10,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','D,Rd,S','A,H,W','F,M,Rc',68,40,'Three body shots, or two with a head in them',4.5],
     ['QBU-88','DMR','23',5.4,'10','2.4s',1.586,0.75,'0.38s',0.45,9,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','F,A,Rc','D,Rd,S','M,H,W',70,36,'Fastest-cycling DMR, steadiest on the move',3],
@@ -184,9 +184,9 @@ const Weapons = (() => {
     ['M4','Carbine','13',11,'30','3.1s',3.17,0.18,'0.24s',1,7,'Purple','Automatic','9%','None','Scope, Suppressor','AP, Tracer, HP','Medic','A,Rc,H','M,Rd,W','D,F,S',54,22,'The all-rounder: an M16 that trades reach for handling',4],
     ['AKS-74U','Carbine','13.5',11,'30','2.4s',4.76,0.24,'0.22s',1.35,6,'Purple','Automatic','10%','None','Scope, Suppressor','AP, Tracer, HP','Medic','D,H,W','F,M,Rd','A,Rc,S',48,19,'Cut-down AK: quickest handling, wanders when you run',7.5],
     ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',60,25,'Bullpup: wide from the hip but rock-steady on the move',0.5],
-    ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',24,20,'Lobbed HE round - arcs into cover',3],
-    ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
-    ['QLZ-87','Launcher','60',4,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',26,22,'Automatic grenade launcher - area denial on a tripod',6],
+    ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','Fuze, Anti-Tank','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',24,20,'Lobbed HE round - arcs into cover',3],
+    ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','Fuze, Anti-Tank','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
+    ['QLZ-87','Launcher','60',4,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','Fuze, Anti-Tank','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',26,22,'Automatic grenade launcher - area denial on a tripod',6],
   ];
 
   /* ---------- parsing helpers ---------- */
@@ -346,6 +346,12 @@ const Weapons = (() => {
       buffs: ['Single-use airstrike'], debuffs: ['-5% Speed', '+50% Handling'],
       mods: { speedMult: 0.95, handlingMult: 1.50 }, airstrike: true,
     },
+    'Double Barrel': {
+      name: 'Double Barrel', icon: '🔱',
+      buffs: ['+100% Magazine'],
+      debuffs: ['+50% Reload', '+50% Weight', '+50% Handling'],
+      mods: { magMult: 2, reloadMult: 1.50, weightMult: 1.50, handlingMult: 1.50 },
+    },
   };
 
   /* ---------- SPECIALIZED AMMO ----------
@@ -359,8 +365,11 @@ const Weapons = (() => {
     },
     'Tracer': {
       name: 'Tracer', icon: '✨',
-      buffs: ['Glowing rounds'], debuffs: ['Glowing rounds — they see you too'],
-      mods: {}, tracer: true,
+      /* A fatter round, not just a brighter one: double the hitbox is the
+         reason to take it, and the glow is the price — anyone watching the
+         colour of your tracers knows what class you are. */
+      buffs: ['+100% Hitbox'], debuffs: ['Enemies can read your class off the tracer colour'],
+      mods: { hitboxMult: 2 }, tracer: true,
     },
     'HP': {
       name: 'HP', icon: '🩸',
@@ -378,7 +387,27 @@ const Weapons = (() => {
       buffs: ['+100% Pellets', '-50% Recoil'], debuffs: ['+50% Falloff', '-50% Penetration'],
       mods: { pelletsMult: 2, recoilMult: 0.50, falloffMult: 1.50, penetration: -0.50 },
     },
+    'Fuze': {
+      name: 'Fuze', icon: '⏱️',
+      /* Turns a launcher round into a thrown charge: it stops going off when
+         it lands on something and instead bounces around for five seconds
+         before it does. For shooting round a corner, or into a room you can't
+         get an angle on. */
+      buffs: ['Detonates on a 5s timer, bouncing off whatever it hits'],
+      debuffs: ['No longer detonates on impact'],
+      mods: {}, fuze: 5,
+    },
+    'Anti-Tank': {
+      name: 'Anti-Tank', icon: '🛡️',
+      /* Made for armour and wasted on people: it punches straight through
+         infantry for a flat 50 and comes out the other side an ordinary
+         round, having spent what made it special. */
+      buffs: ['+100% damage to jeeps and tanks'],
+      debuffs: ['Passes through infantry for a flat 50, losing its Anti-Tank quality'],
+      mods: {}, antiTank: true, dmgType: 'heat',
+    },
   };
+  const ANTI_TANK_PASSTHROUGH = 50;   // what it does to a person on the way past
 
   /* ---------- apply attachments + ammo to a weapon ----------
      Returns a new weapon object; the base roster is never mutated. */
@@ -414,10 +443,18 @@ const Weapons = (() => {
       audio: mul('audioMult'),
       scopeRecoilMult: mul('scopeRecoilMult'),
       scopeMoveMult: mul('scopeMoveMult'),
+      // a Double Barrel is two magazines' worth before you have to reload
+      mag: Math.max(1, Math.round(base.mag * mul('magMult'))),
+      // Tracer rounds are physically fatter; the bullet loop scales its hit
+      // test by this rather than everything guessing at the ammo name
+      hitboxMult: mul('hitboxMult'),
       dmgType: ammo && ammo.dmgType ? ammo.dmgType : base.dmgType,
       tracer: all.some(m => m.tracer),
       launchGrenades: all.some(m => m.launchGrenades),
       airstrike: all.some(m => m.airstrike),
+      // Fuze is the delay in seconds; Anti-Tank is a flag the round carries
+      fuze: all.reduce((v, m) => m.fuze || v, 0),
+      antiTank: all.some(m => m.antiTank),
       attachedNames: picked.map(p => p.name),
       ammoName: ammo ? ammo.name : null,
     };
@@ -430,7 +467,7 @@ const Weapons = (() => {
 
   return {
     list, byId, BOT_POOL, AMMO_COLORS, CLASS_META, RATING_LABELS, TYPE_META, SCOPES, withMods, TILE,
-    ATTACHMENTS, AMMO_TYPES, configure,
+    ATTACHMENTS, AMMO_TYPES, configure, ANTI_TANK_PASSTHROUGH,
     allIds: () => list.map(w => w.id),
     default: 'm16',
     randomBot: () => BOT_POOL[Math.floor(Math.random() * BOT_POOL.length)],
