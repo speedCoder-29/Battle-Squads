@@ -150,7 +150,8 @@ const Game = (() => {
           for (const p of parts) { p.placement = pid; p.landmark = true; genAdd(p); }
           obstacles.push(...parts);
           invalidateRects();
-          const rec = { name, placement: pid, ...bb, floor: '#5a5f70', landmark: true };
+          const lst = Structures.styleOf(name);
+          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true };
           landmarks.push(rec);
           buildings.push(rec);
           furnish(name, bb, parts.rooms);
@@ -297,6 +298,12 @@ const Game = (() => {
     ['workshop', 3], ['museum', 3], ['barracks', 3], ['armory', 3], ['church', 3],
     ['gas-station', 3], ['fortress', 2], ['arena', 2], ['radio-tower', 2], ['mine', 2],
     ['vault', 2], ['subway', 2], ['command-center', 2],
+    /* These have blueprints and were never rolled: hospital, prison, bank and
+       bridge-fort had no entry here and are not landmarks either, so forty
+       generated maps in a row contained none of them. The four after those are
+       new. A building nothing can place is a building nobody has ever seen. */
+    ['hospital', 5], ['prison', 3], ['bank', 3], ['bridge-fort', 2],
+    ['clinic', 7], ['library', 5], ['garage', 6], ['watermill', 4],
   ];
   const COVER_MIX = [
     ['sandbag', 26], ['barricade', 22], ['wire', 20], ['wood', 16], ['metal', 10], ['rwall', 6],
@@ -468,6 +475,19 @@ const Game = (() => {
     dock:       { props: ['crate', 'barrel', 'pallet', 'ammoBox'], n: 16, loot: 6, floor: '#5a5646' },
     fortress:   { props: ['crate', 'locker', 'ammoBox'], n: 10, loot: 7, floor: '#545d66' },
     arena:      { props: ['crate', 'barrel', 'pallet'], n: 16, loot: 5, floor: '#5a5f6b' },
+    /* Buildings whose interiors are now proper rooms, and the ones that never
+       had a furniture list at all — a hospital and a prison were being drawn
+       as empty shells with no floor, because `floor` came from this table and
+       neither had an entry in it. */
+    hospital:   { props: ['bed', 'desk', 'locker', 'shelf', 'crate', 'ammoBox'], n: 34, loot: 0, floor: '#c8d4d2' },
+    prison:     { props: ['bed', 'locker', 'desk', 'rubble', 'crate'], n: 36, loot: 0, floor: '#767c84' },
+    bank:       { props: ['desk', 'locker', 'table', 'crate', 'ammoBox'], n: 22, loot: 8, floor: '#a89b7e' },
+    'radio-tower': { props: ['ammoBox', 'crate', 'desk', 'rubble'], n: 12, loot: 5, floor: '#4c5058' },
+    'bridge-fort': { props: ['sandpile', 'crate', 'ammoBox', 'barrel'], n: 14, loot: 6, floor: '#5f5a52' },
+    clinic:     { props: ['bed', 'desk', 'locker', 'crate', 'shelf'], n: 16, loot: 0, floor: '#c4d0cd' },
+    library:    { props: ['shelf', 'desk', 'table', 'crate', 'rubble'], n: 32, loot: 0, floor: '#9c8a6d' },
+    garage:     { props: ['tyre', 'ammoBox', 'crate', 'barrel', 'pallet', 'locker'], n: 26, loot: 0, floor: '#4f545c' },
+    watermill:  { props: ['crate', 'pallet', 'barrel', 'shelf', 'rubble'], n: 20, loot: 0, floor: '#6f6350' },
     /* The table's buildings. `loot` is ignored for these — their rooms say
        exactly what they hold — but they still want furniture and a floor. */
     resort:     { props: ['bed', 'table', 'shelf', 'desk', 'toilet', 'crate'], n: 54, loot: 0, floor: '#6b5747' },
@@ -548,6 +568,9 @@ const Game = (() => {
     }
   }
   let pendingRoomVehicles = [];
+  /* The hulls this map was generated with, kept after they are placed so the
+     room can be told about them (see netVehicles). */
+  let parkedVehicles = [];
 
   /* Fill a building: furniture against the inside of the walls, loot in the
      middle where you have to commit to grabbing it. */
@@ -600,6 +623,51 @@ const Game = (() => {
   const insideBuilding = (b, a) =>
     a && a.alive && a.x > b.x && a.x < b.x + b.w && a.y > b.y && a.y < b.y + b.h;
 
+  /* ---------------- what the building you're in does for you ----------------
+     A few buildings are worth holding rather than just looting: a hospital
+     treats you, an armoury refills you, a radio tower shows you where everyone
+     is. See Structures.BUILDING_EFFECTS.
+
+     Tracked as "which building am I in", recomputed once a frame rather than
+     per effect, and announced once on the way in so you know it is happening. */
+  let hereBuilding = null, hereEffect = null, resupplyT = 0;
+
+  function updateBuildingEffect(dt) {
+    if (!player || !player.alive) { hereBuilding = null; hereEffect = null; return; }
+    let found = null;
+    for (const b of buildings) { if (insideBuilding(b, player)) { found = b; break; } }
+    if (found !== hereBuilding) {
+      hereBuilding = found;
+      hereEffect = found ? Structures.effectOf(found.name) : null;
+      resupplyT = 0;
+      if (hereEffect) { hudMsg(hereEffect.label); SFX.click(); }
+    }
+    const e = hereEffect;
+    if (!e) return;
+    if (e.heal && player.hp < player.maxHp) {
+      player.hp = Math.min(player.maxHp, player.hp + e.heal * dt);
+      if (Math.random() < dt * 2) spawnFx(player.x, player.y, '#8ff0c0', 1);
+    }
+    if (e.adren) player.adrenaline = Math.min(Combat.ADREN_MAX, player.adrenaline + e.adren * dt);
+    if (e.resupply) {
+      resupplyT += dt;
+      if (resupplyT >= e.resupply) {
+        resupplyT = 0;
+        if (player.ammo < player.weapon.mag) {
+          player.ammo = player.weapon.mag; updateWeaponHud(); hudMsg('Magazine topped up');
+        } else {
+          const kit = Items.CONSUMABLES[player.cls.consumable];
+          if (kit) addItem(kit.cat, player.cls.consumable, 1);
+        }
+      }
+    }
+  }
+  /* the multipliers other systems ask about */
+  const hereDamageMult = () => (hereEffect && hereEffect.damage) || 1;
+  const hereToolRate = () => (hereEffect && hereEffect.toolRate) || 1;
+  const hereSpeed = () => (hereEffect && hereEffect.speed) || 1;
+  const hereReveal = () => (hereEffect && hereEffect.reveal) || 0;
+
   /* Scatter buildings across the island: valid terrain, clear of each other,
      clear of the objectives, and never sliced by the river. */
   /* ---------------- the buildings a map must have ----------------
@@ -646,7 +714,8 @@ const Game = (() => {
           obstacles.push(...parts);
           invalidateRects();
           const conf = FURNISH[name];
-          buildings.push({ name, placement: pid, ...bb, floor: conf ? conf.floor : null });
+          const st = Structures.styleOf(name);
+      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor });
           furnish(name, bb, parts.rooms);
           placedOne = true;
         }
@@ -693,7 +762,8 @@ const Game = (() => {
       obstacles.push(...parts);
       invalidateRects();
       const conf = FURNISH[name];
-      buildings.push({ name, placement: pid, ...bb, floor: conf ? conf.floor : null });
+      const st = Structures.styleOf(name);
+      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor });
       furnish(name, bb, parts.rooms);
     }
   }
@@ -812,19 +882,23 @@ const Game = (() => {
     const base = Weapons.byId[weaponId] || Weapons.byId[Weapons.default];
     // the player's saved attachments / ammo / skin are baked in at spawn
     const profile = isPlayer ? DB.getProfile() : null;
-    const w = isPlayer && profile
+    let w = isPlayer && profile
       ? Weapons.configure(base, { attachments: profile.attachments[base.id], ammo: profile.ammo[base.id] })
       : base;
     const skin = Skins.get(profile ? Skins.equipped(profile, base.id) : 'default');
+    // the one passive you deploy with; bots run bare (js/perks.js)
+    const perk = isPlayer ? ((profile && profile.perk) || Perks.DEFAULT) : Perks.DEFAULT;
+    // Bullet Strap is the one perk that rewrites the gun rather than the body
+    w = Perks.applyToWeapon(w, perk);
     const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
       team, isPlayer, alive: true,
       x: 0, y: 0, r: BODY_R, angle: 0,
       klass: 'infantry',                                    // see Combat.TARGETS
-      hp: Combat.maxHpFor('infantry'), maxHp: Combat.maxHpFor('infantry'),
+      // Beefy is the one perk that moves max HP
+      hp: Combat.maxHpFor('infantry', perk), maxHp: Combat.maxHpFor('infantry', perk),
       vest: 0, helmet: 0, bag: 0,                           // armour tiers 0-3 (vest, helmet, bag)
-      // the one passive you deploy with; bots run bare (js/perks.js)
-      perk: isPlayer ? ((DB.getProfile() || {}).perk || Perks.DEFAULT) : Perks.DEFAULT,
+      perk,
       weaponId: w.id, weapon: w,
       cls, tool: cls.tool, skin,                            // class kit + weapon skin
       diff: BotAI.individual(botLevel),                     // aim / survival / teamwork
@@ -930,7 +1004,8 @@ const Game = (() => {
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     zoom = zoomTarget = BASE_ZOOM;
     hudMessage = ''; hudMessageT = 0;
-    killFeed = []; killBanner = null;
+    killFeed = []; killBanner = null; soundPings = [];
+    hereBuilding = null; hereEffect = null; resupplyT = 0;
     marks = []; emotes = []; wheel = null; commsCd = 0;
     online = null;
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
@@ -948,7 +1023,7 @@ const Game = (() => {
       tokens: [],
     };
     const kit = Items.CONSUMABLES[player.cls.consumable];
-    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls, carryTier(player)) };
+    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls, carryTier(player), player.perk) };
     // everyone also deploys with a couple of bandages so you're never stranded
     if (kit && kit.cat !== 'heal') player.inv.heal = { id: 'bandage', n: 2 };
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
@@ -1131,9 +1206,9 @@ const Game = (() => {
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
     // online our magazine belongs to the host, so ask rather than assume
     if (online && a.isPlayer) online.transport.send('reload', {});
-    // Adren%/2 reload speedup, and a quarter off again for Quick Hands
+    // Adren%/2 reload speedup, and whatever the perk takes off on top
     a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline, a.perk).reload
-      * (Perks.has(a, 'quickhands') ? 0.75 : 1);
+      * Perks.mod(a, 'reloadMult', 1);
     a.burstLeft = 0;
     if (isYours(a)) { SFX.reload(); updateWeaponHud(); }
   }
@@ -1206,12 +1281,64 @@ const Game = (() => {
     a.bloom = Math.min(w.bloomMax, a.bloom + w.recoilKick);
     spawnFx(a.x + Math.cos(a.angle) * a.r, a.y + Math.sin(a.angle) * a.r, '#ffd36a', pellets > 1 ? 5 : 3);
     // a suppressor really does keep you quiet: bots only "hear" loud shots
-    if ((!w.audio || w.audio > 0.5) && !Perks.has(a, 'ghost')) alertNearbyBots(a);
+    if ((!w.audio || w.audio > 0.5) && !Perks.mod(a, 'silent', false)) alertNearbyBots(a);
+    logGunshot(a);
     if (isYours(a)) { SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud(); }
   }
 
   /* Gunfire is a giveaway: bots within earshot of an unsuppressed shot look
      your way. A Suppressor drops the report below that threshold entirely. */
+  /* ---------------- Portable Satellite ----------------
+     A shot you can hear becomes a shot you can see. Every report inside
+     earshot is logged, and the HUD draws a marker on the rim of the screen
+     pointing at it with the distance in tiles — so the perk turns the audio
+     cue the game already gives you into something you can act on without
+     having to guess a direction from a stereo pan.
+
+     Kept short: a contact two seconds old is history, not intelligence. */
+  const PING_LIFE = 2.5;
+  let soundPings = [];
+  function logGunshot(shooter) {
+    if (!player || !player.alive || shooter === player) return;
+    if (!Perks.mod(player, 'sound', false)) return;
+    if (shooter.team === player.team) return;           // your own squad isn't a contact
+    if (dist2(shooter.x, shooter.y, player.x, player.y) > (TILE * 30) ** 2) return;
+    soundPings.push({ x: shooter.x, y: shooter.y, life: PING_LIFE });
+    if (soundPings.length > 24) soundPings.shift();
+  }
+  const updateSoundPings = (dt) => {
+    for (let i = soundPings.length - 1; i >= 0; i--) {
+      if ((soundPings[i].life -= dt) <= 0) soundPings.splice(i, 1);
+    }
+  };
+
+  function drawSoundPings() {
+    if (!soundPings.length || !player) return;
+    const cx = W / 2, cy = H / 2, rim = Math.min(W, H) * 0.36;
+    ctx.save();
+    for (const s of soundPings) {
+      const a = Math.atan2(s.y - player.y, s.x - player.x);
+      const tiles = Math.round(Math.hypot(s.x - player.x, s.y - player.y) / TILE);
+      const fade = Math.min(1, s.life / PING_LIFE);
+      const px = cx + Math.cos(a) * rim, py = cy + Math.sin(a) * rim;
+      ctx.globalAlpha = fade;
+      // a chevron pointing the way, and how far
+      ctx.translate(px, py); ctx.rotate(a);
+      ctx.fillStyle = '#ffcf4a';
+      ctx.beginPath();
+      ctx.moveTo(11, 0); ctx.lineTo(-7, -7); ctx.lineTo(-3, 0); ctx.lineTo(-7, 7);
+      ctx.closePath(); ctx.fill();
+      ctx.rotate(-a); ctx.translate(-px, -py);
+      ctx.font = 'bold 10px Segoe UI'; ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillText(`${tiles}`, px + Math.cos(a) * 17 + 1, py + Math.sin(a) * 17 + 1);
+      ctx.fillStyle = '#ffe9a8';
+      ctx.fillText(`${tiles}`, px + Math.cos(a) * 17, py + Math.sin(a) * 17);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
   function alertNearbyBots(shooter) {
     const earshot = (TILE * 22) ** 2;   // a shot carries about a screen and a half
     for (const o of agents) {
@@ -1328,17 +1455,17 @@ const Game = (() => {
     if (!kit) return;
     const slot = player.inv[kit.cat];
     if (!slot || slot.id !== player.cls.consumable) return;
-    slot.n = Math.max(slot.n || 0, Classes.startFor(player.cls, carryTier(player)));
+    slot.n = Math.max(slot.n || 0, Classes.startFor(player.cls, carryTier(player), player.perk));
   }
 
   /* How much you can hold, as a bag tier. A Mule counts as wearing one bag
      better than they are — including no bag at all, which becomes a T1. */
-  const carryTier = (a) => Math.min(3, (a.bag || 0) + (Perks.has(a, 'mule') ? 1 : 0));
+  const carryTier = (a) => Math.min(3, a.bag || 0);
 
   function addItem(cat, id, n, at) {
     const slot = player.inv[cat];
     if (!slot) return 0;
-    const cap = Classes.limitFor(player.cls, id, carryTier(player));
+    const cap = Classes.limitFor(player.cls, id, carryTier(player), player.perk);
     const where = at || player;
 
     // a different item in this slot? put the old one on the ground, don't bin it
@@ -1388,9 +1515,13 @@ const Game = (() => {
       if (dd < bd) { bd = dd; best = d; bi = i; }
     }
     if (!best) return false;
+    /* One pile, one taker. Taking it locally let two people both pick up the
+       same stack, and then the next snapshot put it back on the floor for
+       whichever of them the room had said no to. */
+    if (online) { online.transport.send('grab', {}); SFX.click(); return true; }
     const it = Items.CONSUMABLES[best.id];
     const slot = player.inv[best.cat];
-    const cap = Classes.limitFor(player.cls, best.id, carryTier(player));
+    const cap = Classes.limitFor(player.cls, best.id, carryTier(player), player.perk);
     // already full of this exact item? leave it where it is
     if (slot && slot.id === best.id && slot.n >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
     drops.splice(bi, 1);
@@ -1427,7 +1558,7 @@ const Game = (() => {
        then have the room push us back out of the hole. */
     if (online) {
       online.transport.send('melee', {});
-      player.toolCd = player.tool.cooldown;      // local rate limit, so the arc animates once
+      player.toolCd = player.tool.cooldown * hereToolRate();      // local rate limit, so the arc animates once
       player.swingT = 0.18;
       SFX.click();
       return;
@@ -1606,9 +1737,24 @@ const Game = (() => {
            a decal and the barrels were crates. */
         slow: k.slow || 0, dps: k.dps || 0,
         explodes: k.explodes || null,
+        /* Whether you can see over it. The room needs this now that it decides
+           who a flashbang blinds and what a sentry can shoot at — both of
+           which are line-of-sight questions it could not previously ask. */
+        tall: Structures.blocksSight(o),
       };
     });
   }
+  /* Where the loot is. Rolled by the room, not by each client: two people
+     walking up to the same gold crate both used to get a legendary out of it,
+     because each of them opened their own private copy. Position in the list
+     is the name both ends use, exactly as with the walls. */
+  const netCrates = () => crates.map(c => ({ x: c.x, y: c.y, tier: c.tier, needs: c.needs || null }));
+  /* The hulls parked on the map — garage jeeps, a camp's car park. They belong
+     to nobody until somebody climbs in, which is what makes crossing the map
+     for a parking lot worth doing, and online that was worth nothing at all:
+     startOnline() strips every non-player agent, so the room never heard about
+     them and every garage stood empty. */
+  const netVehicles = () => parkedVehicles.slice();
   /* Trenches are dug during the match rather than generated, so this is
      normally empty at hand-over — it exists so a host that reloads the world
      mid-match doesn't fill in everyone's cover. */
@@ -1642,7 +1788,7 @@ const Game = (() => {
      otherwise would — the difference between bouncing off a metal wall and
      opening it. */
   const canBreach = (t, s, who) => Combat.canDamageStructure(s, {
-    kind: 'melee', pierce: t.pierce + (Perks.has(who, 'breacher') ? 1 : 0), clears: t.clears,
+    kind: 'melee', pierce: t.pierce + Perks.mod(who, 'piercePlus', 0), clears: t.clears,
   });
   function toolStructureDamage(t, s) {
     if (t.clears === s.type) return s.maxHp;             // clearing tools cut straight through
@@ -1666,7 +1812,8 @@ const Game = (() => {
     return { hit: seen.length, blocked: !!tooTough };
   }
   function damageStructure(s, dmg, hx, hy, who) {
-    s.hp -= dmg * (Perks.has(who, 'breacher') ? 2 : 1);
+    s.hp -= dmg * Perks.mod(who, 'structureMult', 1);
+    if (who) s.lastAttacker = who;      // credited for the salvage, and the blast
     spawnFx(hx === undefined ? s.x + s.w / 2 : hx, hy === undefined ? s.y + s.h / 2 : hy, '#cfd8ee', 5);
     if (s.hp <= 0) destroyStructure(s);
   }
@@ -1690,6 +1837,17 @@ const Game = (() => {
     // survev-style props do something on the way out
     if (k.drops) spillLoot(cx, cy, k.drops);
     if (k.explodes) cookOff(s, cx, cy, k.explodes);
+    /* Scavenger: anything you break might have had something in it. Only for
+       things that don't already drop loot — a crate is not worth breaking
+       twice — and only for whoever actually broke it. */
+    if (!k.drops) {
+      const by = s.lastAttacker;
+      const odds = Perks.mod(by, 'salvage', 0);
+      if (odds > 0 && Math.random() < odds) {
+        spillLoot(cx, cy, 'regular');
+        if (by.isPlayer) hudMsg('Salvaged something from the wreckage');
+      }
+    }
   }
 
   /* a broken crate scatters what a crate of that tier would have held */
@@ -1747,7 +1905,7 @@ const Game = (() => {
      inside one and bots lose you. */
   function inConcealment(a) {
     // a Ghost doesn't have to stop to disappear into a bush
-    if (!Perks.has(a, 'ghost') && (a.stillT === undefined || a.stillT < 0.35)) return false;
+    if (!Perks.mod(a, 'moveConceal', false) && (a.stillT === undefined || a.stillT < 0.35)) return false;
     const arr = gridAt(bulletIndex(), a.x, a.y);
     if (!arr) return false;
     return arr.some(o => kindOf(o).conceals && inRect(a.x, a.y, o));
@@ -1801,6 +1959,16 @@ const Game = (() => {
     if (!slot || !slot.id || slot.n <= 0) { hudMsg('No grenade equipped'); return; }
     const it = Items.CONSUMABLES[slot.id];
     const t = worldMouse();
+    /* Online the room throws it. It owns the grenade from the moment it leaves
+       your hand — where it lands, who it catches, whether you still had one to
+       throw — and it caps the range itself, so the target below is a request,
+       not a destination. Lobbing a local copy alongside would draw two of
+       them and hurt nobody on anyone else's screen. */
+    if (online) {
+      online.transport.send('throw', { x: Math.round(t.x), y: Math.round(t.y) });
+      SFX.click();
+      return;
+    }
     let dx = t.x - player.x, dy = t.y - player.y; const d = Math.hypot(dx, dy) || 1;
     // a Grenade Launcher launches them: further, faster, and flat instead of lobbed
     const gl = !!player.weapon.launchGrenades;
@@ -1821,6 +1989,8 @@ const Game = (() => {
     const slot = player.inv.heal;
     if (!slot || !slot.id || slot.n <= 0) { hudMsg('No heal item'); return; }
     const it = Items.CONSUMABLES[slot.id];
+    // the room runs the clock, so being shot mid-drink is decided in one place
+    if (online) { online.transport.send('heal', {}); SFX.reload(); return; }
     player.channel = {
       t: it.time, total: it.time, label: it.name,
       onDone: () => {
@@ -1852,6 +2022,9 @@ const Game = (() => {
     const slot = player.inv.tactical;
     if (!slot || !slot.id || slot.n <= 0) { hudMsg('No tactical item'); return; }
     const it = Items.CONSUMABLES[slot.id];
+    /* A mine has to trigger for everyone or nobody, and a sentry has to shoot
+       at people this client cannot even see. Both belong to the room. */
+    if (online) { online.transport.send('deploy', {}); SFX.capture(); return; }
     if (it.mode === 'mine') deployables.push({ type: 'mine', x: player.x, y: player.y, team: player.team, owner: player, item: it, arm: it.arm, life: 60 });
     else if (it.mode === 'wall') {
       const wx = player.x + Math.cos(player.angle) * 42, wy = player.y + Math.sin(player.angle) * 42;
@@ -1897,8 +2070,13 @@ const Game = (() => {
   function useToken() {
     if (!canAct()) return;
     if (!player.inv.tokens.length) { hudMsg('No call-in tokens (open crates!)'); return; }
-    const t = player.inv.tokens.shift();
     const p = worldMouse();
+    if (online) {
+      online.transport.send('token', { x: Math.round(p.x), y: Math.round(p.y) });
+      SFX.win();
+      return;
+    }
+    const t = player.inv.tokens.shift();
     const v = spawnVehicle(player.team, t, p.x, p.y);
     hudMsg(`${vehicleDef(v).name} called in — press E to get in`); SFX.win();
   }
@@ -1938,6 +2116,9 @@ const Game = (() => {
   }
 
   function boardVehicle(v) {
+    /* Who is in the driver's seat is the room's to say — two people cannot
+       both be driving the same jeep, and only the room can arbitrate that. */
+    if (online) { online.transport.send('ride', {}); SFX.click(); return; }
     // getting in claims an unclaimed hull for your squad
     if (v.neutral) { v.neutral = false; v.team = player.team; v.aiHold = 0; }
     player.riding = v; v.driver = player;
@@ -1956,6 +2137,8 @@ const Game = (() => {
   function exitVehicle(thrown) {
     const v = player.riding;
     if (!v) return;
+    // same message both ways: the room knows whether you are in a seat
+    if (online && !thrown) { online.transport.send('ride', {}); return; }
     player.riding = null; v.driver = null;
     /* Hold the AI off it for a few seconds. Without this the squad takes the
        vehicle over on the very next frame and drives away, so hopping out to
@@ -1985,8 +2168,9 @@ const Game = (() => {
     let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
     const m = Math.hypot(dx, dy);
     if (m > 0) {
+      // one surface model for hulls and bodies alike — see RoomSim.surfaceSpeedFor
       const surf = terrain ? Terrain.surfaceAt(terrain, v.x, v.y) : null;
-      const spd = v.vspeed * (surf ? surf.speed : 1) * dt;
+      const spd = v.vspeed * RoomSim.surfaceSpeedFor(v, surf) * dt;
       const px = v.x, py = v.y;
       v.x += (dx / m) * spd; v.y += (dy / m) * spd;
       resolveObstacles(v);
@@ -2057,9 +2241,21 @@ const Game = (() => {
     if (grabDrop()) return;
     const door = nearestDoor(player.x, player.y, 70);
     if (door) { toggleDoor(door, player); return; }
-    let best = null, bd = 95 * 95;
-    for (const c of crates) if (!c.opened) { const d = dist2(player.x, player.y, c.x, c.y); if (d < bd) { bd = d; best = c; } }
-    if (best) { openCrate(best); return; }
+    let best = null, bi = -1, bd = 95 * 95;
+    for (let i = 0; i < crates.length; i++) {
+      const c = crates[i];
+      if (c.opened) continue;
+      const d = dist2(player.x, player.y, c.x, c.y);
+      if (d < bd) { bd = d; best = c; bi = i; }
+    }
+    if (best) {
+      /* Online the crate is opened by index, by the room. It rolls the loot and
+         it decides who got there first — opening our own copy meant two people
+         walking up to the same gold crate each came away with a legendary. */
+      if (online) { online.transport.send('crate', { i: bi }); SFX.click(); return; }
+      openCrate(best);
+      return;
+    }
     for (const dp of deployables) {
       if (dp.type === 'ammo' && dp.supply > 0 && near2(dp, player, 95)) {
         player.ammo = player.weapon.mag; dp.supply -= player.weapon.mag;
@@ -2082,9 +2278,16 @@ const Game = (() => {
     /* Garages and car parks come with hulls in them. They belong to nobody
        until someone climbs in, which is what makes a camp's parking lot worth
        crossing the map for. */
+    parkedVehicles = [];
     for (const v of pendingRoomVehicles) {
       if (pointInObstacle(v.x, v.y)) continue;
-      spawnVehicle(-1, v.vtype, v.x, v.y);
+      const car = spawnVehicle(-1, v.vtype, v.x, v.y);
+      /* Remembered separately from `agents`, because startOnline() clears that
+         list — the host supplies everyone in it. The hulls the *map* came with
+         are not somebody's agent, they are part of the world, so they have to
+         reach the room the same way the walls and the crates do. Without this
+         every garage and car park was empty online while being full offline. */
+      parkedVehicles.push({ vtype: car.vtype, x: Math.round(car.x), y: Math.round(car.y) });
     }
     pendingRoomVehicles = [];
     for (let i = 0; i < n; i++) {
@@ -2780,6 +2983,8 @@ const Game = (() => {
     if (flashOverlay > 0) flashOverlay -= dt;
     if (hudMessageT > 0) hudMessageT -= dt;
     updateKillFeed(dt);
+    updateSoundPings(dt);
+    updateBuildingEffect(dt);
 
     // player control — frozen while the lobby is up, so nobody gets a head
     // start wandering off before the match has been started
@@ -2824,7 +3029,7 @@ const Game = (() => {
         // terrain applies either way: the room is handed the same lookup, so
         // both sides slow down in the same river
         const surf = terrain ? Terrain.surfaceAt(terrain, player.x, player.y) : null;
-        const spd = base * RoomSim.surfaceSpeedFor(player, surf) * dt;
+        const spd = base * RoomSim.surfaceSpeedFor(player, surf) * hereSpeed() * dt;
         const px = player.x, py = player.y;
         player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
         player.vx = (player.x - px) / dt; player.vy = (player.y - py) / dt;
@@ -2884,6 +3089,12 @@ const Game = (() => {
       // a vehicle the player is driving takes its orders from the player, and
       // one they just stepped out of waits a moment before the squad claims it
       if (a.aiHold > 0) { a.aiHold -= dt; a.vx = a.vy = 0; continue; }
+      /* Online there are no bots — the only agents left are you and the hulls
+         mirrored out of the snapshot, and every one of those belongs to the
+         room. Letting the local AI take the wheel of a networked jeep because
+         its driver had stepped out meant this client drove it somewhere nobody
+         else could see, and then the next snapshot dragged it back. */
+      if (online) continue;
       if (!a.isPlayer && !a.driver) updateBot(a, dt);
     }
 
@@ -2920,7 +3131,7 @@ const Game = (() => {
                carries on as an ordinary round, having spent what made it
                special — so the tank behind them no longer gets the bonus. */
             if (b.antiTank && !a.isVehicle) {
-              applyDamage(a, Weapons.ANTI_TANK_PASSTHROUGH, b.owner, 'normal');
+              if (!online) applyDamage(a, Weapons.ANTI_TANK_PASSTHROUGH, b.owner, 'normal');
               spawnFx(b.x, b.y, teamInk(a.team), 6);
               b.antiTank = false; b.dmgType = 'normal';
               continue;                      // still flying
@@ -2933,7 +3144,13 @@ const Game = (() => {
               const mult = Math.max(FALLOFF_MIN, 1 - b.falloff * steps);
               // armour is what this round is for: double against a hull
               const at = b.antiTank && a.isVehicle ? 2 : 1;
-              applyDamage(a, b.dmg * mult * at, b.owner, b.dmgType);
+              /* Online our own rounds are drawn, not adjudicated. The room has
+                 already resolved this shot against its own copy of the world
+                 and the result is in the snapshot; taking the health off here
+                 as well meant a hull's bar dropped twice and sprang back, and
+                 a vehicle could be "destroyed" on this screen alone — which
+                 threw its driver out of a seat they were still sitting in. */
+              if (!online) applyDamage(a, b.dmg * mult * at, b.owner, b.dmgType);
               spawnFx(b.x, b.y, teamInk(a.team), 4);
             }
             dead = true; break;
@@ -2945,15 +3162,18 @@ const Game = (() => {
           const dp = deployables[k];
           if (dp.type !== 'sentry' || dp.team === b.team) continue;
           if (dist2(dp.x, dp.y, b.x, b.y) < 18 * 18) {
-            if (!b.splash) { dp.hp -= b.dmg; spawnFx(b.x, b.y, '#35e0ff', 4); }
-            if (dp.hp <= 0) { spawnFx(dp.x, dp.y, '#ff9d3b', 12); deployables.splice(k, 1); }
+            if (!b.splash) { if (!online) dp.hp -= b.dmg; spawnFx(b.x, b.y, '#35e0ff', 4); }
+            // online the sentry list is the room's; it will report the wreck
+            if (!online && dp.hp <= 0) { spawnFx(dp.x, dp.y, '#ff9d3b', 12); deployables.splice(k, 1); }
             dead = true; break;
           }
         }
         if (dead) break;
       }
       if (dead) {
-        if (b.splash) explode(b.x, b.y, b.dmg, b.splashR, b.team, b.owner, b.dmgType);
+        // online the room bursts it and sends the fireball back as an event
+        if (b.splash && !online) explode(b.x, b.y, b.dmg, b.splashR, b.team, b.owner, b.dmgType);
+        else if (b.splash) spawnFx(b.x, b.y, '#ff9d3b', 22);
         bullets.splice(i, 1);
       }
     }
@@ -2965,9 +3185,16 @@ const Game = (() => {
     // tactical layer
     updateComms(dt);
     updateSquadIntel(dt);
-    updateGrenades(dt);
-    updateDrops(dt);
-    updateChains(dt);
+    /* Online every one of these belongs to the room, and the snapshot rewrites
+       our copy of them each tick (see netSyncEntities). Running them here as
+       well would fly the same grenade twice, trigger our own private copy of a
+       mine that has already gone off, and rot loot the room still says is
+       there. Offline, nothing has changed. */
+    if (!online) {
+      updateGrenades(dt);
+      updateDrops(dt);
+      updateChains(dt);
+    }
     // rebuild the nav grid a beat after the world changes, not on every hit
     // Rebuilding the whole grid for every broken crate is wasted work; wait
     // until a few things have changed and then do it once.
@@ -2978,8 +3205,7 @@ const Game = (() => {
       if (navRebuildIn <= 0) { buildNav(); navChanges = 0; }
     }
     updateAirstrikes(dt);
-    updateDeployables(dt);
-    updateSmokes(dt);
+    if (!online) { updateDeployables(dt); updateSmokes(dt); }
 
     // fx + damage numbers
     for (let i = fx.length - 1; i >= 0; i--) { const f = fx[i]; f.x += f.vx * dt; f.y += f.vy * dt; f.life -= dt; if (f.life <= 0) fx.splice(i, 1); }
@@ -3135,6 +3361,8 @@ const Game = (() => {
 
   function applyDamage(a, dmg, owner, type = 'normal', zone = null) {
     dmg *= shieldFactor(a, owner);
+    // hardened cover: a bunker or a vault takes some of it for you
+    if (a.isPlayer) dmg *= hereDamageMult();
     // dug in: infantry in a trench dodge half of what comes at them
     if (!a.isVehicle && inTrench(a) && Math.random() < Structures.WALL_TYPES.trench.dodge) {
       spawnFx(a.x, a.y, '#b08a5a', 4);
@@ -3615,6 +3843,7 @@ const Game = (() => {
     }
 
     drawTacticalHud();
+    drawSoundPings();
     drawMinimap();
     drawKillFeed();
     drawKillBanner();
@@ -3809,17 +4038,52 @@ const Game = (() => {
      A building reads as a place you go inside: its floor is a different
      material from the ground outside, and its roof sits over the top until
      you (or a squadmate) step in, at which point it lifts. */
+  /* Each building rules its floor its own way, so what you are standing in is
+     legible from the material rather than from remembering the layout: boards
+     in a house, tiles in a hospital, slab joints in a bunker, corrugate in a
+     hangar, and bare speckled ground in a camp. */
+  function drawFloorPattern(b, st) {
+    const p = st.pattern || 'planks';
+    if (p === 'dirt') {
+      // no ruling — a handful of stones, seeded off the position so they
+      // don't crawl about between frames
+      ctx.fillStyle = 'rgba(0,0,0,0.10)';
+      let n = (b.x * 73856093) ^ (b.y * 19349663);
+      for (let i = 0; i < 26; i++) {
+        n = (n * 1103515245 + 12345) & 0x7fffffff;
+        const px = b.x + (n % b.w), py = b.y + ((n >> 8) % b.h);
+        ctx.fillRect(px, py, 3, 2);
+      }
+      return;
+    }
+    ctx.beginPath();
+    if (p === 'planks') {
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
+      for (let x = b.x + 40; x < b.x + b.w; x += 40) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+    } else if (p === 'tile') {
+      ctx.strokeStyle = 'rgba(0,0,0,0.13)'; ctx.lineWidth = 1;
+      for (let x = b.x + 34; x < b.x + b.w; x += 34) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      for (let y = b.y + 34; y < b.y + b.h; y += 34) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
+    } else if (p === 'concrete') {
+      ctx.strokeStyle = 'rgba(0,0,0,0.20)'; ctx.lineWidth = 2;
+      for (let x = b.x + 96; x < b.x + b.w; x += 96) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      for (let y = b.y + 96; y < b.y + b.h; y += 96) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
+    } else {                                  // metal: tight corrugation
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 3;
+      for (let x = b.x + 14; x < b.x + b.w; x += 22) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+    }
+    ctx.stroke();
+  }
+
   function drawFloors() {
     for (const b of buildings) {
       if (!b.floor || !rectOnScreen(b)) continue;
+      const st = b.style || Structures.styleOf(b.name);
       ctx.fillStyle = b.floor;
       ctx.fillRect(b.x, b.y, b.w, b.h);
-      // floorboards, so it isn't a flat slab
-      ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let x = b.x + 40; x < b.x + b.w; x += 40) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(0,0,0,0.28)'; ctx.lineWidth = 2;
+      drawFloorPattern(b, st);
+      // the building's own accent runs round the slab
+      ctx.strokeStyle = hexA(st.trim, 0.55); ctx.lineWidth = 2;
       ctx.strokeRect(b.x, b.y, b.w, b.h);
     }
   }
@@ -3837,17 +4101,22 @@ const Game = (() => {
 
       ctx.save();
       ctx.globalAlpha = b.roofAlpha;
+      /* The roof is the building's colour, and from the air it is the only
+         thing you can see — so a hospital reads white, a church slate blue and
+         a gas station red long before you are close enough to read a sign. */
+      const st = b.style || Structures.styleOf(b.name);
       const g = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
-      g.addColorStop(0, '#6a5442');
-      g.addColorStop(1, '#54402f');
+      g.addColorStop(0, st.roof[0]);
+      g.addColorStop(1, st.roof[1]);
       ctx.fillStyle = g;
       ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
       // ridge lines and a border so it reads as a roof, not a lid
-      ctx.strokeStyle = 'rgba(0,0,0,0.30)'; ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(0,0,0,0.26)'; ctx.lineWidth = 2;
       ctx.beginPath();
-      for (let y = b.y; y < b.y + b.h; y += 46) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
+      const ridge = st.pattern === 'metal' ? 24 : st.pattern === 'tile' ? 34 : 46;
+      for (let y = b.y; y < b.y + b.h; y += ridge) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
       ctx.stroke();
-      ctx.strokeStyle = 'rgba(30,20,12,0.75)'; ctx.lineWidth = 4;
+      ctx.strokeStyle = hexA(st.trim, 0.9); ctx.lineWidth = 4;
       ctx.strokeRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
       ctx.restore();
     }
@@ -4384,10 +4653,30 @@ const Game = (() => {
       ctx.beginPath(); ctx.arc(ox + obj.x * sx, oy + obj.y * sy, 4, 0, Math.PI * 2);
       ctx.fillStyle = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#8ea0c9'; ctx.fill();
     }
+    /* Your squad, always. Enemies only when something is showing them to you —
+       a radio tower, a command centre, or a squadmate's ping.
+
+       This used to draw every living agent regardless of team, so offline you
+       always knew where all fifteen opponents were and there was nothing to
+       scout. Online never did that, because the host only sends your own
+       squad. This is the online rule, applied to both. */
+    const reveal = hereReveal();
     for (const a of agents) {
-      if (!a.alive) continue;
+      if (!a.alive || a.isVehicle) continue;
+      if (!a.isPlayer && a.team !== player.team) {
+        if (!reveal || dist2(a.x, a.y, player.x, player.y) > reveal * reveal) continue;
+        // seen by the tower rather than by you: a ring, not a dot
+        ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, 2.6, 0, Math.PI * 2);
+        ctx.strokeStyle = teamInk(a.team); ctx.lineWidth = 1.4; ctx.stroke();
+        continue;
+      }
       ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, a.isPlayer ? 3 : 2, 0, Math.PI * 2);
-      ctx.fillStyle = a.isPlayer ? '#fff' : TEAM_COLORS[a.team]; ctx.fill();
+      ctx.fillStyle = a.isPlayer ? '#fff' : teamInk(a.team); ctx.fill();
+    }
+    if (reveal) {
+      ctx.beginPath();
+      ctx.arc(ox + player.x * sx, oy + player.y * sy, reveal * sx, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(74,143,208,0.55)'; ctx.lineWidth = 1; ctx.stroke();
     }
     /* Online the other players come from the host, not from `agents` — without
        this the minimap showed you alone on an empty island. Only your own
@@ -4640,6 +4929,10 @@ const Game = (() => {
       remote: [],
       clockLeft: MATCH_SECONDS, clockAt: null,   // filled by the host's welcome
       history: [], netErr: 0, wasDead: false,    // input replay — see reconcile()
+      // our input packet counter, and the highest of them the room has run
+      seq: 0, ack: 0,
+      // which snapshot the mirrored world was last rebuilt from
+      mirrorTick: -1,
     };
 
     if (isSocket) {
@@ -4686,6 +4979,8 @@ const Game = (() => {
         walls: netWorld(),
         objectives: netObjectives(),
         trenches: netTrenches(),
+        crates: netCrates(),
+        vehicles: netVehicles(),
         surface: (x, y) => (terrain ? Terrain.surfaceAt(terrain, x, y) : null),
       });
     }
@@ -4771,6 +5066,9 @@ const Game = (() => {
       // and the cover people have dug, so we can see why they're hard to hit
       trenches.length = 0;
       for (const t of msg.trenches || []) trenches.push({ x: t.x, y: t.y, r: t.r });
+      // crates already emptied, so nobody crosses the map for one with nothing in it
+      for (const i of msg.opened || []) if (crates[i]) crates[i].opened = true;
+      if (msg.you) netSyncSelf(msg.you);
       // last, so the lobby is drawn against the host's mode and squad count
       // rather than whatever we had picked on our own menu
       showLobby(online.phase === 'lobby');
@@ -4778,6 +5076,11 @@ const Game = (() => {
       // only ever sent to our own squad, so anything that arrives is ours
       addMark(msg.x, msg.y, msg.kind, msg.byId === online.id ? 'You' : msg.by, msg.byId === online.id);
     } else if (msg.t === 'snapshot') {
+      /* Only the part that is ours is applied the instant it lands: what we
+         are carrying, and how much of our input the room has run. Everything
+         positional waits for onlineTick, which draws it on the same delayed,
+         interpolated clock as the players — see netSyncEntities. */
+      if (msg.you) netSyncSelf(msg.you);
       online.transport.snapshots.push({ at: performance.now(), data: msg });
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
       setOnlineClock(msg.timeLeft);
@@ -4804,6 +5107,16 @@ const Game = (() => {
            half your health with no fireball to explain why. */
         else if (e.e === 'boom') netBoom(e.x, e.y, e.r);
         else if (e.e === 'trench') netTrench(e);
+        else if (e.e === 'flash') spawnFx(e.x, e.y, '#ffffff', 26);
+        else if (e.e === 'crate') { if (crates[e.i]) crates[e.i].opened = true; }
+        else if (e.e === 'loot' && e.id === online.id) hudMsg('Got ' + (e.label || e.got));
+        else if (e.e === 'legendary') {
+          if (e.id === online.id) { hudMsg('LEGENDARY! ' + e.name); SFX.reward(); }
+        } else if (e.e === 'pickup' && e.id === online.id) {
+          const it = Items.CONSUMABLES[e.kind];
+          hudMsg(`Picked up ${it ? it.name : e.kind} ×${e.n}`);
+        } else if (e.e === 'revive' && e.id === online.id) hudMsg('Revived by ' + e.by);
+        else if (e.e === 'wreck') spawnFx(0, 0, '#ff9d3b', 0);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
       }
@@ -4830,6 +5143,10 @@ const Game = (() => {
       quitMatch();
     } else if (msg.t === 'pong') {
       online.ping = Math.round(performance.now() - msg.c);
+    } else if (msg.t === 'blind') {
+      /* A flashbang that the room decided could see us. Line of sight is its
+         call — it is the only place that has geometry everyone agrees on. */
+      flashOverlay = Math.max(flashOverlay, msg.s || 0);
     } else if (msg.t === 'end') {
       const mine = (msg.scores || {})[player.team] || 0;
       const best = Math.max(0, ...Object.values(msg.scores || {}));
@@ -4838,6 +5155,202 @@ const Game = (() => {
       endMatch(won, roster);
       online = null;
     }
+  }
+
+  /* ---------- the room's world, in the shapes the renderer already draws ----------
+     Every one of these lists used to be simulated locally and was therefore a
+     private fiction online: your grenades hurt nobody, your mines never went
+     off, the loot on your floor was not on anyone else's. They are the room's
+     now, so the client's job is to mirror them rather than to run them.
+
+     Rebuilt into the same arrays the offline game uses, which is what lets the
+     drawing code stay exactly as it was. `item` is looked up locally from the
+     shared table rather than sent, because it never changes. */
+  /* Driven from the two snapshots the renderer is drawing between, not from
+     the newest one as it lands.
+
+     That was the bug behind most of the remaining jitter. Remote players come
+     from the interpolated pair, so they are drawn smoothly at a fixed lag
+     behind the room. Everything else was written straight out of the newest
+     snapshot the moment it arrived, so it moved in twenty steps a second while
+     the players around it glided — and worse, the two were on different
+     clocks: a passenger was drawn a tenth of a second behind the jeep he was
+     sitting in, trailing along beside it like a shadow.
+
+     One timeline for the whole world. `a` and `b` straddle render time and `k`
+     is how far between them we are. */
+  function netSyncEntities(a, b, k) {
+    const msg = b;
+    /* Two speeds. Things that move — grenades in flight, hulls being driven —
+       are interpolated every frame, because that is the whole point. Things
+       that only ever change when a snapshot says so — loot on the floor, a
+       mine, a cloud of smoke — are rebuilt once per snapshot instead of sixty
+       times a second for the same answer. */
+    const fresh = b.tick !== online.mirrorTick;
+    online.mirrorTick = b.tick;
+    if (fresh && msg.drops) {
+      const before = new Map(drops.map(d => [d.nid, d]));
+      drops.length = 0;
+      for (const d of msg.drops) {
+        const old = before.get(d.i);
+        drops.push({
+          nid: d.i, x: d.x, y: d.y, id: d.k, n: d.n,
+          cat: (Items.CONSUMABLES[d.k] || {}).cat || 'heal',
+          // keep the bob running rather than resetting the animation every tick
+          life: 99, bob: old ? old.bob : Math.random() * Math.PI * 2,
+        });
+      }
+    }
+    if (fresh && msg.smokes) {
+      smokes.length = 0;
+      for (const s of msg.smokes) smokes.push({ x: s.x, y: s.y, r: s.r, life: s.l, max: s.l });
+    }
+    if (msg.nades) {
+      // a grenade covers 33px between snapshots — stepped, that reads as a
+      // stutter rather than a throw
+      const prev = byId(a && a.nades);
+      grenades.length = 0;
+      for (const g of msg.nades) {
+        const it = Items.CONSUMABLES[g.k];
+        if (!it) continue;
+        const p = prev.get(g.i);
+        grenades.push({
+          x: p ? p.x + (g.x - p.x) * k : g.x,
+          y: p ? p.y + (g.y - p.y) * k : g.y,
+          mode: it.mode, item: it, team: g.tm, arrived: true,
+        });
+      }
+    }
+    if (fresh && msg.deploys) {
+      /* A barricade is real geometry: it has to reach solidRects() or we
+         predict our own movement straight through the thing the room is
+         stopping us with. Rebuilt from the rect the room reports rather than
+         re-derived, so both sides use the same rectangle to the pixel. */
+      deployables.length = 0;
+      let sig = '';
+      for (const d of msg.deploys) {
+        const it = Items.CONSUMABLES[d.k];
+        if (!it) continue;
+        const dp = {
+          nid: d.i, type: it.mode, x: d.x, y: d.y, team: d.tm, item: it,
+          life: 99, angle: d.a, hp: d.hp, maxHp: it.hp || d.hp, arm: 0, supply: 1,
+        };
+        if (it.mode === 'wall' && d.w > 0) {
+          dp.rect = {
+            x: d.rx, y: d.ry, w: d.w, h: d.h, type: 'barricade',
+            thickness: 0.3, axis: d.w > d.h ? 'h' : 'v',
+            hp: d.hp || 150, maxHp: 150, toughness: 1, dp,
+          };
+          sig += d.i + ',';
+        }
+        deployables.push(dp);
+      }
+      /* Only when the set of deployed *walls* actually changes. This runs every
+         frame now rather than every snapshot, and invalidating unconditionally
+         meant rebuilding the spatial index over seventeen hundred rects sixty
+         times a second for as long as a single barricade stood anywhere on the
+         map — which is a stutter far worse than the one it was drawn to stop. */
+      if (sig !== barricadeSig) { barricadeSig = sig; invalidateRects(); }
+    }
+    if (msg.cars) netSyncVehicles(a && a.cars, msg.cars, k, fresh);
+  }
+  const byId = (list) => {
+    const m = new Map();
+    if (list) for (const e of list) m.set(e.i, e);
+    return m;
+  };
+  // which barricades are standing, so the index is only rebuilt when that changes
+  let barricadeSig = '';
+
+  /* Hulls are agents on the client, because that is what the renderer, the
+     camera and the damage numbers all expect one to be. Matched by id so a
+     jeep keeps its identity across ticks instead of being rebuilt each frame. */
+  function netSyncVehicles(was, cars, k, fresh) {
+    const prev = byId(was);
+    const live = new Set();
+    for (const c of cars) {
+      live.add(c.i);
+      let v = agents.find(a => a.isVehicle && a.nid === c.i);
+      if (!v) {
+        v = spawnVehicle(c.tm, c.v, c.x, c.y);
+        v.nid = c.i;
+        v.neutral = c.tm < 0;
+      }
+      v.hp = c.hp; v.maxHp = c.mx; v.team = c.tm; v.alive = c.hp > 0;
+      v.neutral = c.tm < 0;
+      /* Whether *we* are the one driving. The room decides that, so a client
+         that asked to get in only actually gets in when the answer comes back. */
+      const mine = c.d && online && c.d === online.id;
+      v.driver = c.d ? (mine ? player : { id: c.d }) : null;
+      if (mine && player.riding !== v) { player.riding = v; input.ads = false; updateWeaponHud(); }
+      if (!mine && player.riding === v) { player.riding = null; updateWeaponHud(); }
+
+      if (mine) {
+        /* The hull we are driving is predicted locally, exactly like our own
+           body — driveVehicle() has already moved it this frame. Writing the
+           room's position over the top would put the vehicle a full round trip
+           behind the wheel, which is the difference between driving and
+           steering a photograph. The room still has the last word; it just
+           gets it gently. See reconcileRide(). */
+        continue;
+      }
+      const p = prev.get(c.i);
+      if (p) {
+        v.x = p.x + (c.x - p.x) * k;
+        v.y = p.y + (c.y - p.y) * k;
+        v.angle = p.a + angleDiff(c.a, p.a) * k;
+      } else {
+        v.x = c.x; v.y = c.y; v.angle = c.a;
+      }
+      v.hullAngle = v.angle;
+    }
+    for (let i = agents.length - 1; i >= 0; i--) {
+      const a = agents[i];
+      if (!a.isVehicle) continue;
+      if (live.has(a.nid)) { a.gone = 0; continue; }
+      /* Not in this snapshot. That usually means it was destroyed, but it also
+         means it fell outside the cull radius — and a hull parked right on that
+         boundary would otherwise be torn down and rebuilt twenty times a second
+         as you shifted a step back and forth. Give it a few snapshots' grace. */
+      // counted in snapshots, not frames — this runs every frame now
+      if (fresh) a.gone = (a.gone || 0) + 1;
+      if ((a.gone || 0) < 4) continue;
+      if (player.riding === a) player.riding = null;
+      agents.splice(i, 1);
+    }
+  }
+
+  /* Our own hull, eased onto the room's answer rather than snapped to it.
+     Same shape as reconcile() for the body: take the newest snapshot we hold —
+     not the delayed pair the others are drawn from — and close the gap
+     exponentially so a correction is a drift rather than a jerk. */
+  function reconcileRide(dt) {
+    const v = player.riding;
+    if (!v || !v.nid) return;
+    const snaps = online.transport.snapshots;
+    const newest = snaps.length ? snaps[snaps.length - 1].data : null;
+    const auth = newest && (newest.cars || []).find(c => c.i === v.nid);
+    if (!auth) return;
+    const err = Math.hypot(auth.x - v.x, auth.y - v.y);
+    if (err > NET_SNAP) { v.x = auth.x; v.y = auth.y; return; }
+    if (err < 0.5) return;
+    const kk = 1 - Math.exp(-NET_EASE * dt);
+    v.x += (auth.x - v.x) * kk;
+    v.y += (auth.y - v.y) * kk;
+    // the driver rides inside the hull, so they move with it
+    player.x = v.x; player.y = v.y;
+  }
+
+  /* The half of the snapshot that is only ours: what we are carrying, and how
+     much of our own input the room has acted on. */
+  function netSyncSelf(you) {
+    online.ack = you.ack || 0;
+    const inv = you.inv;
+    if (!inv || !player || !player.inv) return;
+    player.inv.grenade.id = inv.g; player.inv.grenade.n = inv.gn;
+    player.inv.tactical.id = inv.t; player.inv.tactical.n = inv.tn;
+    player.inv.heal.id = inv.h; player.inv.heal.n = inv.hn;
+    player.inv.tokens = inv.tk || [];
   }
 
   /* A kill the server reported. The event carries names and ids but not teams,
@@ -4869,7 +5382,14 @@ const Game = (() => {
     if (t - online.lastSend > 1000 / Net.SEND_RATE) {
       online.lastSend = t;
       const i = input;
+      /* Every packet is numbered, and the room echoes back the highest number
+         it has acted on. That is what lets reconcile() replay exactly the
+         inputs still in flight instead of everything sent in the last half
+         ping — see predictedPosition. */
+      online.seq++;
+      recordInput(online.seq);
       online.transport.send('input', {
+        seq: online.seq,
         up: i.up, down: i.down, left: i.left, right: i.right,
         shooting: i.shooting, ads: i.ads, angle: player.angle,
         fire: i.fireEdge,
@@ -4880,14 +5400,13 @@ const Game = (() => {
       online.transport.send('ping', { c: t });
     }
 
-    // remember what we asked for, so we can replay it over the room's answer
-    recordInput();
-
     // rebuild the visible roster from the two snapshots straddling render time
     const pair = online.transport.interpolated();
     if (!pair) return;
     const lerped = Net.lerpAgents(pair.a, pair.b, pair.t);
     online.remote = lerped.filter(a => a.id !== online.id);
+    // the rest of the world, on the same clock the players are drawn on
+    netSyncEntities(pair.a, pair.b, pair.t);
     /* Rounds other people have in the air. Taken from the newer snapshot
        rather than interpolated — bullets carry no stable id, so there is
        nothing to match up between two frames, and at 20Hz a tracer is a
@@ -4910,24 +5429,30 @@ const Game = (() => {
       player.ammo = mine.ammo;
       player.adrenaline = mine.adrenaline;
       player.vest = mine.vest; player.helmet = mine.helmet; player.bag = mine.bag || 0;
-      reconcile(dt);
+      // behind the wheel it is the hull that gets corrected, and we ride it
+      if (player.riding) reconcileRide(dt);
+      else reconcile(dt);
     }
   }
 
   /* One entry per distinct thing we asked for, stamped with when we asked.
      Runs of identical input collapse into one entry, so holding W for ten
      seconds is a single record rather than three hundred. */
-  function recordInput() {
+  /* One entry per packet we actually sent, stamped with its sequence number
+     and when it left. Recorded on send rather than every frame, so an entry
+     corresponds one-for-one with something the room will acknowledge — a
+     history keyed on time could only ever be matched to an ack by guessing. */
+  function recordInput(seq) {
     const h = online.history;
-    const last = h[h.length - 1];
-    const same = last && last.up === input.up && last.down === input.down
-      && last.left === input.left && last.right === input.right && last.ads === input.ads;
-    if (!same) {
-      h.push({ at: performance.now(), up: input.up, down: input.down, left: input.left, right: input.right, ads: input.ads });
-    }
-    // keep only what could still be unacknowledged
+    h.push({
+      seq, at: performance.now(),
+      up: input.up, down: input.down, left: input.left, right: input.right, ads: input.ads,
+    });
+    // drop what the room has confirmed, keeping one entry either side of the
+    // boundary so the replay has something to start from
+    while (h.length > 2 && h[1].seq <= (online.ack || 0)) h.shift();
     const cutoff = performance.now() - HISTORY_MS;
-    while (h.length > 1 && h[1].at < cutoff) h.shift();
+    while (h.length > 2 && h[1].at < cutoff) h.shift();
   }
 
   /* Where the room would say we are *now*, given where it said we were and
@@ -4956,14 +5481,25 @@ const Game = (() => {
      frame for a 150ms window, and produces the position the room is actually
      going to report. */
   const REPLAY_STEP = 1 / 60;
-  function predictedPosition(snapAt, ax, ay) {
-    const start = snapAt - online.ping / 2;      // when the host sampled us
+  function predictedPosition(ax, ay) {
     const nowMs = performance.now();
     const h = online.history;
+    /* Where the replay starts. The room tells us the last input packet it
+       acted on, so the authoritative position we are replaying from already
+       includes everything up to and including that packet — and what is left
+       to reapply is precisely the packets after it.
+
+       This used to be `snapAt - ping/2`: a guess at when the host sampled us,
+       from a ping measured every two seconds. Whenever the real latency
+       differed from that average the replay covered slightly the wrong span,
+       so the predicted position sat a little ahead of or behind the truth and
+       the reconciler pulled at us the whole time. An ack is not an estimate. */
+    const ack = online.ack || 0;
     // a stand-in body so resolveObstacles can push it around without touching us
     const probe = { x: ax, y: ay, r: BODY_R };
     for (let i = 0; i < h.length; i++) {
-      const from = Math.max(h[i].at, start);
+      if (h[i].seq <= ack) continue;             // the room already ran this one
+      const from = h[i].at;
       const to = (i + 1 < h.length ? h[i + 1].at : nowMs);
       if (to <= from) continue;
       const dx = (h[i].right ? 1 : 0) - (h[i].left ? 1 : 0);
@@ -5004,7 +5540,7 @@ const Game = (() => {
     }
     if (online.wasDead) { online.wasDead = false; online.history.length = 0; }
 
-    const target = predictedPosition(newest.at, auth.x, auth.y);
+    const target = predictedPosition(auth.x, auth.y);
     const err = Math.hypot(target.x - player.x, target.y - player.y);
     online.netErr = err;                       // reported by netDebug()
     if (err > NET_SNAP) {
@@ -5162,7 +5698,8 @@ const Game = (() => {
       return {
         hp: Math.round(player.hp), alive: player.alive,
         adrenaline: Math.round(player.adrenaline), standT: player.standT || 0,
-        vest: player.vest, helmet: player.helmet, bag: player.bag,
+        vest: player.vest, helmet: player.helmet, bag: player.bag, perk: player.perk,
+        maxHp: player.maxHp, mag: player.weapon.mag,
         cls: player.cls.name, weapon: player.weapon.name,
         ammoName: player.weapon.ammoName || null, fuze: player.weapon.fuze || 0,
         antiTank: !!player.weapon.antiTank, mag: player.weapon.mag,
@@ -5171,7 +5708,7 @@ const Game = (() => {
     },
     set(patch) {
       if (!player) return;
-      for (const k of ['hp', 'adrenaline', 'vest', 'helmet', 'bag', 'x', 'y', 'angle']) {
+      for (const k of ['hp', 'adrenaline', 'vest', 'helmet', 'bag', 'perk', 'x', 'y', 'angle']) {
         if (patch[k] !== undefined) player[k] = patch[k];
       }
       if (patch.bag !== undefined) refillFromBag();
@@ -5191,8 +5728,56 @@ const Game = (() => {
       return fired;
     },
     bullets: () => bullets.length,
+    // rebuild the player from the current perk — Beefy and Bullet Strap are
+    // applied when an agent is made, not every frame
+    respawnFresh() {
+      if (!player) return;
+      const perk = player.perk;
+      player.maxHp = Combat.maxHpFor('infantry', perk);
+      player.hp = player.maxHp;
+      player.weapon = Perks.applyToWeapon(player.baseWeapon || player.weapon, perk);
+      player.ammo = player.weapon.mag;
+    },
+    buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h })),
+    buildingStyles: () => buildings.map(b => ({ name: b.name, style: !!b.style, floor: b.floor, roof: b.style && b.style.roof.join('') })),
+    hereBuilding: () => (hereBuilding ? hereBuilding.name : null),
+    wallsInBuildings() {
+      const counts = buildings.map(b => obstacles.filter(o =>
+        o.building === b.name && o.x >= b.x - 20 && o.x <= b.x + b.w + 20
+        && o.y >= b.y - 20 && o.y <= b.y + b.h + 20).length);
+      counts.sort((x, y) => x - y);
+      return { total: counts.reduce((x, y) => x + y, 0), median: counts[Math.floor(counts.length / 2)] || 0 };
+    },
+    carryLimit: () => (player ? Classes.limitFor(player.cls, player.cls.consumable, carryTier(player), player.perk) : 0),
+    soundPings: () => soundPings.length,
+    // a contact somewhere off to the east, for the Portable Satellite
+    enemyShot() {
+      if (!player) return;
+      logGunshot({ x: player.x + 600, y: player.y, team: (player.team + 1) % 4 });
+    },
     // only the rounds on a timer, so a count isn't polluted by everyone else's
     fuzedBullets: () => bullets.filter(b => b.fuze).length,
+    // what the water under a swimmer does to them, for the Diver perk
+    swimSpeed: () => RoomSim.surfaceSpeedFor(player, { kind: 'river', speed: 0.55, swim: true }),
+    // the first crate on the map that wants a perk to open
+    poolCrate() {
+      const i = crates.findIndex(c => c.needs && !c.opened);
+      return i < 0 ? null : { i, tier: crates[i].tier, needs: crates[i].needs };
+    },
+    tryOpen(i) {
+      const c = crates[i];
+      if (!c) return false;
+      openCrate(c);
+      return !!c.opened;
+    },
+    // how many items one crate hands over — Scavenger should double it
+    lootFrom() {
+      let n = 0;
+      const real = grantLoot;
+      grantLoot = () => { n++; };
+      try { openCrate({ tier: 'regular', opened: false }); } finally { grantLoot = real; }
+      return n;
+    },
     // the exact number the movement code is using this frame
     moveSpeed: () => (player ? RoomSim.moveSpeedFor(player, false) : 0),
     /* What the generator actually built: which buildings, and what each kind
@@ -5218,6 +5803,6 @@ const Game = (() => {
     start, startOnline, isOnline, netDebug, debug,
     setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
     // the map, as the simulation needs to see it (see netWorld above)
-    netWorld, netObjectives,
+    netWorld, netObjectives, netCrates, netVehicles,
   };
 })();

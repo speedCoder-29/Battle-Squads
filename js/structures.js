@@ -359,6 +359,28 @@ const Structures = (() => {
     barn:           { name: 'Barn',            crates: [['regular', 8]] },
     chickenCoop:    { name: 'Chicken Coop',    crates: [['gold', 1]] },
     lobby:          { name: 'Lobby',           crates: [['silver', 1]] },
+
+    /* Rooms for the buildings that aren't in the design table. Sized so a
+       building holds roughly what its old flat loot count gave it — the point
+       of the change is that you can now tell which room is worth entering,
+       not that there is more of everything. */
+    ward:           { name: 'Ward',            crates: [['regular', 1]] },
+    surgery:        { name: 'Surgery',         crates: [['silver', 1]] },
+    dispensary:     { name: 'Dispensary',      crates: [['regular', 3]] },
+    classroom:      { name: 'Classroom',       crates: [['regular', 1]] },
+    staffRoom:      { name: 'Staff Room',      crates: [['silver', 1]] },
+    gym:            { name: 'Gymnasium',       crates: [['regular', 2]] },
+    bunkroom:       { name: 'Bunk Room',       crates: [['regular', 2]] },
+    armoury:        { name: 'Armoury',         crates: [['gold', 1]] },
+    cell:           { name: 'Cell',            crates: [['regular', 1]] },
+    guardRoom:      { name: 'Guard Room',      crates: [['silver', 1]] },
+    apartment:      { name: 'Apartment',       crates: [['regular', 2]] },
+    stall:          { name: 'Market Stall',    crates: [['regular', 2]] },
+    office:         { name: 'Office',          crates: [['regular', 1]] },
+    strongroom:     { name: 'Strongroom',      crates: [['gold', 1]] },
+    storeroom:      { name: 'Storeroom',       crates: [['regular', 3]] },
+    workbay:        { name: 'Work Bay',        crates: [['regular', 2]] },
+    controlRoom:    { name: 'Control Room',    crates: [['silver', 1]] },
   };
 
   /* A room is a rectangle inside a building that the loot pass fills. Rooms
@@ -376,6 +398,76 @@ const Structures = (() => {
     }
     return out;
   }
+
+  /* ---------- interior walls ----------
+     Blueprints used to divide a building by hand: a wall segment, a door
+     segment, another wall segment, with the offsets worked out on paper. That
+     is fine for one divider and unmaintainable for a corridor of eight rooms,
+     which is why most buildings had a shell and almost nothing inside it.
+
+     `partition` is one wall run with doorways punched through it, and
+     `roomGrid` is a block of rooms built from those — so an interior can be
+     described as "four rooms off a corridor, doors on the corridor side"
+     rather than as twenty hand-placed rectangles. */
+  const DOORWAY = 62;          // px of gap a doorway leaves (1.55m)
+
+  function runAt(type, x, y, axis, offsetPx, lenPx, thickness) {
+    return axis === 'h'
+      ? seg(type, x + offsetPx, y, lenPx / PX_PER_M, 'h', thickness)
+      : seg(type, x, y + offsetPx, lenPx / PX_PER_M, 'v', thickness);
+  }
+
+  /* `doors` are offsets in px along the run where a gap goes. `doorType` fills
+     the gap with something openable; leave it out for an open archway. */
+  function partition(type, x, y, lengthPx, axis, thickness, doors, doorType) {
+    const out = [];
+    const stops = (doors || []).slice().sort((a, b) => a - b);
+    let cursor = 0;
+    for (const d of stops) {
+      const start = Math.max(0, Math.min(lengthPx - DOORWAY, d - DOORWAY / 2));
+      if (start - cursor > 6) out.push(runAt(type, x, y, axis, cursor, start - cursor, thickness));
+      if (doorType) out.push(runAt(doorType, x, y, axis, start, DOORWAY, 0.3));
+      cursor = start + DOORWAY;
+    }
+    if (lengthPx - cursor > 6) out.push(runAt(type, x, y, axis, cursor, lengthPx - cursor, thickness));
+    return out;
+  }
+
+  /* A block of `cols` x `rows` rooms filling (x, y, w, h). Every room gets a
+     door on the side named by `access` ('n'|'s'|'w'|'e'), which is where the
+     corridor runs. Returns { parts, cells } — the cells are plain rects, ready
+     to be handed to `room()` with whatever kind they hold. */
+  function roomGrid(type, x, y, w, h, cols, rows, opts = {}) {
+    const th = opts.thickness || 0.22;
+    const doorType = opts.doorType === null ? null : (opts.doorType || 'door');
+    const access = opts.access || 'n';
+    const cw = w / cols, ch = h / rows;
+    const parts = [], cells = [];
+    // the walls between columns, and between rows
+    for (let c = 1; c < cols; c++) {
+      const doors = access === 'n' || access === 's' ? [] : [ch / 2];
+      for (let r = 0; r < rows; r++) {
+        parts.push(...partition(type, x + c * cw, y + r * ch, ch, 'v', th,
+          doors.map(d => d), doorType));
+      }
+    }
+    for (let r = 1; r < rows; r++) {
+      const doors = access === 'w' || access === 'e' ? [] : [cw / 2];
+      for (let c = 0; c < cols; c++) {
+        parts.push(...partition(type, x + c * cw, y + r * ch, cw, 'h', th,
+          doors.map(d => d), doorType));
+      }
+    }
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        cells.push({ x: x + c * cw + 14, y: y + r * ch + 14, w: cw - 28, h: ch - 28 });
+      }
+    }
+    return { parts, cells };
+  }
+  /* turn grid cells into rooms of a kind, in order */
+  const cellRooms = (cells, kinds) =>
+    cells.map((c, i) => room(typeof kinds === 'string' ? kinds : kinds[i % kinds.length], c.x, c.y, c.w, c.h));
 
   const BUILDINGS = {
     /* a plain wooden house: one front door, one back door, a divided interior */
@@ -595,6 +687,94 @@ const Structures = (() => {
       return out;
     },
 
+    /* ---------- clinic ----------
+       A house-sized hospital: two treatment rooms and a dispensary. Small
+       enough to be worth taking on the way past rather than crossing for. */
+    clinic(ox, oy) {
+      const w = 420, h = 320;
+      const out = shell(ox, oy, w, h, 'wood', 0.3, [
+        { side: 's', at: 200, type: 'door', len: 2 }, { side: 'w', at: 160 },
+      ]);
+      out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', 0.25, [120, 300], 'door'));
+      const g = roomGrid('wood', ox + 14, oy + 14, w - 28, 166, 2, 1, { access: 's' });
+      out.push(...g.parts);
+      out.push(seg('window', ox + 80, oy + 12, 1.4, 'h', 0.15));
+      out.push(seg('window', ox + 300, oy + 12, 1.4, 'h', 0.15));
+      out.rooms = [
+        room('ward', g.cells[0].x, g.cells[0].y, g.cells[0].w, g.cells[0].h),
+        room('surgery', g.cells[1].x, g.cells[1].y, g.cells[1].w, g.cells[1].h),
+        room('dispensary', ox + 30, oy + 200, w - 60, 100),
+      ];
+      return out;
+    },
+
+    /* ---------- library ----------
+       Long parallel stacks: every sightline is a corridor, so it fights like a
+       maze of one-way corners. */
+    library(ox, oy) {
+      const w = 620, h = 440;
+      const out = shell(ox, oy, w, h, 'wood', 0.35, [
+        { side: 'n', at: 300, type: 'door', len: 2 }, { side: 'e', at: 220 },
+      ]);
+      // the stacks: six runs with a gap at alternating ends
+      for (let i = 0; i < 6; i++) {
+        const x = ox + 70 + i * 80;
+        const top = i % 2 === 0;
+        out.push(seg('wood', x, oy + (top ? 60 : 150), top ? 5.5 : 6.2, 'v', 0.25));
+      }
+      out.push(...partition('wood', ox + 14, oy + 350, w - 28, 'h', 0.28, [160, 460], 'door'));
+      const back = roomGrid('wood', ox + 14, oy + 364, w - 28, h - 378, 2, 1, { access: 'n' });
+      out.push(...back.parts);
+      out.rooms = [
+        room('office', back.cells[0].x, back.cells[0].y, back.cells[0].w, back.cells[0].h),
+        room('staffRoom', back.cells[1].x, back.cells[1].y, back.cells[1].w, back.cells[1].h),
+        room('classroom', ox + 90, oy + 70, 440, 260),
+      ];
+      return out;
+    },
+
+    /* ---------- garage ----------
+       Four work bays, a jeep in one of them, and a wall of tools. */
+    garage(ox, oy) {
+      const w = 560, h = 380;
+      const out = shell(ox, oy, w, h, 'metal', 0.45, [
+        { side: 's', at: 140, type: 'rdoor', len: 3 },
+        { side: 's', at: 420, type: 'rdoor', len: 3 },
+      ]);
+      const bays = roomGrid('metal', ox + 14, oy + 14, w - 28, h - 120, 4, 1, { access: 's', doorType: null });
+      out.push(...bays.parts);
+      out.push(...partition('metal', ox + 14, oy + h - 106, w - 28, 'h', 0.3, [140, 420], null));
+      out.push(seg('barricade', ox + 40, oy + h - 60, 4, 'h', 0.3));
+      out.rooms = [
+        room('workbay', bays.cells[0].x, bays.cells[0].y, bays.cells[0].w, bays.cells[0].h),
+        room('garage',  bays.cells[1].x, bays.cells[1].y, bays.cells[1].w, bays.cells[1].h),
+        room('workbay', bays.cells[2].x, bays.cells[2].y, bays.cells[2].w, bays.cells[2].h),
+        room('storeroom', bays.cells[3].x, bays.cells[3].y, bays.cells[3].w, bays.cells[3].h),
+      ];
+      return out;
+    },
+
+    /* ---------- watermill ----------
+       A stone mill with a flooded undercroft. Wet floor, so it is the one
+       building where a Diver keeps their footing. */
+    watermill(ox, oy) {
+      const w = 380, h = 420;
+      const out = shell(ox, oy, w, h, 'wood', 0.4, [
+        { side: 'n', at: 180, type: 'door', len: 2 }, { side: 'e', at: 300 },
+      ]);
+      out.push(...partition('wood', ox + 14, oy + 200, w - 28, 'h', 0.3, [110], 'door'));
+      out.push(seg('rwall', ox + 250, oy + 214, 4.5, 'v', 0.4));
+      // the wheel housing outside
+      out.push(seg('wood', ox + w, oy + 120, 4, 'v', 0.35));
+      out.push(seg('wood', ox + w, oy + 120, 2.4, 'h', 0.35));
+      out.rooms = [
+        room('storeroom', ox + 30, oy + 30, w - 60, 150),
+        room('workbay',   ox + 30, oy + 220, 200, 170),
+        room('safe',      ox + 265, oy + 230, 95, 160),
+      ];
+      return out;
+    },
+
     /* military base: metal shell that ricochets rifle fire, wire + sandbags outside */
     base(ox, oy) {
       const w = 600, h = 400;
@@ -688,28 +868,24 @@ const Structures = (() => {
 
     /* apartment block: a long spine of rooms off a central corridor.
        The densest close-quarters fight on any map. */
+    /* apartments: eight flats off a central stair, two floors' worth of
+       doorways on one plane */
     apartments(ox, oy) {
-      const w = 780, h = 400;
+      const w = 820, h = 460;
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
-        { side: 'w', at: 170 }, { side: 'e', at: 170 }, { side: 'n', at: 360 },
+        { side: 'w', at: 210 }, { side: 'e', at: 210 }, { side: 'n', at: 400 },
       ]);
-      // corridor walls with doors into each room
-      out.push(seg('wood', ox + 14, oy + 150, 19, 'h', 0.3));
-      out.push(seg('wood', ox + 14, oy + 250, 19, 'h', 0.3));
-      for (const dx of [120, 320, 520, 660]) {
-        out.push(seg('door', ox + dx, oy + 150, 1.5, 'h'));
-        out.push(seg('door', ox + dx - 40, oy + 250, 1.5, 'h'));
+      out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', 0.3, [110, 310, 510, 710], 'door'));
+      out.push(...partition('wood', ox + 14, oy + 280, w - 28, 'h', 0.3, [110, 310, 510, 710], 'door'));
+      const top = roomGrid('wood', ox + 14, oy + 14, w - 28, 166, 4, 1, { access: 's' });
+      const bot = roomGrid('wood', ox + 14, oy + 294, w - 28, h - 308, 4, 1, { access: 'n' });
+      out.push(...top.parts, ...bot.parts);
+      // windows down both long faces
+      for (const dx of [90, 300, 520, 720]) {
+        out.push(seg('window', ox + dx, oy + 12, 1.6, 'h', 0.15));
+        out.push(seg('window', ox + dx, oy + h - 12, 1.6, 'h', 0.15));
       }
-      // add external windows and small balcony covers
-      for (const wx of [80, 260, 440, 620]) {
-        out.push(seg('window', ox + wx, oy + 10, 1.8, 'h', 0.15));
-        out.push(seg('barricade', ox + wx + 20, oy + 14, 1.6, 'h', 0.18));
-      }
-      // room dividers above and below the corridor
-      for (const dx of [200, 400, 600]) {
-        out.push(seg('wood', ox + dx, oy + 14, 3.4, 'v', 0.25));
-        out.push(seg('wood', ox + dx, oy + 250, 3.4, 'v', 0.25));
-      }
+      out.rooms = [...cellRooms(top.cells, 'apartment'), ...cellRooms(bot.cells, 'apartment')];
       return out;
     },
 
@@ -917,19 +1093,28 @@ const Structures = (() => {
     },
 
     /* hospital: medical loot, open layout for triage, few walls for mobility */
+    /* hospital: a corridor of wards down one side, theatre and dispensary the
+       other. Bandages and adrenaline live here, and so does the reason to
+       stay — see BUILDING_EFFECTS. */
     hospital(ox, oy) {
-      const w = 640, h = 480;
+      const w = 720, h = 500;
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'n', at: 240, type: 'door', len: 3 },
-        { side: 's', at: 280 }, { side: 'e', at: 300, type: 'door' },
+        { side: 'n', at: 300, type: 'door', len: 3 },
+        { side: 's', at: 300 }, { side: 'e', at: 300, type: 'door' },
       ]);
-      // reception hall + treatment wings (low walls for sightlines)
-      out.push(seg('barricade', ox + 120, oy + 80, 4, 'v', 0.3));
-      out.push(seg('barricade', ox + 120, oy + 380, 4, 'v', 0.3));
-      out.push(seg('barricade', ox + 420, oy + 140, 5, 'v', 0.3));
-      // interior divisions (rooms open to corridors)
-      out.push(seg('door', ox + 240, oy + 200, 1.5, 'h'));
-      out.push(seg('door', ox + 380, oy + 280, 1.5, 'v'));
+      // spine corridor running east-west across the middle
+      out.push(...partition('wood', ox + 14, oy + 250, w - 28, 'h', 0.28,
+        [140, 340, 560], 'door'));
+      // four wards north of it, theatre and dispensary south
+      const north = roomGrid('wood', ox + 14, oy + 14, w - 28, 236, 4, 1, { access: 's' });
+      const south = roomGrid('wood', ox + 14, oy + 262, w - 28, h - 276, 3, 1, { access: 'n' });
+      out.push(...north.parts, ...south.parts);
+      out.rooms = [
+        ...cellRooms(north.cells, 'ward'),
+        room('surgery',    south.cells[0].x, south.cells[0].y, south.cells[0].w, south.cells[0].h),
+        room('dispensary', south.cells[1].x, south.cells[1].y, south.cells[1].w, south.cells[1].h),
+        room('lobby',      south.cells[2].x, south.cells[2].y, south.cells[2].w, south.cells[2].h),
+      ];
       return out;
     },
 
@@ -1011,29 +1196,28 @@ const Structures = (() => {
     },
 
     /* prison: high-security cells with reinforced walls, hard to breach */
+    /* prison: two blocks of cells facing a guarded corridor. Everything is
+       reinforced, so getting in wants C4 or the right tool. */
     prison(ox, oy) {
-      const w = 800, h = 600;
+      const w = 840, h = 620;
       const out = shell(ox, oy, w, h, 'rwall', 0.5, [
-        { side: 'n', at: 320, type: 'rdoor', len: 2 },
-        { side: 's', at: 200, type: 'rdoor' },
+        { side: 'n', at: 360, type: 'rdoor', len: 2 },
+        { side: 's', at: 240, type: 'rdoor' },
       ]);
-      // cell block north: 4 cells × 2 rows
-      for (let row = 0; row < 2; row++) {
-        for (let col = 0; col < 4; col++) {
-          const cx = ox + 80 + col * 120, cy = oy + 100 + row * 160;
-          out.push(seg('rwall', cx, cy, 2.8, 'h', 0.35));
-          out.push(seg('rwall', cx, cy, 2.8, 'v', 0.35));
-          out.push(seg('rdoor', cx + 56, cy, 1.2, 'h'));  // cell entrance
-        }
-      }
-      // guard corridor
-      out.push(seg('metal', ox + 50, oy + 300, 7.2, 'h', 0.3));
-      // hidden hatch under the corridor leading to prisoner holding cell
-      const hatch = seg('door', ox + 120, oy + 300, 1.2, 'h'); hatch.secret = true; hatch.underground = true; out.push(hatch);
-      // watchtower (corner)
-      out.push(seg('rwall', ox + 650, oy + 450, 2, 'h', 0.4));
-      out.push(seg('rwall', ox + 650, oy + 450, 2, 'v', 0.4));
-      out.push(seg('sandbag', ox + 700, oy + 400, 3, 'h', 0.5));
+      // corridor down the middle, cells either side
+      out.push(...partition('rwall', ox + 14, oy + 250, w - 28, 'h', 0.4, [180, 480, 700], 'rdoor'));
+      out.push(...partition('rwall', ox + 14, oy + 370, w - 28, 'h', 0.4, [180, 480, 700], 'rdoor'));
+      const top = roomGrid('rwall', ox + 14, oy + 14, w - 28, 236, 5, 1, { access: 's', thickness: 0.35, doorType: 'rdoor' });
+      const bot = roomGrid('rwall', ox + 14, oy + 384, w - 28, h - 398, 5, 1, { access: 'n', thickness: 0.35, doorType: 'rdoor' });
+      out.push(...top.parts, ...bot.parts);
+      // guard post in the corridor, and sandbags at the yard end
+      out.push(seg('sandbag', ox + 380, oy + 300, 3, 'h', 0.5));
+      out.push(seg('sandbag', ox + 380, oy + 300, 1.5, 'v', 0.5));
+      out.rooms = [
+        ...cellRooms(top.cells, 'cell'),
+        ...cellRooms(bot.cells, 'cell'),
+        room('guardRoom', ox + 360, oy + 268, 200, 90),
+      ];
       return out;
     },
 
@@ -1083,22 +1267,28 @@ const Structures = (() => {
     },
 
     /* school: open classrooms, varied heights, educational theme */
+    /* school: classrooms off a central corridor, a hall at one end */
     school(ox, oy) {
-      const w = 640, h = 560;
+      const w = 760, h = 560;
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'n', at: 240, type: 'door', len: 2 },
-        { side: 's', at: 320 },
+        { side: 'n', at: 300, type: 'door', len: 2 },
+        { side: 's', at: 380 }, { side: 'w', at: 280, type: 'door' },
       ]);
-      // classroom wings (north + south corridor)
-      out.push(seg('wood', ox + 14, oy + 200, 8.4, 'h', 0.3));  // divider
-      for (const dx of [100, 240, 380, 520]) {
-        out.push(seg('door', ox + dx, oy + 200, 1.5, 'h'));  // classroom doors
-      }
-      // gym (large open area)
-      out.push(seg('barricade', ox + 400, oy + 380, 5, 'h', 0.25));
-      out.push(seg('barricade', ox + 400, oy + 380, 3.5, 'v', 0.25));
-      // cafeteria (low walls, many tables)
-      out.push(seg('barricade', ox + 180, oy + 450, 3, 'h', 0.25));
+      // the corridor, with a way through at each end and in the middle
+      out.push(...partition('wood', ox + 14, oy + 230, w - 28, 'h', 0.3, [120, 380, 640], 'door'));
+      out.push(...partition('wood', ox + 14, oy + 330, w - 28, 'h', 0.3, [200, 560], 'door'));
+      const top = roomGrid('wood', ox + 14, oy + 14, w - 28, 216, 4, 1, { access: 's' });
+      const bot = roomGrid('wood', ox + 14, oy + 344, w - 28, h - 358, 3, 1, { access: 'n' });
+      out.push(...top.parts, ...bot.parts);
+      // lockers line the corridor
+      out.push(seg('barricade', ox + 60, oy + 280, 4, 'h', 0.25));
+      out.push(seg('barricade', ox + 480, oy + 280, 4, 'h', 0.25));
+      out.rooms = [
+        ...cellRooms(top.cells, 'classroom'),
+        room('gym',       bot.cells[0].x, bot.cells[0].y, bot.cells[0].w, bot.cells[0].h),
+        room('classroom', bot.cells[1].x, bot.cells[1].y, bot.cells[1].w, bot.cells[1].h),
+        room('staffRoom', bot.cells[2].x, bot.cells[2].y, bot.cells[2].w, bot.cells[2].h),
+      ];
       return out;
     },
 
@@ -1152,23 +1342,26 @@ const Structures = (() => {
     },
 
     /* barracks: military dormitory, many small rooms, high-loot density */
+    /* barracks: six bunk rooms off a central corridor, and the armoury at the
+       end behind a reinforced door */
     barracks(ox, oy) {
-      const w = 700, h = 500;
+      const w = 760, h = 520;
       const out = shell(ox, oy, w, h, 'metal', 0.45, [
-        { side: 'w', at: 120, type: 'door' }, { side: 'e', at: 180, type: 'door' },
+        { side: 'w', at: 260, type: 'door' }, { side: 'e', at: 260, type: 'door' },
+        { side: 'n', at: 380 },
       ]);
-      // bunk room 1 (north wing)
-      out.push(seg('metal', ox + 120, oy + 80, 3.4, 'v', 0.3));
-      out.push(seg('door', ox + 120, oy + 220, 1.5, 'v'));
-      // bunk room 2 (central)
-      out.push(seg('metal', ox + 360, oy + 100, 3.4, 'v', 0.3));
-      out.push(seg('door', ox + 360, oy + 240, 1.5, 'v'));
-      // common area (south)
-      out.push(seg('barricade', ox + 280, oy + 380, 4, 'h', 0.3));
-      // armory (reinforced corner)
-      out.push(seg('rwall', ox + 600, oy + 350, 2.8, 'h', 0.35));
-      out.push(seg('rwall', ox + 600, oy + 350, 2.8, 'v', 0.35));
-      out.push(seg('rdoor', ox + 650, oy + 350, 1.2, 'h'));
+      out.push(...partition('metal', ox + 14, oy + 210, w - 200, 'h', 0.3, [110, 330, 490], 'door'));
+      out.push(...partition('metal', ox + 14, oy + 310, w - 200, 'h', 0.3, [110, 330, 490], 'door'));
+      const top = roomGrid('metal', ox + 14, oy + 14, w - 200, 196, 3, 1, { access: 's' });
+      const bot = roomGrid('metal', ox + 14, oy + 324, w - 200, h - 338, 3, 1, { access: 'n' });
+      out.push(...top.parts, ...bot.parts);
+      // the armoury, walled off down the east end
+      out.push(...partition('rwall', ox + w - 186, oy + 14, h - 28, 'v', 0.4, [h / 2], 'rdoor'));
+      out.rooms = [
+        ...cellRooms(top.cells, 'bunkroom'),
+        ...cellRooms(bot.cells, 'bunkroom'),
+        room('armoury', ox + w - 170, oy + 30, 150, h - 60),
+      ];
       return out;
     },
 
@@ -1303,6 +1496,130 @@ const Structures = (() => {
     },
   };
 
+  /* ============================================================
+     HOW EACH BUILDING LOOKS
+
+     Every roof on the map used to be the same brown lid and every floor a
+     muted brown-grey, so from above a church, a hangar and a farmhouse were
+     three identically-coloured rectangles. You could not tell what you were
+     about to walk into, which matters when one of them has a gold crate and
+     one of them is empty.
+
+     Each building gets a palette instead:
+       floor    the ground you stand on inside
+       roof     [top-left, bottom-right] of the roof gradient
+       trim     the border around roof and floor — the building's accent
+       pattern  how the floor is ruled: see drawFloors() in game.js
+                  planks   floorboards, for anywhere domestic
+                  tile     a grid, for institutional and clinical rooms
+                  concrete slab joints, wide and sparse
+                  metal    corrugated sheeting
+                  dirt     no ruling at all, just speckle
+     ============================================================ */
+  const S_RESIDENTIAL = { pattern: 'planks' };
+  const S_INDUSTRIAL = { pattern: 'metal' };
+  const S_INSTITUTIONAL = { pattern: 'tile' };
+  const S_MILITARY = { pattern: 'concrete' };
+
+  const STYLE = {
+    /* ---- residential: warm timber, terracotta and slate ---- */
+    house:       { ...S_RESIDENTIAL, floor: '#7d6349', roof: ['#a4553c', '#7c3d2b'], trim: '#5a3526' },
+    mansion:     { ...S_RESIDENTIAL, floor: '#8a6f4e', roof: ['#8a6aa8', '#5f4779'], trim: '#4a3560' },
+    resort:      { ...S_RESIDENTIAL, floor: '#94795a', roof: ['#43a9a0', '#2b7570'], trim: '#215c58' },
+    shanty:      { ...S_RESIDENTIAL, floor: '#6b5a45', roof: ['#8a7f6a', '#5f5747'], trim: '#48412f' },
+    apartments:  { ...S_RESIDENTIAL, floor: '#75655a', roof: ['#9a6a52', '#6d4838'], trim: '#4d3327' },
+    camp:        { ...S_RESIDENTIAL, floor: '#5f6a46', roof: ['#6f8a4e', '#4c6236'], trim: '#3a4d29', pattern: 'dirt' },
+    campground:  { ...S_RESIDENTIAL, floor: '#5c6a45', roof: ['#78955a', '#51703c'], trim: '#3d5630', pattern: 'dirt' },
+    farm:        { ...S_RESIDENTIAL, floor: '#7a6440', roof: ['#b4503f', '#82342a'], trim: '#5c261e' },
+
+    /* ---- industrial: steel, rust and corrugate ---- */
+    warehouse:   { ...S_INDUSTRIAL, floor: '#5a6270', roof: ['#6e7a8c', '#4c5567'], trim: '#39404e' },
+    factory:     { ...S_INDUSTRIAL, floor: '#4e5666', roof: ['#5d6a7d', '#3f4859'], trim: '#2d3442' },
+    workshop:    { ...S_INDUSTRIAL, floor: '#565f6b', roof: ['#7a6a52', '#55483a'], trim: '#3c332a' },
+    dock:        { ...S_INDUSTRIAL, floor: '#5d6154', roof: ['#4e7d92', '#345665'], trim: '#26424e' },
+    harbor:      { ...S_INDUSTRIAL, floor: '#525c68', roof: ['#3f7a90', '#2a5364'], trim: '#1f3f4c' },
+    'power-plant': { ...S_INDUSTRIAL, floor: '#4a5260', roof: ['#8a8a52', '#5f5f38'], trim: '#45452a' },
+    silos:       { ...S_INDUSTRIAL, floor: '#6a6250', roof: ['#c2a45c', '#8a7442'], trim: '#5f5030' },
+    depot:       { ...S_INDUSTRIAL, floor: '#5a5b52', roof: ['#6f7358', '#4d503c'], trim: '#383a2b' },
+    hangar:      { ...S_INDUSTRIAL, floor: '#4f5866', roof: ['#8592a4', '#5c667a'], trim: '#414b5c' },
+    airfield:    { ...S_INDUSTRIAL, floor: '#4f5560', roof: ['#7d8794', '#565f6c'], trim: '#3c434e' },
+    mine:        { ...S_INDUSTRIAL, floor: '#5d5852', roof: ['#5a4c40', '#3d332b'], trim: '#2c251f', pattern: 'dirt' },
+
+    /* ---- institutional: pale stone, and an accent you can name ---- */
+    hospital:    { ...S_INSTITUTIONAL, floor: '#c8d4d2', roof: ['#e8f0ee', '#b9c9c6'], trim: '#d1443f' },
+    school:      { ...S_INSTITUTIONAL, floor: '#9d8f74', roof: ['#b06a3e', '#7f4629'], trim: '#5f3320' },
+    church:      { ...S_INSTITUTIONAL, floor: '#a2937c', roof: ['#5a6ea8', '#3c4a76'], trim: '#caa04a' },
+    museum:      { ...S_INSTITUTIONAL, floor: '#b3ada0', roof: ['#a8a29a', '#7c766d'], trim: '#c9a54e' },
+    prison:      { ...S_INSTITUTIONAL, floor: '#767c84', roof: ['#5f666f', '#42474e'], trim: '#2f3339' },
+    bank:        { ...S_INSTITUTIONAL, floor: '#a89b7e', roof: ['#4f6656', '#33463a'], trim: '#c9b25a' },
+    vault:       { ...S_INSTITUTIONAL, floor: '#6e737f', roof: ['#575d6a', '#3b4049'], trim: '#c9b25a' },
+    'command-center': { ...S_INSTITUTIONAL, floor: '#4c5164', roof: ['#4a5570', '#333c52'], trim: '#4a8fd0' },
+    'train-station': { ...S_INSTITUTIONAL, floor: '#6e6a5e', roof: ['#7d6a4e', '#564733'], trim: '#3e3323' },
+    subway:      { ...S_INSTITUTIONAL, floor: '#484f5c', roof: ['#3d4450', '#2a2f38'], trim: '#4a8fd0' },
+
+    /* ---- military: olive, khaki and sandbag ---- */
+    base:        { ...S_MILITARY, floor: '#575e4a', roof: ['#6b7350', '#4a5138'], trim: '#363b26' },
+    fortress:    { ...S_MILITARY, floor: '#545d66', roof: ['#5d6656', '#3f473b'], trim: '#2c3228' },
+    barracks:    { ...S_MILITARY, floor: '#5a5f4c', roof: ['#727a56', '#50573b'], trim: '#3a3f28' },
+    armory:      { ...S_MILITARY, floor: '#4f5348', roof: ['#5c5f45', '#3e412e'], trim: '#c07a2a' },
+    bunker:      { ...S_MILITARY, floor: '#4f5450', roof: ['#4a4f4a', '#333733'], trim: '#252825' },
+    keep:        { ...S_MILITARY, floor: '#565b6b', roof: ['#6a6f7e', '#494e5b'], trim: '#333741' },
+    checkpoint:  { ...S_MILITARY, floor: '#5c5c4c', roof: ['#6e6e52', '#4c4c38'], trim: '#c07a2a' },
+    tower:       { ...S_MILITARY, floor: '#5a5a52', roof: ['#66665a', '#46463e'], trim: '#30302a' },
+    'bridge-fort': { ...S_MILITARY, floor: '#5f5a52', roof: ['#6a6255', '#48423a'], trim: '#332f29' },
+
+    clinic:      { ...S_INSTITUTIONAL, floor: '#c4d0cd', roof: ['#dfeae7', '#b0c0bd'], trim: '#d1443f' },
+    library:     { ...S_INSTITUTIONAL, floor: '#9c8a6d', roof: ['#6a5a8a', '#463a5f'], trim: '#c9a54e' },
+    garage:      { ...S_INDUSTRIAL, floor: '#4f545c', roof: ['#6a7078', '#474c53'], trim: '#c07a2a' },
+    watermill:   { ...S_RESIDENTIAL, floor: '#6f6350', roof: ['#5a7a6a', '#3c5548'], trim: '#2e4238' },
+
+    /* ---- commercial and one-offs ---- */
+    market:      { floor: '#8a7a5c', roof: ['#d06a4a', '#9c4630'], trim: '#7a3122', pattern: 'tile' },
+    'gas-station': { floor: '#5a5646', roof: ['#d8412f', '#9c2b1e'], trim: '#f0d24a', pattern: 'concrete' },
+    'radio-tower': { floor: '#4c5058', roof: ['#7a4a4a', '#553232'], trim: '#e8483c', pattern: 'metal' },
+    arena:       { floor: '#5a5f6b', roof: ['#8a5a8a', '#5c3a5c'], trim: '#d0a04a', pattern: 'concrete' },
+  };
+  const DEFAULT_STYLE = { floor: '#5f5f5f', roof: ['#6a5442', '#54402f'], trim: '#1e140c', pattern: 'planks' };
+  const styleOf = (name) => STYLE[name] || DEFAULT_STYLE;
+
+  /* ============================================================
+     WHAT A BUILDING DOES FOR YOU
+
+     Buildings were places with loot in them and nothing else, so once a room
+     was cleared there was no reason to be there — you looted and left, and
+     every building played the same way. These give a handful of them a reason
+     to hold: somewhere to heal, somewhere to resupply, somewhere that shows
+     you where everyone is.
+
+     Deliberately not on all forty-two. A perk on every building is a perk on
+     none; these are the landmarks worth crossing the map for, and everything
+     else is still just cover and crates.
+
+       heal      HP per second while inside
+       adren     adrenaline per second
+       resupply  seconds between magazine top-ups
+       reveal    radius in px that enemies show on your minimap
+       damage    multiplier on damage you take inside
+       toolRate  multiplier on tool cooldowns
+       speed     multiplier on your movement inside
+     ============================================================ */
+  const BUILDING_EFFECTS = {
+    hospital:    { heal: 2.5, label: 'Field hospital — you are being treated' },
+    clinic:      { heal: 1.5, label: 'Clinic — patching you up' },
+    garage:      { toolRate: 0.6, label: 'Garage — the right tools for the job' },
+    church:      { adren: 3, label: 'Sanctuary — adrenaline returning' },
+    armory:      { resupply: 3, label: 'Armoury — magazines topping up' },
+    barracks:    { resupply: 5, label: 'Barracks — resupplying' },
+    'radio-tower': { reveal: 1500, label: 'Radio tower — contacts on your map' },
+    'command-center': { reveal: 2200, label: 'Command centre — full sweep on your map' },
+    bunker:      { damage: 0.75, label: 'Bunker — hardened against fire' },
+    vault:       { damage: 0.7, label: 'Vault — nothing much gets in here' },
+    workshop:    { toolRate: 0.5, label: 'Workshop — tools working twice as fast' },
+    subway:      { speed: 1.15, label: 'Tunnels — quicker going underground' },
+    mine:        { speed: 1.1, toolRate: 0.7, label: 'Mineshaft — room to swing' },
+  };
+  const effectOf = (name) => BUILDING_EFFECTS[name] || null;
+
   const BUILDING_DESCRIPTIONS = {
     house: 'Two-room wooden house with front and back doors. Good for quick loot and tight fights.',
     mansion: 'Large multi-wing estate with a reinforced strongroom. Great for multi-angle engagement.',
@@ -1354,8 +1671,8 @@ const Structures = (() => {
   const BUILDING_CATEGORIES = {
     tactical: ['tower', 'checkpoint', 'bunker', 'bridge-fort', 'keep'],
     residential: ['house', 'mansion', 'shanty', 'apartments', 'camp', 'campground', 'farm', 'resort'],
-    industrial: ['warehouse', 'factory', 'workshop', 'dock', 'harbor', 'power-plant', 'silos', 'depot', 'hangar', 'airfield'],
-    institutional: ['hospital', 'school', 'church', 'museum', 'prison', 'bank', 'vault', 'command-center'],
+    industrial: ['warehouse', 'factory', 'workshop', 'dock', 'harbor', 'power-plant', 'silos', 'depot', 'hangar', 'airfield', 'garage', 'watermill'],
+    institutional: ['hospital', 'clinic', 'library', 'school', 'church', 'museum', 'prison', 'bank', 'vault', 'command-center'],
     commercial: ['market', 'gas-station', 'train-station'],
     military: ['base', 'fortress', 'barracks', 'armory'],
     unique: ['radio-tower', 'arena', 'mine', 'subway'],
@@ -1380,6 +1697,7 @@ const Structures = (() => {
 
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
+    STYLE, styleOf, BUILDING_EFFECTS, effectOf,
     ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
     /* place a named building and tag every piece with it. `rooms` rides along

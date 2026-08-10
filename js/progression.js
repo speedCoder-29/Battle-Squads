@@ -15,6 +15,9 @@ const Progression = (() => {
     for (const [key, init] of [['skins', []], ['weaponSkins', {}], ['attachments', {}], ['ammo', {}]]) {
       if (!profile[key]) { profile[key] = init; changed = true; }
     }
+    // and perks after those — an older profile has no perk field at all, and
+    // one naming a perk that has since been removed should fall back, not break
+    if (!profile.perk || !Perks.PERKS[profile.perk]) { profile.perk = Perks.DEFAULT; changed = true; }
     // drop anything that no longer exists in the roster
     for (const id of Object.keys(profile.attachments)) {
       const w = WEAPONS[id];

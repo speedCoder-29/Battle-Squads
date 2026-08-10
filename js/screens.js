@@ -321,7 +321,7 @@ const Screens = (() => {
       const b = document.createElement('button');
       b.className = 'gs-mod gs-perk' + (on ? ' is-on' : '');
       b.innerHTML = `
-        <span class="gs-mod-head">${perk.icon} ${perk.name}</span>
+        <span class="gs-mod-head">${perk.icon} ${perk.name}${perk.extra ? '<i class="gs-perk-x">EXTRA</i>' : ''}</span>
         <span class="gs-mod-buff">${perk.effects.map(x => '▲ ' + x).join('<br>') || '—'}</span>
         <span class="gs-perk-blurb">${perk.blurb}</span>`;
       b.addEventListener('click', () => {

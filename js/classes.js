@@ -143,12 +143,15 @@ const Classes = (() => {
   const bagMult = (tier) =>
     (typeof Combat !== 'undefined' ? Combat.bag(tier).capacity : 1);
   /* how many of `itemId` this class may carry */
-  const limitFor = (cls, itemId, bag) => Math.ceil(bagMult(bag)
-    * (cls.consumable === itemId ? Math.ceil(cls.limit * CARRY_MULT) : GENERIC_LIMIT));
+  /* `perk` is optional: Cargo Pants adds a flat two to whatever the bag and
+     the class already allow. */
+  const limitFor = (cls, itemId, bag, perk) => Math.ceil(bagMult(bag)
+    * (cls.consumable === itemId ? Math.ceil(cls.limit * CARRY_MULT) : GENERIC_LIMIT))
+    + (typeof Perks !== 'undefined' ? Perks.byId(perk).mods.consumablePlus || 0 : 0);
   /* what you actually spawn holding */
-  const startFor = (cls, bag) => Math.min(
+  const startFor = (cls, bag, perk) => Math.min(
     Math.ceil(cls.startCount * CARRY_MULT * bagMult(bag)),
-    limitFor(cls, cls.consumable, bag),
+    limitFor(cls, cls.consumable, bag, perk),
   );
 
   return { TOOLS, CLASSES, list, byName, forWeapon, limitFor, startFor, GENERIC_LIMIT, CARRY_MULT, RANGE_UNIT };

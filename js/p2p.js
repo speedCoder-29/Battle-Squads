@@ -287,8 +287,8 @@ const P2P = (() => {
       while (backlog >= SIM_STEP) { room.step(SIM_STEP); backlog -= SIM_STEP; }
     }, 1000 / 60);
     host.timer = ticker(() => {
-      if (!room.players.size) return;
-      room.broadcast(room.snapshot());
+      // personalised on the way out: each player's own inventory and input ack
+      room.sendSnapshot();
     }, TICK);
 
     emit('status', { hosting: true, code, players: room.players.size });
@@ -315,43 +315,26 @@ const P2P = (() => {
     emit('peers', rosterNames());
     return p;
   }
+  /* Everything a guest asks for goes to Room.handle, which is the single list
+     of things a client may request — see roomsim.js. This used to be a switch
+     of its own, and the copy in server/server.js had already drifted away from
+     it: the dedicated server never handled doors, and reloaded at the wrong
+     end of the timer. Two transports, one rulebook.
+
+     The two cases below stay here because they are about the connection rather
+     than the match. */
   function handleFromPeer(player, msg) {
-    if (!host || !player) return;
-    const room = host.room;
-    if (msg.t === 'input') {
-      const i = player.input;
-      i.up = !!msg.up; i.down = !!msg.down; i.left = !!msg.left; i.right = !!msg.right;
-      i.shooting = !!msg.shooting; i.ads = !!msg.ads;
-      if (msg.fire) i.fireEdge = true;
-      if (typeof msg.angle === 'number') i.angle = msg.angle;
-    } else if (msg.t === 'reload') {
-      // the magazine fills when the reload ends — room.step() does that
-      if (Date.now() >= player.reloadUntil && player.ammo < player.weapon.mag) {
-        player.reloadUntil = Date.now() + player.weapon.reloadMs;
-        player.reloading = true;
-      }
-    } else if (msg.t === 'door') {
-      room.toggleDoor(player, msg.id, msg.open);
-    } else if (msg.t === 'melee') {
-      /* Swinging a tool. Nothing about the tool travels — the room reads it off
-         the player's class — so this can only ask, never assert. */
-      room.melee(player);
-    } else if (msg.t === 'dig') {
-      // the trench spade. The room owns the hole because it rolls the dodge.
-      room.dig(player, msg.r, msg.dodge);
-    } else if (msg.t === 'mark') {
-      room.mark(player, msg.x, msg.y, msg.kind);
-    } else if (msg.t === 'emote') {
-      room.emote(player, msg.id);
-    } else if (msg.t === 'ping') {
-      player.send({ t: 'pong', c: msg.c });
-    } else if (msg.t === 'bye') {
+    if (!host || !player || !msg) return;
+    if (msg.t === 'ping') { player.send({ t: 'pong', c: msg.c }); return; }
+    if (msg.t === 'bye') {
       /* Someone closing the tab. WebRTC notices this by itself, but a
          BroadcastChannel has no close event, so without an explicit goodbye a
          guest who left stood in the room forever — a body everyone could still
          see, shoot at, and lose a capture to. */
       dropPlayer(player);
+      return;
     }
+    host.room.handle(player, msg);
   }
 
   /* take a player out of the room and tell the lobby */

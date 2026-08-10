@@ -619,6 +619,9 @@ input, select { font-family: inherit; }
 .gs-perk-blurb { display: block; margin-top: 5px; font-size: 11px; font-style: italic;
   color: var(--muted); line-height: 1.35; }
 .gs-perk.is-on .gs-perk-blurb { color: var(--text); }
+/* not from the design table — kept, but labelled as such */
+.gs-perk-x { margin-left: 6px; font-size: 8px; font-style: normal; letter-spacing: 1px;
+  padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,0.12); color: var(--muted); }
 
 /* ---- keybinds panel ----
    A dense two-column list: the action on the left, its one or two keys on the

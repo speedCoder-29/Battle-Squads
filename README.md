@@ -201,20 +201,44 @@ Sharing `…/?game=CODE` joins that game straight away.
 #### What the room simulates
 
 Anything that decides a fight has to be owned by the room, or two players
-disagree about it. Currently authoritative: movement and collision, terrain
-(the ocean, rivers, bridges, roads and sand all change your speed), barbed wire
-(90% slower, 2 damage/s), doors, destructible cover with per-wall toughness and
-ballistics, barrels cooking off and chaining into each other, trenches and the
-50% dodge for anyone dug into one, melee tools — reach, arc, breaching and wire
-clearing all read off your class, never off the wire — capture points, scores,
-the match clock and respawns.
+disagree about it — so all of it is:
 
-**Not yet authoritative**, and therefore inert or client-only in a hosted
-match: thrown consumables (frags, smoke, flashbangs, C4, impacts), deployables
-(mines, sentries, ammo boxes, barricades, flags), loot crates and armour
-pickups, healing consumables, and vehicles. These still work offline; online
-the room has never been told about them, so a grenade harms nobody and a vest
-you pick up is overwritten by the next snapshot.
+| | |
+|---|---|
+| **Movement** | Collision, terrain (ocean, rivers, bridges, roads and sand all change your speed), barbed wire (90% slower, 2 damage/s), trenches and the 50% dodge for anyone dug in |
+| **The map** | Doors, destructible cover with per-wall toughness and ballistics, barrels cooking off and chaining, deployed barricades as real geometry |
+| **Shooting** | Ballistics, penetration and ricochet, falloff, hit zones, armour, adrenaline, sentry fire, mounted vehicle guns |
+| **Consumables** | Frags, impacts, C4, smoke and flashbangs (line of sight checked against the room's own geometry); mines, sentries, ammo boxes, flags, barricades; every heal, channelled with a clock the room runs |
+| **Loot** | Crate contents, who opened one first, ground drops, who picked one up first, armour tiers, legendaries, what you scatter when you die |
+| **Vehicles** | Every hull on the map — the ones a call-in token drops *and* the ones parked in garages and car parks — plus who is in the driver's seat, driving, terrain underneath, the gun on top, and what small arms do to a tank (nothing) |
+| **The match** | Capture points, scores, the clock, respawns, melee tools — reach, arc, breaching and wire clearing all read off your class, never off the wire |
+
+Nothing a client sends is taken as a statement of fact. Every action is a
+request listed in `Room.handle` ([js/roomsim.js](js/roomsim.js)); the room
+decides the outcome and puts it in the snapshot. A modified client can ask to
+throw a grenade, but not to throw one with a 900px blast, and not one it has
+already thrown.
+
+Three things keep it in sync and smooth.
+
+**Input acknowledgement.** Every packet is numbered and the room echoes back
+the last one it acted on, so the client replays exactly the inputs still in
+flight rather than guessing the window from half a ping.
+
+**One clock for the whole world.** The client draws a fixed lag behind the
+room, interpolating between the two snapshots that straddle render time.
+Players always did; everything else used to be written straight out of the
+newest snapshot as it landed, so it moved in twenty steps a second while the
+players around it glided — and the two were on different clocks, which drew a
+passenger a tenth of a second behind the jeep he was sitting in. Measured on a
+jeep driven in a straight line: 57 of 87 frames frozen, ±4.18px of step
+variation, against 0 frozen and ±0.20px now. What you are driving yourself is
+predicted locally and eased onto the room's answer, so the wheel stays
+responsive.
+
+**Personal snapshots.** Your inventory and your acknowledgement are yours
+alone, and the scenery is culled to what you can see — on a busy map that is
+65 KB/s a player instead of 146.
 
 Limits worth knowing: the host carries the simulation, so pick the strongest
 machine, and if the host leaves the match ends.

@@ -80,10 +80,14 @@ const Combat = (() => {
      every existing caller — including the shared movement model both the
      client and the room run — picks it up without changing shape. */
   const armorSpeed = (a) => {
-    if (perkOf(a) === 'juggernaut') return 1;      // plate carries like cloth
+    if (P().mod(a, 'noArmourWeight', false)) return 1;   // plate carries like cloth
     return 1 + vest(a.vest || 0).speed + helmet(a.helmet || 0).speed;
   };
-  const perkOf = (a) => (a && a.perk) || 'none';
+  /* Perks is a global in the browser and a require() on the server, and this
+     file is loaded by both. Resolved on use so load order can't matter. */
+  const NO_PERK = { mod: (a, k, d) => d, maxHpFor: (b) => b };
+  const P = () => (typeof Perks !== 'undefined' ? Perks
+    : (typeof require === 'function' ? require('./perks') : NO_PERK));
 
   /* ---------- adrenaline ----------
      A ladder, not a single curve. Each band unlocks one more thing and keeps
@@ -121,18 +125,21 @@ const Combat = (() => {
     const a = Math.max(0, Math.min(ADREN_MAX, amount || 0));
     const boost = 1 + (a / 100) / 2;                 // Adren%/2 speedup
     const band = ADREN_BANDS.find(s => a >= s.at) || {};
-    const medic = perk === 'medic';                  // it goes further, and works harder
+    const p = { perk };
+    // Sprinter gets more out of the same adrenaline than anyone else
+    const sprint = P().mod(p, 'adrenSpeedMult', 1);
+    const boosted = 1 + ((a / 100) / 2) * sprint;
     return {
       amount: a,
-      speed:    band.speed ? boost : 1,
+      speed:    band.speed ? boosted : 1,
       reload:   band.reload ? boost : 1,
       handling: band.handling ? boost : 1,
       dr: band.dr || 0,
       // seconds you keep fighting after being taken to 0 HP
       lastStand: band.lastStand ? Math.max(0, (a - 100) / LAST_STAND_PER) : 0,
-      regen: (a / 100) * ADREN_REGEN_MAX * (medic ? 1.5 : 1),   // HP/sec it heals for
+      regen: (a / 100) * ADREN_REGEN_MAX * P().mod(p, 'adrenRegenMult', 1),   // HP/sec
       // over 100 it goes twice as quickly — the top band is rented, not owned
-      burn: ADREN_BURN * (a > 100 ? 2 : 1) * (medic ? 0.5 : 1),
+      burn: ADREN_BURN * (a > 100 ? 2 : 1) * P().mod(p, 'adrenBurnMult', 1),
     };
   }
 
@@ -152,7 +159,11 @@ const Combat = (() => {
       else if (zone === 'body') dmg *= vest(target.vest).body * zoneMult('body');
       else                      dmg *= zoneMult('limb');
     }
-    dmg *= (1 - adrenaline(target && target.adrenaline).dr);
+    dmg *= (1 - adrenaline(target && target.adrenaline, target && target.perk).dr);
+    /* Perks come last, on whatever survived the armour. Kevlar takes a tenth
+       off everything; a Flak Jacket halves a blast and nothing else. */
+    dmg *= (1 - P().mod(target, 'dr', 0));
+    if (type === 'explosive') dmg *= P().mod(target, 'explosiveMult', 1);
     return { damage: Math.max(0, dmg), zone, type };
   }
 
@@ -192,6 +203,9 @@ const Combat = (() => {
     DAMAGE_TYPES, TARGETS, HIT_ZONES, VESTS, HELMETS, BAGS, TOUGHNESS_MEANING,
     MAX_TOUGHNESS, ADREN_MAX,
     targetOf, rollZone, zoneMult, vest, helmet, bag, armorSpeed, adrenaline,
-    resolve, canDamageStructure, maxHpFor: (klass) => targetOf({ klass }).hp,
+    resolve, canDamageStructure,
+    /* `perk` is optional: Beefy adds to the class's base, everyone else gets
+       the table's number. Both the client and the room call this. */
+    maxHpFor: (klass, perk) => P().maxHpFor(targetOf({ klass }).hp, perk),
   };
 })();

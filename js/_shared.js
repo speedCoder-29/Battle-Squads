@@ -45,7 +45,7 @@ module.exports = vm.runInContext('({ Weapons, Combat, Classes, Items })', ctx);
    could not build a world at all, and every dedicated-server match was fought
    in an empty rectangle with no walls and no capture points. */
 const WORLD_FILES = ['weapons.js', 'sprites.js', 'terrain.js', 'nav.js', 'skins.js', 'shop.js',
-  'net.js', 'roomsim.js', 'p2p.js', 'botai.js', 'combat.js', 'classes.js', 'structures.js',
+  'net.js', 'perks.js', 'roomsim.js', 'p2p.js', 'botai.js', 'combat.js', 'classes.js', 'structures.js',
   'items.js', 'storage.js', 'audio.js', 'controls.js', 'comms.js', 'progression.js',
   'screens.js', 'game.js'];
 
@@ -104,7 +104,10 @@ function buildWorld(mode, seed) {
   const c = worldSandbox();
   c.__mode = mode; c.__seed = seed >>> 0;
   return vm.runInContext(
-    'Game.start(__mode, __seed), ({ walls: Game.netWorld(), objectives: Game.netObjectives() })', c);
+    'Game.start(__mode, __seed), ({ walls: Game.netWorld(), objectives: Game.netObjectives(),'
+    // the crates too: the room rolls their contents and decides who opened
+    // one, so it needs to know where they are
+    + ' crates: Game.netCrates(), vehicles: Game.netVehicles() })', c);
 }
 
 module.exports.buildWorld = buildWorld;

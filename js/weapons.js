@@ -27,6 +27,10 @@ const Weapons = (() => {
      tiles against the 128-tile map, and muzzle velocities scaled to match so
      rounds still cross their own range in roughly half a second. */
   const TILE = 50;                 // px per world tile — must match game.js
+  /* What you'd move at carrying nothing. Every gun's moveSpeed is this minus
+     its weight penalty, so it is also the ceiling a Weight Lifter is walking
+     back toward — see roomsim.moveSpeedFor. */
+  const WEIGHT_FREE = 258;
   const PELLET_SPREAD = 0.10;      // shotgun fan, radians either side of aim
   const SPLASH_RADIUS = TILE * 2.8;   // launcher blast — sits above a frag's
 
@@ -268,7 +272,7 @@ const Weapons = (() => {
       dmgType, penetration: 0,          // penetration is a % buff from ammo
 
       // feel
-      moveSpeed: Math.max(120, Math.min(255, 258 - weight * 3.4)),
+      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * 3.4)),
       handling: num(handStr), weight, recoilRaw: rec, accuracyRaw: acc, firerate,
       scope,                            // ADS zoom factor (lower = more magnification)
 
@@ -308,7 +312,7 @@ const Weapons = (() => {
       spreadBase: acc * 0.011,
       recoilKick: rec * 0.016,
       bloomMax: 0.02 + rec * 0.055,
-      moveSpeed: Math.max(120, Math.min(255, 258 - weight * 3.4)),
+      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * 3.4)),
     };
   }
 
@@ -437,7 +441,7 @@ const Weapons = (() => {
       spreadBase: acc * 0.011,
       recoilKick: rec * 0.016,
       bloomMax: 0.02 + rec * 0.055,
-      moveSpeed: Math.max(120, Math.min(255, 258 - weight * 3.4)) * mul('speedMult'),
+      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * 3.4)) * mul('speedMult'),
       handling: base.handling * mul('handlingMult'),
       scope: base.scope * mul('scopeMult'),
       audio: mul('audioMult'),
@@ -466,7 +470,7 @@ const Weapons = (() => {
     'vector', 'uzi', 'p90', 'm870', 'spas-12', 'm4', 'aks-74u', 'mk-14-ebr'];
 
   return {
-    list, byId, BOT_POOL, AMMO_COLORS, CLASS_META, RATING_LABELS, TYPE_META, SCOPES, withMods, TILE,
+    list, byId, BOT_POOL, AMMO_COLORS, CLASS_META, RATING_LABELS, TYPE_META, SCOPES, withMods, TILE, WEIGHT_FREE,
     ATTACHMENTS, AMMO_TYPES, configure, ANTI_TANK_PASSTHROUGH,
     allIds: () => list.map(w => w.id),
     default: 'm16',

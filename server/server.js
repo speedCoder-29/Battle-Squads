@@ -193,38 +193,13 @@ wss.on('connection', (ws) => {
     if (!me) return;
     me.lastSeen = now();
 
-    if (msg.t === 'input') {
-      // trust inputs, never positions
-      const i = me.input;
-      i.up = !!msg.up; i.down = !!msg.down; i.left = !!msg.left; i.right = !!msg.right;
-      i.shooting = !!msg.shooting; i.ads = !!msg.ads;
-      if (msg.fire) i.fireEdge = true;
-      if (typeof msg.angle === 'number') i.angle = msg.angle;
-    } else if (msg.t === 'reload') {
-      /* The magazine fills when the reload *ends* — room.step() does that.
-         Filling it here meant the ammo counter, which the client reads straight
-         out of the snapshot, snapped to full immediately and then refused to
-         fire for two seconds. The browser host has always done it the right way
-         round (see handleFromPeer in js/p2p.js); this is the same code. */
-      if (now() >= me.reloadUntil && me.ammo < me.weapon.mag) {
-        me.reloadUntil = now() + me.weapon.reloadMs;
-        me.reloading = true;
-      }
-    } else if (msg.t === 'door') {
-      // doors were only ever wired up on the browser host, so on the dedicated
-      // server everyone walked into one they had opened on their own screen
-      room.toggleDoor(me, msg.id, msg.open);
-    } else if (msg.t === 'melee') {
-      room.melee(me);
-    } else if (msg.t === 'dig') {
-      room.dig(me, msg.r, msg.dodge);
-    } else if (msg.t === 'mark') {
-      room.mark(me, msg.x, msg.y, msg.kind);        // team-only, and rate limited
-    } else if (msg.t === 'emote') {
-      room.emote(me, msg.id);
-    } else if (msg.t === 'ping') {
-      ws.send(JSON.stringify({ t: 'pong', c: msg.c }));
-    }
+    /* One rulebook for both transports: everything a client may ask for is
+       listed in Room.handle (js/roomsim.js), which trusts inputs and never
+       positions. This file used to keep its own copy of that switch and the
+       two had drifted — the server never handled doors, and it reloaded at the
+       wrong end of the timer. */
+    if (msg.t === 'ping') { ws.send(JSON.stringify({ t: 'pong', c: msg.c })); return; }
+    room.handle(me, msg);
   });
 
   ws.on('close', () => {
@@ -249,7 +224,7 @@ setInterval(() => {
 /* snapshot loop */
 setInterval(() => {
   for (const r of rooms.values()) {
-    if (r.players.size) r.broadcast(r.snapshot());
+    r.sendSnapshot();   // personalised per player: their inventory and input ack
   }
 }, TICK);
 
