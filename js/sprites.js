@@ -226,6 +226,45 @@ const Sprites = (() => {
         circle(ctx, dx * r, dy * r, r * 0.22, '#2c333d', P.metalLight, 1.5);
       }
     },
+    /* a chair from above: seat, back, four legs poking out */
+    chair(ctx, r) {
+      ctx.globalAlpha = 0.9;
+      box(ctx, -r * 0.62, -r * 0.62, r * 1.24, r * 0.22, P.woodDark, '#3e2f1f', 2, 2);   // back
+      ctx.globalAlpha = 1;
+      box(ctx, -r * 0.55, -r * 0.4, r * 1.1, r * 1.0, P.wood, '#4a3722', 2, 3);          // seat
+      for (const [sx, sy] of [[-0.44, -0.28], [0.44, -0.28], [-0.44, 0.44], [0.44, 0.44]]) {
+        circle(ctx, r * sx, r * sy, r * 0.09, '#3e2f1f', null);
+      }
+    },
+    /* a potted plant: terracotta pot, three fronds */
+    plant(ctx, r) {
+      circle(ctx, 0, 0, r * 0.92, 'rgba(45,122,26,0.30)', null);
+      for (let i = 0; i < 5; i++) {
+        const a2 = (i / 5) * Math.PI * 2 + 0.3;
+        ctx.save(); ctx.rotate(a2);
+        ctx.beginPath();
+        ctx.ellipse(0, -r * 0.5, r * 0.26, r * 0.52, 0, 0, Math.PI * 2);
+        shape(ctx, i % 2 ? P.leaf : P.leafDark, null, 0);
+        ctx.restore();
+      }
+      circle(ctx, 0, 0, r * 0.42, P.rust, P.rustDark, 2);
+      circle(ctx, 0, 0, r * 0.28, '#4a2f1a', null);
+    },
+    /* a floor lamp seen from above: shade, and the pool of light it throws
+       (the glow itself is drawn by the lighting pass, not here) */
+    lamp(ctx, r) {
+      circle(ctx, 0, 0, r * 0.95, 'rgba(255,214,130,0.16)', null);
+      circle(ctx, 0, 0, r * 0.62, '#ffdf9a', '#c9a24a', 2);
+      circle(ctx, 0, 0, r * 0.26, '#fff6de', null);
+      for (const [sx, sy] of [[-0.5, 0.5], [0.5, 0.5], [0, -0.6]]) {
+        circle(ctx, r * sx, r * sy, r * 0.1, '#7a6338', null);
+      }
+    },
+    /* a wall-mounted strip light, for corridors */
+    striplight(ctx, r) {
+      box(ctx, -r * 0.9, -r * 0.24, r * 1.8, r * 0.48, '#fff3d2', '#b9a36a', 2, 3);
+      box(ctx, -r * 0.7, -r * 0.1, r * 1.4, r * 0.2, '#ffffff', null, 0, 2);
+    },
     toilet(ctx, r) {
       box(ctx, -r * 0.5, -r * 0.9, r, r * 0.7, '#e6ecf5', '#a8b4c6', 2, 3);
       ctx.beginPath(); ctx.ellipse(0, r * 0.25, r * 0.55, r * 0.7, 0, 0, Math.PI * 2);
@@ -278,6 +317,10 @@ const Sprites = (() => {
     toilet:    { r: 21, shadow: 4 },
     desk:      { r: 31, shadow: 4 },
     ammoBox:   { r: 22, shadow: 4 },
+    chair:     { r: 17, shadow: 3 },
+    plant:     { r: 20, shadow: 4 },
+    lamp:      { r: 16, shadow: 3, light: 190 },      // light = glow radius in px
+    striplight: { r: 22, shadow: 2, light: 150 },
   };
 
   const kinds = Object.keys(META);

@@ -319,7 +319,7 @@ const Game = (() => {
   function buildMapInner() {
     obstacles = []; trenches = []; decor = []; grass = [];
     buildings = []; landmarks = []; pendingIndoorCrates = [];
-    requiredPlacements = []; pendingRoomVehicles = [];
+    requiredPlacements = []; pendingRoomVehicles = []; basements = [];
     genReset();
     invalidateRects();
     terrain = Terrain.generate(MAP_W, MAP_H, worldSeed);
@@ -329,6 +329,7 @@ const Game = (() => {
     const playH = MAP_H - Terrain.BEACH_INSET * 2;
     const area = (playW * playH) / 1e6;                  // in millions of px
 
+    placeTeamBases();                                   // one per squad, at their corner
     placeLandmarks();                                   // the big one-offs get first pick
     placeRequiredBuildings();                           // then the ones the map must have
     placeBuildingsProcedural(Math.round(area * DENSITY.buildings));
@@ -532,8 +533,109 @@ const Game = (() => {
     return null;      // genuinely no room in the room
   }
 
-  function stockRooms(rooms) {
+  /* ---------------- what goes in each kind of room ----------------
+     A building's furniture used to be one prop list scattered across the
+     whole footprint, so a bathroom could end up with a workbench in it and a
+     bunk room with a toilet. Rooms know what they are, so they can be dressed
+     as what they are — beds in bedrooms, stalls with tables, lockers in bunk
+     rooms — and every room gets a light, which is what makes the interior
+     lighting mean anything. */
+  const ROOM_PROPS = {
+    bedroom:     { props: ['bed', 'shelf', 'chair', 'plant'], n: 4, lamps: 1 },
+    apartment:   { props: ['bed', 'table', 'chair', 'stove', 'shelf', 'plant'], n: 6, lamps: 1 },
+    bathroom:    { props: ['toilet', 'shelf'], n: 2, lamps: 1 },
+    washroom:    { props: ['toilet', 'shelf'], n: 5, lamps: 2 },
+    kitchen:     { props: ['stove', 'table', 'shelf', 'chair'], n: 6, lamps: 1 },
+    backKitchen: { props: ['stove', 'table', 'shelf', 'crate'], n: 8, lamps: 2 },
+    dining:      { props: ['table', 'chair', 'chair', 'plant'], n: 9, lamps: 2 },
+    diningLobby: { props: ['table', 'chair', 'chair', 'plant'], n: 12, lamps: 3 },
+    lounge:      { props: ['chair', 'table', 'plant', 'shelf'], n: 7, lamps: 2 },
+    lobby:       { props: ['chair', 'plant', 'desk', 'table'], n: 6, lamps: 2 },
+    hall:        { props: ['plant'], n: 2, lamps: 3, strip: true },
+    office:      { props: ['desk', 'chair', 'shelf', 'locker', 'plant'], n: 6, lamps: 1 },
+    controlRoom: { props: ['desk', 'chair', 'ammoBox', 'locker'], n: 6, lamps: 2 },
+    classroom:   { props: ['desk', 'chair', 'chair', 'shelf'], n: 8, lamps: 1 },
+    staffRoom:   { props: ['table', 'chair', 'shelf', 'plant'], n: 5, lamps: 1 },
+    ward:        { props: ['bed', 'shelf', 'chair'], n: 4, lamps: 1 },
+    surgery:     { props: ['bed', 'locker', 'shelf'], n: 4, lamps: 2 },
+    dispensary:  { props: ['shelf', 'locker', 'crate'], n: 6, lamps: 1 },
+    bunkroom:    { props: ['bed', 'locker', 'chair'], n: 6, lamps: 1 },
+    cell:        { props: ['bed', 'toilet'], n: 2, lamps: 1 },
+    guardRoom:   { props: ['desk', 'chair', 'locker', 'ammoBox'], n: 5, lamps: 2 },
+    armoury:     { props: ['locker', 'ammoBox', 'crate'], n: 7, lamps: 2 },
+    stall:       { props: ['table', 'crate', 'shelf'], n: 4, lamps: 1 },
+    storeroom:   { props: ['crate', 'pallet', 'shelf', 'barrel'], n: 7, lamps: 1 },
+    workbay:     { props: ['ammoBox', 'pallet', 'tyre', 'barrel', 'crate'], n: 6, lamps: 1 },
+    gym:         { props: ['crate', 'chair', 'plant'], n: 6, lamps: 2 },
+    barn:        { props: ['crate', 'pallet', 'barrel', 'shelf'], n: 8, lamps: 1 },
+    lodge:       { props: ['table', 'chair', 'shelf', 'plant'], n: 6, lamps: 1 },
+    safe:        { props: ['locker', 'crate'], n: 3, lamps: 1 },
+    strongroom:  { props: ['locker', 'ammoBox', 'crate'], n: 4, lamps: 1 },
+    mainExhibit: { props: ['plant', 'table', 'crate'], n: 6, lamps: 3 },
+    gunExhibit:  { props: ['locker', 'table', 'ammoBox'], n: 5, lamps: 2 },
+    displayHall: { props: ['plant', 'table'], n: 5, lamps: 3 },
+    tent:        { props: ['bed', 'crate'], n: 2, lamps: 0 },
+    plane:       { props: ['chair', 'chair', 'crate'], n: 8, lamps: 1 },
+  };
+
+  /* Dress a room as what it is, and light it. */
+  function dressRoom(r) {
+    const conf = ROOM_PROPS[r.kind];
+    if (!conf) return;
+    // a cellar is pitch dark otherwise, and unlit loot is loot nobody finds
+    const lamps = (conf.lamps || 0) + (r.basement ? 2 : 0);
+    const inset = Math.min(20, r.w / 5, r.h / 5);
+    const spot = () => ({
+      x: rand(r.x + inset, r.x + r.w - inset),
+      y: rand(r.y + inset, r.y + r.h - inset),
+    });
+    for (let i = 0; i < conf.n; i++) {
+      for (let tries = 0; tries < 16; tries++) {
+        const p = spot();
+        const kind = conf.props[Math.floor(Math.random() * conf.props.length)];
+        const m = Sprites.META[kind];
+        if (!m) break;
+        const box = { x: p.x - m.r * 0.7, y: p.y - m.r * 0.7, w: m.r * 1.4, h: m.r * 1.4 };
+        if (genHits(box, 6)) continue;
+        decor.push({ kind, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 1, indoors: true });
+        break;
+      }
+    }
+    /* Lights are obstacles rather than decor, because you can shoot them out
+       and the lighting pass reads them off the obstacle list. */
+    const lampKind = conf.strip ? 'striplight' : 'lamp';
+    for (let i = 0; i < lamps; i++) {
+      for (let tries = 0; tries < 16; tries++) {
+        const p = spot();
+        const s2 = Structures.prop(lampKind, p.x, p.y, Sprites.META[lampKind].r * 2, 1);
+        if (genHits(s2, 6)) continue;
+        s2.building = r.building;
+        genAdd(s2); obstacles.push(s2);
+        break;
+      }
+    }
+  }
+
+  /* A building's grade bends its rooms' loot. The room table says what kind
+     of room it is; the grade says whether this is the bank's strongroom or a
+     shack's. Rich buildings upgrade some crates and add a few; poor ones send
+     some the other way — so where you are is worth as much as what you found. */
+  const TIER_UP = { regular: 'silver', silver: 'gold', gold: 'gold' };
+  const TIER_DOWN = { gold: 'silver', silver: 'regular', regular: 'regular' };
+  function gradeTier(tier, grade) {
+    const g = Structures.GRADE_LOOT[grade] || {};
+    if (g.upgrade && Math.random() < g.upgrade) return TIER_UP[tier] || tier;
+    if (g.downgrade && Math.random() < g.downgrade) return TIER_DOWN[tier] || tier;
+    return tier;
+  }
+
+  function stockRooms(rooms, grade) {
     if (!rooms || !rooms.length) return;
+    for (const r of rooms) {
+      // a cellar is its own floor, and always needs its own light
+      if (r.basement) basements.push({ x: r.x, y: r.y, w: r.w, h: r.h });
+      dressRoom(r);
+    }
     for (const r of rooms) {
       const spec = Structures.ROOM_LOOT[r.kind];
       if (!spec) continue;
@@ -554,9 +656,22 @@ const Game = (() => {
           taken.push(p);
           /* A shipped container is the one room with a roll in it: fifteen of
              them, one gold. Everything else is exactly what the table says. */
-          let t = tier;
+          let t = gradeTier(tier, grade);
           if (spec.chance && Math.random() < spec.chance.odds) t = spec.chance.tier;
           pendingIndoorCrates.push({ x: p.x, y: p.y, tier: t, room: r.kind, needs: spec.needs });
+        }
+      }
+      /* ...and a rich building has a bit more of it. One extra crate per
+         room, some of the time, rather than a second full set. */
+      const extra = (Structures.GRADE_LOOT[grade] || {}).extra || 0;
+      if (extra > 0 && (spec.crates || []).length && Math.random() < extra) {
+        const p = freeSpotIn(r, inset, spot, taken);
+        if (p) {
+          taken.push(p);
+          pendingIndoorCrates.push({
+            x: p.x, y: p.y, tier: gradeTier(spec.crates[0][0], grade),
+            room: r.kind, needs: spec.needs,
+          });
         }
       }
       for (const [vtype, count] of spec.vehicles || []) {
@@ -574,10 +689,57 @@ const Game = (() => {
 
   /* Fill a building: furniture against the inside of the walls, loot in the
      middle where you have to commit to grabbing it. */
+  /* ---------------- what's outside the door ----------------
+     Buildings sat on bare grass, so every approach was open ground and the
+     fight only started once you were through the doorway. A ring of clutter
+     round the outside gives the approach some cover of its own — and it tells
+     you what the building is before you go in: barrels and pallets at a
+     depot, tyres at a garage, bushes and stumps round a farmhouse. */
+  const OUTSIDE = {
+    industrial: ['barrel', 'pallet', 'crate', 'tyre', 'rubble'],
+    residential: ['bush', 'stump', 'crate', 'rubble'],
+    institutional: ['bush', 'crate', 'cone', 'rubble'],
+    military: ['sandpile', 'crate', 'ammoBox', 'tyre'],
+    other: ['crate', 'rubble', 'bush'],
+  };
+  const outsideKindFor = (name) => {
+    for (const [cat, names] of Object.entries(Structures.BUILDING_CATEGORIES)) {
+      if (names.includes(name)) return OUTSIDE[cat] || OUTSIDE.other;
+    }
+    return OUTSIDE.other;
+  };
+
+  function clutterAround(name, bb) {
+    const kinds = outsideKindFor(name);
+    // scaled to the perimeter, so a harbor gets more than a shed
+    const n = Math.round(clamp((bb.w + bb.h) / 90, 4, 22));
+    for (let i = 0; i < n; i++) {
+      for (let tries = 0; tries < 14; tries++) {
+        // pick a side, then a point just off it
+        const side = Math.floor(Math.random() * 4);
+        const pad = rand(26, 84);
+        const p = side === 0 ? { x: rand(bb.x - 40, bb.x + bb.w + 40), y: bb.y - pad }
+          : side === 1 ? { x: rand(bb.x - 40, bb.x + bb.w + 40), y: bb.y + bb.h + pad }
+            : side === 2 ? { x: bb.x - pad, y: rand(bb.y - 40, bb.y + bb.h + 40) }
+              : { x: bb.x + bb.w + pad, y: rand(bb.y - 40, bb.y + bb.h + 40) };
+        if (!Terrain.isSpawnable(terrain, p.x, p.y)) continue;
+        const kind = kinds[Math.floor(Math.random() * kinds.length)];
+        const m = Sprites.META[kind];
+        if (!m) break;
+        const s = Structures.prop(kind, p.x, p.y, m.r * 2, 0.85 + Math.random() * 0.4);
+        if (genHits(s, 14)) continue;
+        s.building = name;
+        genAdd(s); obstacles.push(s);
+        break;
+      }
+    }
+  }
+
   function furnish(name, bb, rooms) {
     /* Rooms replace the loot roll entirely — a resort's ten bedrooms are ten
        crates because the table says so, not because the footprint is big. */
-    if (rooms && rooms.length) stockRooms(rooms);
+    if (rooms && rooms.length) stockRooms(rooms, Structures.purposeOf(name).grade);
+    clutterAround(name, bb);
     const conf = FURNISH[name];
     if (!conf) return;
     const inset = 46;
@@ -607,11 +769,16 @@ const Game = (() => {
         if (genHits(box, 10)) continue;
         // Loot gets better the harder the building is to hold: landmarks are
         // where the gold crates live, which is what makes them worth taking.
-        const land = ['factory', 'keep', 'silos'].includes(name);
+        /* Buildings with no room manifest still roll their loot, but the
+           grade decides the odds rather than a hardcoded list of three
+           landmark names. */
+        const grade = Structures.purposeOf(name).grade;
         const roll = Math.random();
-        const tier = land
-          ? (roll < 0.45 ? 'gold' : roll < 0.8 ? 'silver' : 'regular')
-          : (roll < 0.2 ? 'gold' : roll < 0.55 ? 'silver' : 'regular');
+        const tier = grade === 'rich'
+          ? (roll < 0.42 ? 'gold' : roll < 0.78 ? 'silver' : 'regular')
+          : grade === 'poor'
+            ? (roll < 0.05 ? 'gold' : roll < 0.28 ? 'silver' : 'regular')
+            : (roll < 0.18 ? 'gold' : roll < 0.52 ? 'silver' : 'regular');
         pendingIndoorCrates.push({ x: p.x, y: p.y, tier });
         break;
       }
@@ -680,6 +847,41 @@ const Game = (() => {
      they get the pick of the open ground, and each gets a generous number of
      attempts because the big ones (a harbor is 1700px across) need somewhere
      that will actually take them. */
+  /* ---------------- a base for each squad ----------------
+     Everyone used to spawn on open grass, so the first thirty seconds of a
+     match were four squads standing in a field. Each team now lands at a
+     fortified base of their own: somewhere to gear up, a wall to put your back
+     to, and a resupply point that is yours because you started next to it.
+
+     Placed first, before the landmarks, because their positions are fixed by
+     the spawn ring and everything else can move out of the way. */
+  function placeTeamBases() {
+    for (let t = 0; t < nTeams; t++) {
+      const sp = spawnPoint(t);
+      let done = false;
+      for (let tries = 0; tries < 200 && !done; tries++) {
+        // spiral outward from the spawn until the base fits
+        const d = tries * 9;
+        const a2 = tries * 0.7;
+        const x = clamp(sp.x + Math.cos(a2) * d - 330, Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+        const y = clamp(sp.y + Math.sin(a2) * d - 220, Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+        const parts = placeBuilding('base', x, y);
+        if (!parts.length) continue;
+        const bb = boundsOf(parts);
+        const pid = 'tb' + t;
+        for (const part of parts) { part.placement = pid; part.teamBase = t; genAdd(part); }
+        obstacles.push(...parts);
+        invalidateRects();
+        const st = Structures.styleOf('base');
+        const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t };
+        buildings.push(rec);
+        requiredPlacements.push(bb);
+        furnish('base', bb, parts.rooms);
+        done = true;
+      }
+    }
+  }
+
   function placeRequiredBuildings() {
     /* Biggest first, for the same reason landmarks go before everything else:
        a harbor is fifteen hundred pixels across and needs an unbroken stretch
@@ -701,9 +903,8 @@ const Game = (() => {
       for (let made = 0; made < count;) {
         let placedOne = false;
         for (let tries = 0; tries < 400 && !placedOne; tries++) {
-          const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
-          const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
-          const parts = placeBuilding(name, x, y);
+          const spot = ringSpot(name);
+          const parts = placeBuilding(name, spot.x, spot.y);
           if (!parts.length) continue;
           const bb = boundsOf(parts);
           if (requiredPlacements.some(b => padOverlap(bb, b, 120))) continue;
@@ -727,6 +928,21 @@ const Game = (() => {
   }
   let requiredPlacements = [];
 
+  /* Somewhere inside the band this building belongs in. The angle is free —
+     only the distance from the middle is constrained — so a ring reads as a
+     belt of similar places rather than a circle drawn on the map. */
+  function ringSpot(name) {
+    const band = Structures.RINGS[Structures.purposeOf(name).ring] || Structures.RINGS.mid;
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    const maxR = Math.min(cx, cy) - Terrain.BEACH_INSET;
+    const r = (band[0] + Math.random() * (band[1] - band[0])) * maxR;
+    const a2 = Math.random() * Math.PI * 2;
+    return {
+      x: clamp(cx + Math.cos(a2) * r, Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET),
+      y: clamp(cy + Math.sin(a2) * r, Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET),
+    };
+  }
+
   function placeBuildingsProcedural(count) {
     const placed = [];
     const seen = {};
@@ -747,9 +963,8 @@ const Game = (() => {
       const name = (missing.length && placed.length < count * 0.7)
         ? missing[Math.floor(Math.random() * missing.length)][0]
         : categoryName || rollMix(BUILDING_MIX);
-      const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
-      const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
-      const parts = placeBuilding(name, x, y);
+      const spot = ringSpot(name);
+      const parts = placeBuilding(name, spot.x, spot.y);
       if (!parts.length) continue;
       const bb = boundsOf(parts);
       if (placed.some(b => padOverlap(bb, b, 130))) continue;          // breathing room
@@ -1660,7 +1875,10 @@ const Game = (() => {
      per bullet and per bot, so they're rebuilt once per frame, not per call. */
   let rectCache = null, solidCache = null, sightCache = null;
   let solidGrid = null, sightGrid = null, bulletGrid = null;
-  const invalidateRects = () => { rectCache = solidCache = sightCache = solidGrid = sightGrid = bulletGrid = null; };
+  const invalidateRects = () => {
+    rectCache = solidCache = sightCache = solidGrid = sightGrid = bulletGrid = null;
+    lightCache = null;      // a lamp that just got shot out stops lighting the room
+  };
 
   /* ---------------- spatial index ----------------
      A map is 300+ wall segments now, and line of sight samples 16 points per
@@ -1719,7 +1937,17 @@ const Game = (() => {
      it to stop a player and chew a bullet, and nothing about how it's drawn. */
   function stampWorldIds() { for (let i = 0; i < obstacles.length; i++) obstacles[i].nid = i; }
   function netWorld() {
-    return obstacles.map(o => {
+    /* Only what the simulation can act on. A lamp, a chair and a traffic cone
+       are passable, don't stop a round and can't hurt anybody, so to the room
+       they are a rect it will never touch — and the map now has hundreds of
+       them. Sending those was pure weight on the wire and on the room's
+       spatial index, for geometry that does nothing there. */
+    const matters = (o) => {
+      const k = kindOf(o);
+      return Structures.blocksMove(o) || Structures.ballistics(o).mode !== 'through'
+        || k.slow || k.dps || k.explodes || k.drops || Structures.isDoor(o);
+    };
+    return obstacles.filter(matters).map(o => {
       const bal = Structures.ballistics(o);
       const k = kindOf(o);
       return {
@@ -2198,11 +2426,34 @@ const Game = (() => {
     let best = null, bd = range * range;
     for (const s of structureRects()) {
       if (!Structures.isDoor(s)) continue;
+      // a secret door you haven't noticed yet isn't a door, it's a wall
+      if (s.secret && !s.found) continue;
       const c = doorCentre(s);
       const d = dist2(x, y, c.x, c.y);
       if (d < bd) { bd = d; best = s; }
     }
     return best;
+  }
+
+  /* ---------------- secret doors ----------------
+     A hidden door draws as the wall it is set into until you are close enough
+     to see the seam. Walking past one at range tells you nothing; standing on
+     it announces itself once, and from then on it opens like any other door.
+
+     Checked against the player only — a bot has no business finding these. */
+  function findSecrets() {
+    if (!player || !player.alive) return;
+    const r = Structures.FIND_SECRET;
+    for (const s of nearRects(bulletIndex(), player.x, player.y, r)) {
+      if (!s.secret || s.found) continue;
+      const c = doorCentre(s);
+      if (dist2(player.x, player.y, c.x, c.y) > r * r) continue;
+      s.found = true;
+      invalidateRects();
+      hudMsg('You notice a seam in the wall — [E] to open');
+      SFX.reward();
+      spawnFx(c.x, c.y, '#ffcf4a', 10);
+    }
   }
   function toggleDoor(d, who) {
     d.open = !d.open;
@@ -2985,6 +3236,7 @@ const Game = (() => {
     updateKillFeed(dt);
     updateSoundPings(dt);
     updateBuildingEffect(dt);
+    findSecrets();
 
     // player control — frozen while the lobby is up, so nobody gets a head
     // start wandering off before the match has been started
@@ -3690,7 +3942,10 @@ const Game = (() => {
       ctx.globalAlpha = 0.5; ctx.fillText(obj.name, obj.x, obj.y); ctx.globalAlpha = 1;
     }
 
+    drawBasements();   // cellar floors, below everything
     drawFloors();      // building interiors, under everything inside them
+    drawInteriorLight();   // and how well lit they are
+    drawBasementLight();
     // decor sits on the ground, under the walls and everyone
     drawDecor();
     // every shadow in one pass, then the things that cast them
@@ -3820,6 +4075,7 @@ const Game = (() => {
     }
     ctx.globalAlpha = 1;
 
+    drawBuildingShadows();   // the roofs' own shadows, under them
     drawRoofs();    // roofs hide interiors until you step inside
     drawSmokes();   // smoke sits above units to obscure them
 
@@ -3958,8 +4214,28 @@ const Game = (() => {
      One low sun, so everything casts the same way. Shadows are drawn as a
      separate pass under the objects that cast them, which keeps them from
      ever landing on top of something they should be beneath. */
+  /* One sun for the whole map, and one set of constants for what it does, so
+     a crate, a wall, a building and a player all throw their shadow the same
+     way and the same distance per unit of height. Before this the buildings
+     — the biggest things on the map — cast nothing at all, and round props
+     got rectangular shadows while identical props in `decor` got round ones. */
   const SUN = { dx: 0.55, dy: 0.38 };          // direction shadows are thrown
   const SHADOW = 'rgba(0,0,0,0.34)';
+  const SHADOW_SOFT = 'rgba(0,0,0,0.22)';
+  const SHADOW_FLATTEN = 0.58;                 // a low sun squashes a ground shadow
+  const LIFT_WALL = 26;                        // px of throw per metre of thickness
+  const LIFT_LOW = 6;                          // low cover barely lifts off the floor
+  const LIFT_BUILDING = 22;                    // a roof stands well clear of the ground
+
+  /* an ellipse on the ground, flattened the way the sun says */
+  function groundShadow(x, y, r, throwPx, fill) {
+    ctx.save();
+    ctx.fillStyle = fill || SHADOW;
+    ctx.translate(x + SUN.dx * throwPx, y + SUN.dy * throwPx);
+    ctx.scale(1, SHADOW_FLATTEN);
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
 
   /* ---------------- viewport culling ----------------
      A domination map carries ~700 wall pieces and ~2000 props. Only a fraction
@@ -3986,19 +4262,42 @@ const Game = (() => {
       const k = kindOf(s);
       if (k.height !== 'high' || s.open) continue;         // only tall things cast
       if (!rectOnScreen(s)) continue;
-      const lift = (s.thickness || 0.3) * 26;              // thicker wall, longer shadow
+      const lift = (s.thickness || 0.3) * LIFT_WALL;       // thicker wall, longer shadow
+      // a round prop throws a round shadow, not a rectangular one
+      if (k.round) { groundShadow(s.x + s.w / 2, s.y + s.h / 2, s.w * 0.46, lift); continue; }
       roundRect(s.x + SUN.dx * lift, s.y + SUN.dy * lift, s.w, s.h, 5);
       ctx.fill();
+      ctx.fillStyle = SHADOW;
     }
     // low cover gets a tighter, softer shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.fillStyle = SHADOW_SOFT;
     for (const s of structureRects()) {
       const k = kindOf(s);
       if (k.height !== 'low' || k.passable) continue;
       if (!rectOnScreen(s)) continue;
-      roundRect(s.x + SUN.dx * 6, s.y + SUN.dy * 6, s.w, s.h, 3);
+      if (k.round) { groundShadow(s.x + s.w / 2, s.y + s.h / 2, s.w * 0.44, LIFT_LOW, SHADOW_SOFT); continue; }
+      roundRect(s.x + SUN.dx * LIFT_LOW, s.y + SUN.dy * LIFT_LOW, s.w, s.h, 3);
+      ctx.fill();
+      ctx.fillStyle = SHADOW_SOFT;
+    }
+  }
+
+  /* The buildings themselves. A roof is the tallest thing on the map and used
+     to throw nothing, so a warehouse read as flat paint on the grass while the
+     fence beside it had a shadow. Drawn under the roofs, and only while the
+     roof is actually up — once it lifts for you, the shadow goes with it. */
+  function drawBuildingShadows() {
+    ctx.fillStyle = SHADOW;
+    for (const b of buildings) {
+      if (!rectOnScreen(b)) continue;
+      const a2 = b.roofAlpha === undefined ? 1 : b.roofAlpha;
+      if (a2 < 0.03) continue;
+      ctx.globalAlpha = a2;
+      roundRect(b.x - 8 + SUN.dx * LIFT_BUILDING, b.y - 8 + SUN.dy * LIFT_BUILDING,
+        b.w + 16, b.h + 16, 6);
       ctx.fill();
     }
+    ctx.globalAlpha = 1;
   }
 
   /* props: shadow first, then the prop, so a tree never shades itself */
@@ -4009,12 +4308,7 @@ const Game = (() => {
       const m = Sprites.META[d.kind]; if (!m) continue;
       const r = m.r * d.scale;
       if (!onScreen(d.x, d.y, r + m.shadow)) continue;
-      ctx.save();
-      ctx.fillStyle = SHADOW;
-      ctx.translate(d.x + SUN.dx * m.shadow, d.y + SUN.dy * m.shadow);
-      ctx.scale(1, 0.55);                                  // flattened, like a low sun
-      ctx.beginPath(); ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
+      groundShadow(d.x, d.y, r * 0.85, m.shadow);
     }
     // the props themselves, drawn as vector sprites
     for (const d of decor) {
@@ -4026,12 +4320,7 @@ const Game = (() => {
 
   /* soft ground shadow under a unit */
   function drawUnitShadow(x, y, r) {
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.30)';
-    ctx.translate(x + SUN.dx * 7, y + SUN.dy * 7);
-    ctx.scale(1, 0.6);
-    ctx.beginPath(); ctx.arc(0, 0, r * 1.02, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
+    groundShadow(x, y, r * 1.02, 7);
   }
 
   /* ---------------- floors & roofs ----------------
@@ -4122,8 +4411,123 @@ const Game = (() => {
     }
   }
 
+  /* ---------------- interior lighting ----------------
+     A building's inside was as bright as the field outside it, which made a
+     warehouse and a meadow read the same and wasted the fact that you can't
+     see in until the roof lifts. Interiors are dimmed a little, and lamps push
+     that back — so a lit corridor is legible, an unlit store room is murk, and
+     shooting the lamp out is a thing you might actually want to do.
+
+     Drawn over the floor and under everything standing on it, and clipped to
+     the building so the light never spills onto the grass. Deliberately gentle:
+     this is atmosphere, not a stealth mechanic — you can always see enough to
+     fight. */
+  const INTERIOR_DIM = 0.34;        // how dark an unlit interior gets
+
+  /* Basements aren't inside a building's footprint — they sit below it — so
+     they get their own floor and their own, deeper, darkness. Whatever lamps
+     are down there are the only light there is. */
+  const BASEMENT_DIM = 0.62;
+  function drawBasements() {
+    for (const r of basements) {
+      if (!rectOnScreen(r)) continue;
+      ctx.fillStyle = '#3a352e';
+      ctx.fillRect(r.x - 18, r.y - 18, r.w + 36, r.h + 36);
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2;
+      ctx.strokeRect(r.x - 18, r.y - 18, r.w + 36, r.h + 36);
+    }
+  }
+  function drawBasementLight() {
+    for (const r of basements) {
+      if (!rectOnScreen(r)) continue;
+      const box = { x: r.x - 18, y: r.y - 18, w: r.w + 36, h: r.h + 36 };
+      ctx.save();
+      ctx.beginPath(); ctx.rect(box.x, box.y, box.w, box.h); ctx.clip();
+      ctx.fillStyle = `rgba(4,6,14,${BASEMENT_DIM})`;
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const o of obstacles) {
+        const lit = kindOf(o).lights;
+        if (!lit) continue;
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        if (cx < box.x || cx > box.x + box.w || cy < box.y || cy > box.y + box.h) continue;
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, lit);
+        g.addColorStop(0, 'rgba(0,0,0,1)');
+        g.addColorStop(0.5, 'rgba(0,0,0,0.7)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(cx, cy, lit, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+    }
+  }
+  let basements = [];
+
+  function drawInteriorLight() {
+    for (const b of buildings) {
+      if (!b.floor || !rectOnScreen(b)) continue;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h); ctx.clip();
+      // the gloom
+      ctx.fillStyle = `rgba(6,10,22,${INTERIOR_DIM})`;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      /* Lamps cut it back out. `destination-out` erases the gloom rather than
+         painting yellow over it, so a lit patch shows the real floor colour
+         instead of a wash. */
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const o of lightsIn(b)) {
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, o.lightR);
+        g.addColorStop(0, 'rgba(0,0,0,1)');
+        g.addColorStop(0.55, 'rgba(0,0,0,0.72)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(cx, cy, o.lightR, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      // and a warm tint where they are, so a lamp reads as a lamp
+      for (const o of lightsIn(b)) {
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, o.lightR);
+        g.addColorStop(0, 'rgba(255,206,120,0.20)');
+        g.addColorStop(1, 'rgba(255,206,120,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(cx, cy, o.lightR, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  /* Lamps standing in this building. Cached per building and rebuilt whenever
+     the world changes, because this runs every frame for every building on
+     screen and a map has two thousand obstacles. */
+  let lightCache = null;
+  function lightsIn(b) {
+    if (!lightCache) {
+      lightCache = new Map();
+      for (const o of obstacles) {
+        const lit = kindOf(o).lights;
+        if (!lit) continue;
+        o.lightR = lit;
+        for (const bb of buildings) {
+          if (o.x < bb.x || o.x > bb.x + bb.w || o.y < bb.y || o.y > bb.y + bb.h) continue;
+          if (!lightCache.has(bb)) lightCache.set(bb, []);
+          lightCache.get(bb).push(o);
+          break;
+        }
+      }
+    }
+    return lightCache.get(b) || [];
+  }
+
   function drawStructure(s) {
-    const k = kindOf(s);
+    /* An undiscovered secret door wears the wall it is set into — same fill,
+       same stroke, no handle dot — so it is invisible until you are on top of
+       it. Once found, it draws as itself and gets a hint of gold. */
+    const k = (s.secret && !s.found && s.hides)
+      ? Structures.def(s.hides)
+      : kindOf(s);
 
     // world props draw as their sprite, with damage shown by shrinking and
     // reddening rather than a bar across a crate
@@ -4159,8 +4563,24 @@ const Game = (() => {
       return;
     }
 
+    /* A secret door nobody has spotted: draw it as a plain run of the wall it
+       hides in, with no swing, no handle and no prompt. */
+    if (Structures.isDoor(s) && s.secret && !s.found) {
+      roundRect(s.x, s.y, s.w, s.h, 2);
+      ctx.fillStyle = k.fill; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = k.stroke; ctx.stroke();
+      return;
+    }
+
     if (Structures.isDoor(s)) {       // open doors swing out of the frame
       const c = doorCentre(s);
+      // found but still shut: a gold seam, so you can see what you noticed
+      if (s.secret) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,207,74,0.85)'; ctx.lineWidth = 2;
+        ctx.strokeRect(s.x - 1, s.y - 1, s.w + 2, s.h + 2);
+        ctx.restore();
+      }
       ctx.save(); ctx.translate(c.x, c.y);
       if (s.open) ctx.rotate((along ? 1 : -1) * Math.PI / 2 * 0.75);
       const w = along ? s.w : s.h, h = along ? s.h : s.w;
@@ -5739,6 +6159,57 @@ const Game = (() => {
       player.ammo = player.weapon.mag;
     },
     buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h })),
+    interior() {
+      const counts = {};
+      for (const d of decor) counts[d.kind] = (counts[d.kind] || 0) + 1;
+      for (const o of obstacles) if (o.isProp) counts[kindOf(o).prop] = (counts[kindOf(o).prop] || 0) + 1;
+      return {
+        buildings: buildings.length, obstacles: obstacles.length, decor: decor.length,
+        lights: obstacles.filter(o => kindOf(o).lights).length,
+        windows: obstacles.filter(o => o.type === 'window').length,
+        doors: obstacles.filter(o => Structures.isDoor(o)).length,
+        kinds: Object.keys(counts).sort(), counts,
+      };
+    },
+    purpose() {
+      const cx = MAP_W / 2, cy = MAP_H / 2;
+      const byGrade = {};
+      const rows = buildings.map(b => {
+        const pu = Structures.purposeOf(b.name);
+        const d = Math.hypot(b.x + b.w / 2 - cx, b.y + b.h / 2 - cy) / (Math.min(cx, cy));
+        (byGrade[pu.grade] = byGrade[pu.grade] || []).push(d);
+        return { name: b.name, grade: pu.grade, ring: pu.ring, dist: +d.toFixed(2), team: b.teamBase };
+      });
+      const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+      return {
+        rows,
+        meanDist: Object.fromEntries(Object.entries(byGrade).map(([g, a]) => [g, +mean(a).toFixed(2)])),
+        teamBases: rows.filter(r => r.team !== undefined).map(r => r.team).sort(),
+        basements: basements.length,
+        hatches: obstacles.filter(o => o.hatch).length,
+        crates: crates.reduce((m, c) => { m[c.tier] = (m[c.tier] || 0) + 1; return m; }, {}),
+      };
+    },
+    lootByGrade() {
+      const out = {};
+      for (const c of crates) {
+        const b = buildings.find(bb => c.x >= bb.x && c.x <= bb.x + bb.w && c.y >= bb.y && c.y <= bb.y + bb.h);
+        if (!b) continue;
+        const g = Structures.purposeOf(b.name).grade;
+        out[g] = out[g] || { good: 0, total: 0 };
+        out[g].total++;
+        if (c.tier !== 'regular') out[g].good++;
+      }
+      return out;
+    },
+    secrets: () => obstacles.filter(o => o.secret)
+      .map(o => ({ x: o.x + o.w / 2, y: o.y + o.h / 2, hides: o.hides, found: !!o.found })),
+    breakALight() {
+      const i = obstacles.findIndex(o => kindOf(o).lights);
+      if (i < 0) return false;
+      destroyStructure(obstacles[i]);
+      return true;
+    },
     buildingStyles: () => buildings.map(b => ({ name: b.name, style: !!b.style, floor: b.floor, roof: b.style && b.style.roof.join('') })),
     hereBuilding: () => (hereBuilding ? hereBuilding.name : null),
     wallsInBuildings() {
