@@ -150,8 +150,8 @@ const Game = (() => {
           for (const p of parts) { p.placement = pid; p.landmark = true; genAdd(p); }
           obstacles.push(...parts);
           invalidateRects();
-          const lst = Structures.styleOf(name);
-          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true };
+          const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms };
           landmarks.push(rec);
           buildings.push(rec);
           furnish(name, bb, parts.rooms);
@@ -412,7 +412,11 @@ const Game = (() => {
   /* Place a building only where the terrain allows it, and keep it whole.
      Filtering segment-by-segment would carve holes in anything straddling the
      river, so a placement either lands entirely or is rejected. */
-  function placeBuilding(name, x, y) {
+  /* `pad` is the clear space demanded around the footprint. The default keeps
+     buildings comfortably apart; the required-building fallback lowers it,
+     because a map that is short of a museum is worse than one where the
+     museum is a bit close to its neighbour. */
+  function placeBuilding(name, x, y, pad) {
     const parts = Structures.place(name, x, y);
     if (!parts.length) return [];
     const bb = boundsOf(parts);
@@ -420,7 +424,7 @@ const Game = (() => {
     // Cheap rejections first. Most candidates fail, and the per-segment terrain
     // check below runs a distance-to-river test per probe — doing that for a
     // building that already overlaps something was most of the generation cost.
-    if (genHits(bb, 120)) return [];
+    if (genHits(bb, pad === undefined ? 120 : pad)) return [];
     if (!Terrain.isBuildable(terrain, bb.x + bb.w / 2, bb.y + bb.h / 2, 10)) return [];
     // Check every segment, not just the bounding box: a river bending through
     // the middle of a large building passes between the corners unnoticed, and
@@ -634,8 +638,12 @@ const Game = (() => {
     for (const r of rooms) {
       // a cellar is its own floor, and always needs its own light
       if (r.basement) basements.push({ x: r.x, y: r.y, w: r.w, h: r.h });
-      dressRoom(r);
     }
+    /* Loot first, furniture after. Lamps are obstacles — that is what lets you
+       shoot them out — so dressing a room before stocking it meant the lamps
+       took the floor space the crates needed, and rooms quietly ended up
+       holding less than the table says. The loot is the reason the room
+       exists; the furniture fills in around it. */
     for (const r of rooms) {
       const spec = Structures.ROOM_LOOT[r.kind];
       if (!spec) continue;
@@ -681,6 +689,7 @@ const Game = (() => {
         }
       }
     }
+    for (const r of rooms) dressRoom(r);
   }
   let pendingRoomVehicles = [];
   /* The hulls this map was generated with, kept after they are placed so the
@@ -712,7 +721,7 @@ const Game = (() => {
   function clutterAround(name, bb) {
     const kinds = outsideKindFor(name);
     // scaled to the perimeter, so a harbor gets more than a shed
-    const n = Math.round(clamp((bb.w + bb.h) / 90, 4, 22));
+    const n = Math.round(clamp((bb.w + bb.h) / 110, 3, 16));
     for (let i = 0; i < n; i++) {
       for (let tries = 0; tries < 14; tries++) {
         // pick a side, then a point just off it
@@ -727,7 +736,13 @@ const Game = (() => {
         const m = Sprites.META[kind];
         if (!m) break;
         const s = Structures.prop(kind, p.x, p.y, m.r * 2, 0.85 + Math.random() * 0.4);
-        if (genHits(s, 14)) continue;
+        /* Wide enough for a player to walk between. At 14px two props could
+           sit closer together than a body is across, making pockets you could
+           get into and not out of — and the two sides disagreed about them:
+           the client slid free while the room kept you pinned, and the gap
+           between them grew into the hundreds. Cover you can be trapped by is
+           a bug whichever side notices first. */
+        if (genHits(s, BODY_R * 2 + 8)) continue;
         s.building = name;
         genAdd(s); obstacles.push(s);
         break;
@@ -872,8 +887,8 @@ const Game = (() => {
         for (const part of parts) { part.placement = pid; part.teamBase = t; genAdd(part); }
         obstacles.push(...parts);
         invalidateRects();
-        const st = Structures.styleOf('base');
-        const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t };
+        const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
+        const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms };
         buildings.push(rec);
         requiredPlacements.push(bb);
         furnish('base', bb, parts.rooms);
@@ -900,10 +915,20 @@ const Game = (() => {
       .sort((a, b) => b[2] - a[2]);
     for (const [name, count] of order) {
       if (!Structures.BUILDINGS[name]) continue;
+      let missed = 0;
       for (let made = 0; made < count;) {
         let placedOne = false;
         for (let tries = 0; tries < 400 && !placedOne; tries++) {
-          const spot = ringSpot(name);
+          /* The ring is where this building *wants* to be, not a rule it must
+             obey. A harbor is fifteen hundred pixels across and its band is a
+             narrow annulus with landmarks and four team bases already in it —
+             holding it to that band meant it simply never got placed, and the
+             map lost a required building and seven room types with it. Try the
+             ring first, then take anywhere that will have it. */
+          const spot = tries < 260 ? ringSpot(name) : {
+            x: rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET),
+            y: rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET),
+          };
           const parts = placeBuilding(name, spot.x, spot.y);
           if (!parts.length) continue;
           const bb = boundsOf(parts);
@@ -915,14 +940,39 @@ const Game = (() => {
           obstacles.push(...parts);
           invalidateRects();
           const conf = FURNISH[name];
-          const st = Structures.styleOf(name);
-      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor });
+          const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
           furnish(name, bb, parts.rooms);
           placedOne = true;
         }
-        // an island can genuinely run out of room; take what fitted
-        if (!placedOne) break;
+        /* Don't give up on the rest because one didn't fit. Each instance gets
+           its own budget of attempts — abandoning the remaining four houses
+           because the third couldn't find a gap is how a map ends up short of
+           the buildings it is required to have. */
         made++;
+        if (!placedOne) missed++;
+      }
+      /* Anything that still didn't fit gets one more pass with no ring and
+         tighter spacing — a required building is required. */
+      for (let i = 0; i < missed; i++) {
+        for (let tries = 0; tries < 500; tries++) {
+          const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+          const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+          const parts = placeBuilding(name, x, y, tries < 250 ? 80 : 34);
+          if (!parts.length) continue;
+          const bb = boundsOf(parts);
+          if (requiredPlacements.some(b => padOverlap(bb, b, tries < 250 ? 70 : 30))) continue;
+          if (landmarks.some(l => padOverlap(bb, l, 120))) continue;
+          requiredPlacements.push(bb);
+          const pid = 'r' + requiredPlacements.length;
+          for (const part of parts) { part.placement = pid; genAdd(part); }
+          obstacles.push(...parts);
+          invalidateRects();
+          const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+          buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
+          furnish(name, bb, parts.rooms);
+          break;
+        }
       }
     }
   }
@@ -963,7 +1013,12 @@ const Game = (() => {
       const name = (missing.length && placed.length < count * 0.7)
         ? missing[Math.floor(Math.random() * missing.length)][0]
         : categoryName || rollMix(BUILDING_MIX);
-      const spot = ringSpot(name);
+      // most of the time in its own band; occasionally anywhere, so a crowded
+      // ring doesn't starve the map of that kind of building entirely
+      const spot = Math.random() < 0.82 ? ringSpot(name) : {
+        x: rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET),
+        y: rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET),
+      };
       const parts = placeBuilding(name, spot.x, spot.y);
       if (!parts.length) continue;
       const bb = boundsOf(parts);
@@ -977,8 +1032,8 @@ const Game = (() => {
       obstacles.push(...parts);
       invalidateRects();
       const conf = FURNISH[name];
-      const st = Structures.styleOf(name);
-      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor });
+      const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
       furnish(name, bb, parts.rooms);
     }
   }
@@ -3283,7 +3338,14 @@ const Game = (() => {
         const surf = terrain ? Terrain.surfaceAt(terrain, player.x, player.y) : null;
         const spd = base * RoomSim.surfaceSpeedFor(player, surf) * hereSpeed() * dt;
         const px = player.x, py = player.y;
-        player.x += (dx / m) * spd; player.y += (dy / m) * spd; resolveObstacles(player);
+        /* Clamped to the same bounds the room uses. Without this the client
+           walked on past the map edge while the room stopped at the boundary,
+           so pressing into the edge opened a gap of a hundred pixels and the
+           reconciler spent the whole time dragging you back. Only the
+           prediction replay clamped; the live step did not. */
+        player.x = clamp(player.x + (dx / m) * spd, BODY_R, MAP_W - BODY_R);
+        player.y = clamp(player.y + (dy / m) * spd, BODY_R, MAP_H - BODY_R);
+        resolveObstacles(player);
         player.vx = (player.x - px) / dt; player.vy = (player.y - py) / dt;
       } else { player.vx = 0; player.vy = 0; }
       // aim toward cursor (world space, so it survives the binocular zoom)
@@ -4371,7 +4433,26 @@ const Game = (() => {
       ctx.fillStyle = b.floor;
       ctx.fillRect(b.x, b.y, b.w, b.h);
       drawFloorPattern(b, st);
-      // the building's own accent runs round the slab
+      /* Then each room lays its own floor on top. A building used to be one
+         slab of colour wall to wall, so from inside you could not see where
+         the kitchen stopped and the hallway began — the rooms were in the
+         collision data and nowhere on screen. Tile in the bathroom, boards in
+         the bedroom, concrete in the store, and a darker line round each so
+         the shape and size of the room are things you can actually read. */
+      for (const r of b.rooms || []) {
+        if (r.basement) continue;              // cellars draw their own floor
+        const rs = Structures.roomStyleOf(r.kind);
+        if (!rs || !rectOnScreen(r)) continue;
+        const pad = 6;
+        const rx = r.x - pad, ry = r.y - pad, rw = r.w + pad * 2, rh = r.h + pad * 2;
+        ctx.fillStyle = rs.floor;
+        ctx.fillRect(rx, ry, rw, rh);
+        drawFloorPattern({ x: rx, y: ry, w: rw, h: rh }, rs);
+        // a firm edge, so the size and shape of the room are unambiguous
+        ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.lineWidth = 2;
+        ctx.strokeRect(rx, ry, rw, rh);
+      }
+      // the building's own accent runs round the whole slab
       ctx.strokeStyle = hexA(st.trim, 0.55); ctx.lineWidth = 2;
       ctx.strokeRect(b.x, b.y, b.w, b.h);
     }
@@ -4422,7 +4503,12 @@ const Game = (() => {
      the building so the light never spills onto the grass. Deliberately gentle:
      this is atmosphere, not a stealth mechanic — you can always see enough to
      fight. */
-  const INTERIOR_DIM = 0.34;        // how dark an unlit interior gets
+  /* How dark an unlit interior gets. Tuned down from 0.34 once rooms started
+     laying their own floors: at a third opacity a pale ward and a pale surgery
+     both resolved to the same mid-grey, which threw away the thing the room
+     colours are there to tell you. Low enough now that the material reads,
+     dark enough that a lamp still matters. */
+  const INTERIOR_DIM = 0.20;
 
   /* Basements aren't inside a building's footprint — they sit below it — so
      they get their own floor and their own, deeper, darkness. Whatever lamps
@@ -6201,6 +6287,27 @@ const Game = (() => {
         if (c.tier !== 'regular') out[g].good++;
       }
       return out;
+    },
+    variance() {
+      const floors = new Set(), roofs = new Set(), byName = {};
+      let rooms = 0, styledRooms = 0, sig = '';
+      for (const b of buildings) {
+        floors.add(b.floor); roofs.add(b.style.roof.join(''));
+        (byName[b.name] = byName[b.name] || []).push(b.floor);
+        sig += b.name + b.floor + b.style.roof.join('');
+        for (const r of b.rooms || []) { rooms++; if (Structures.roomStyleOf(r.kind)) styledRooms++; }
+      }
+      const repeats = {};
+      for (const [n, list] of Object.entries(byName)) {
+        if (list.length > 1) repeats[n] = { count: list.length, distinct: new Set(list).size };
+      }
+      let h = 2166136261;
+      for (const ch of sig) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+      return {
+        total: buildings.length, kinds: new Set(buildings.map(b => b.name)).size,
+        floors: floors.size, roofs: roofs.size, repeats, rooms, styledRooms,
+        signature: (h >>> 0).toString(16) + ':' + buildings.length,
+      };
     },
     secrets: () => obstacles.filter(o => o.secret)
       .map(o => ({ x: o.x + o.w / 2, y: o.y + o.h / 2, hides: o.hides, found: !!o.found })),

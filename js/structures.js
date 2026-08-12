@@ -1578,7 +1578,10 @@ const Structures = (() => {
         room('lobby',       ox + 20,  oy + 20,  150, 260),
         room('mainExhibit', ox + 195, oy + 20,  175, 260),
         room('gunExhibit',  ox + 395, oy + 20,  170, 260),
-        room('displayHall', ox + 595, oy + 20,  105, 500),
+        // wide enough for its gold crate to reliably find floor: at 105 it was
+        // a 60px usable band once the walls were inset, and the crate that
+        // makes this building worth entering sometimes had nowhere to go
+        room('displayHall', ox + 580, oy + 20,  125, 500),
         room('washroom',    ox + 20,  oy + 320, 260, 235),
         room('washroom',    ox + 300, oy + 320, 265, 235),
       ];
@@ -1856,6 +1859,94 @@ const Structures = (() => {
   const DEFAULT_STYLE = { floor: '#5f5f5f', roof: ['#6a5442', '#54402f'], trim: '#1e140c', pattern: 'planks' };
   const styleOf = (name) => STYLE[name] || DEFAULT_STYLE;
 
+  /* ---------- one house is not every house ----------
+     A palette per building *type* meant the five houses on a map were five
+     identical rectangles, and a street of them read as wallpaper. Each
+     placement gets its own shift on top of the type's palette — a warmer roof,
+     a paler floor — so the type is still legible at a glance while no two are
+     the same object stamped twice.
+
+     Rolled during generation, which is seeded, so every client shades the
+     same building the same way. Rolling it at draw time would look identical
+     on one screen and different on the next. */
+  function shadeStyle(base, rnd) {
+    const jitter = (hex, dl, dh) => shiftHex(hex, (rnd() * 2 - 1) * dl, (rnd() * 2 - 1) * dh);
+    return {
+      ...base,
+      floor: jitter(base.floor, 15, 9),
+      roof: [jitter(base.roof[0], 17, 11), jitter(base.roof[1], 17, 11)],
+      trim: jitter(base.trim, 12, 8),
+    };
+  }
+
+  /* nudge a hex colour by ±lightness and ±hue, both in small absolute steps */
+  function shiftHex(hex, dLight, dHue) {
+    const n = parseInt(hex.slice(1), 16);
+    let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    r = clamp255(r + dLight + dHue);          // hue nudge = warm/cool tilt
+    g = clamp255(g + dLight);
+    b = clamp255(b + dLight - dHue);
+    return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+  }
+  const clamp255 = (v) => Math.max(0, Math.min(255, Math.round(v)));
+
+  /* ---------- what a room's floor is made of ----------
+     A building was one slab of colour from wall to wall, so from inside you
+     could not tell where the kitchen stopped and the hallway began — the rooms
+     existed in the collision data and nowhere on screen. Each kind lays its
+     own floor, with its own material, so the interior reads as the set of
+     rooms it actually is. */
+  const ROOM_STYLE = {
+    bedroom:     { floor: '#7a5f52', pattern: 'planks' },
+    apartment:   { floor: '#7a6152', pattern: 'planks' },
+    bathroom:    { floor: '#b9c6cc', pattern: 'tile' },
+    washroom:    { floor: '#b3c2c8', pattern: 'tile' },
+    kitchen:     { floor: '#9aa0a6', pattern: 'tile' },
+    backKitchen: { floor: '#8e959c', pattern: 'tile' },
+    dining:      { floor: '#8a6a4a', pattern: 'planks' },
+    diningLobby: { floor: '#8f7050', pattern: 'planks' },
+    lounge:      { floor: '#6f5a68', pattern: 'planks' },
+    lobby:       { floor: '#9c9484', pattern: 'tile' },
+    hall:        { floor: '#8d8578', pattern: 'tile' },
+    office:      { floor: '#6e6a62', pattern: 'planks' },
+    controlRoom: { floor: '#4e5866', pattern: 'metal' },
+    classroom:   { floor: '#8a7a5e', pattern: 'planks' },
+    staffRoom:   { floor: '#7d6f5c', pattern: 'planks' },
+    ward:        { floor: '#c6d2d0', pattern: 'tile' },
+    surgery:     { floor: '#cfdcdb', pattern: 'tile' },
+    dispensary:  { floor: '#bcc9c7', pattern: 'tile' },
+    bunkroom:    { floor: '#5f6450', pattern: 'concrete' },
+    cell:        { floor: '#6d737a', pattern: 'concrete' },
+    guardRoom:   { floor: '#5f656d', pattern: 'concrete' },
+    armoury:     { floor: '#4f5446', pattern: 'metal' },
+    stall:       { floor: '#8e7c5c', pattern: 'planks' },
+    storeroom:   { floor: '#5a6068', pattern: 'concrete' },
+    workbay:     { floor: '#4d545e', pattern: 'metal' },
+    gym:         { floor: '#8a6f4e', pattern: 'planks' },
+    barn:        { floor: '#6e5a3c', pattern: 'dirt' },
+    lodge:       { floor: '#77603f', pattern: 'planks' },
+    safe:        { floor: '#5d5a4e', pattern: 'metal' },
+    strongroom:  { floor: '#5a5850', pattern: 'metal' },
+    mainExhibit: { floor: '#b8b2a6', pattern: 'tile' },
+    gunExhibit:  { floor: '#a49d90', pattern: 'tile' },
+    displayHall: { floor: '#b0a894', pattern: 'tile' },
+    tent:        { floor: '#6a6a4c', pattern: 'dirt' },
+    plane:       { floor: '#565f6c', pattern: 'metal' },
+    track:       { floor: '#4a4f56', pattern: 'concrete' },
+    warehouse:   { floor: '#565e6a', pattern: 'concrete' },
+    garage:      { floor: '#4f545c', pattern: 'concrete' },
+    dock:        { floor: '#6a6152', pattern: 'planks' },
+    pool:        { floor: '#3f7d96', pattern: 'tile' },
+    gate:        { floor: '#5a5f66', pattern: 'concrete' },
+    portapotty:  { floor: '#9aa8a4', pattern: 'tile' },
+    wheatField:  { floor: '#9a8a44', pattern: 'dirt' },
+    chickenCoop: { floor: '#6e5c3c', pattern: 'dirt' },
+    parkingLot:  { floor: '#4e5158', pattern: 'concrete' },
+    shippedCrate:  { floor: '#4a5460', pattern: 'metal' },
+    shippingCrate: { floor: '#48525e', pattern: 'metal' },
+  };
+  const roomStyleOf = (kind) => ROOM_STYLE[kind] || null;
+
   /* ============================================================
      WHAT A BUILDING DOES FOR YOU
 
@@ -2014,8 +2105,8 @@ const Structures = (() => {
      from centre to corner. Bands overlap a little so the map doesn't read as
      three concentric circles. */
   const RINGS = {
-    centre: [0.00, 0.34],
-    mid:    [0.26, 0.74],
+    centre: [0.00, 0.42],
+    mid:    [0.30, 0.76],
     edge:   [0.62, 1.00],
     spawn:  [0.80, 1.00],
   };
@@ -2066,7 +2157,7 @@ const Structures = (() => {
 
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
-    STYLE, styleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid,
+    STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid,
     PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement,
     ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
