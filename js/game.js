@@ -446,63 +446,63 @@ const Game = (() => {
 
   /* what furnishes each kind of building, and how much loot it's worth */
   const FURNISH = {
-    house:      { props: ['table', 'bed', 'shelf', 'stove', 'toilet', 'crate', 'rubble'], n: 12, loot: 3, floor: '#6b5741' },
-    mansion:    { props: ['table', 'bed', 'shelf', 'desk', 'locker', 'crate', 'tyre'], n: 22, loot: 6, floor: '#7a6448' },
-    apartments: { props: ['bed', 'table', 'shelf', 'toilet', 'stove', 'crate', 'rubble'], n: 26, loot: 7, floor: '#6b5741' },
-    shanty:     { props: ['shelf', 'stove', 'table', 'rubble', 'crate'], n: 10, loot: 3, floor: '#5f4e3b' },
-    warehouse:  { props: ['shelf', 'ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel'], n: 24, loot: 7, floor: '#4e5666' },
-    hangar:     { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre'], n: 22, loot: 7, floor: '#4a5260' },
-    bunker:     { props: ['locker', 'ammoBox', 'desk', 'crate'], n: 12, loot: 5, floor: '#454d5a' },
-    base:       { props: ['locker', 'ammoBox', 'desk', 'table', 'crate', 'pallet'], n: 20, loot: 6, floor: '#4e5666' },
-    tower:      { props: ['ammoBox', 'desk', 'crate'], n: 5, loot: 2, floor: '#454d5a' },
-    farm:       { props: ['shelf', 'table', 'stove', 'pallet', 'crate'], n: 12, loot: 3, floor: '#665338' },
-    depot:      { props: ['ammoBox', 'locker', 'barrel', 'pallet'], n: 10, loot: 4, floor: '#5a5646' },
-    camp:       { props: ['shelf', 'table', 'crate', 'tyre'], n: 8, loot: 3, floor: '#5c5a44' },
-    checkpoint: { props: ['ammoBox', 'desk', 'sandpile'], n: 5, loot: 2, floor: '#4d5462' },
-    'train-station': { props: ['desk', 'locker', 'crate', 'pallet', 'tyre'], n: 18, loot: 5, floor: '#4a5260' },
-    school:     { props: ['desk', 'table', 'locker', 'crate', 'shelf'], n: 18, loot: 5, floor: '#6b5741' },
-    market:     { props: ['table', 'crate', 'barrel', 'pallet'], n: 18, loot: 5, floor: '#6b5a44' },
-    church:     { props: ['desk', 'table', 'crate'], n: 14, loot: 5, floor: '#5a5f7a' },
-    museum:     { props: ['desk', 'table', 'crate', 'locker'], n: 18, loot: 6, floor: '#5d5c6b' },
-    barracks:   { props: ['locker', 'ammoBox', 'desk', 'crate', 'table'], n: 20, loot: 6, floor: '#4e5666' },
-    armory:     { props: ['locker', 'ammoBox', 'crate', 'desk'], n: 14, loot: 8, floor: '#4a5260' },
-    workshop:   { props: ['locker', 'ammoBox', 'desk', 'crate', 'pallet'], n: 20, loot: 7, floor: '#4b4f5a' },
-    vault:      { props: ['locker', 'desk', 'crate', 'ammoBox'], n: 12, loot: 8, floor: '#4b4f60' },
-    subway:     { props: ['crate', 'desk', 'ammoBox', 'locker'], n: 16, loot: 7, floor: '#4a5260' },
-    'command-center': { props: ['desk', 'locker', 'crate', 'table'], n: 18, loot: 8, floor: '#4c5164' },
-    'power-plant': { props: ['ammoBox', 'crate', 'pallet', 'desk'], n: 20, loot: 6, floor: '#4a5260' },
-    'gas-station': { props: ['barrel', 'crate', 'desk'], n: 10, loot: 4, floor: '#5a5646' },
-    mine:       { props: ['crate', 'pallet', 'barrel'], n: 12, loot: 5, floor: '#5d5852' },
-    vault:      { props: ['locker', 'ammoBox', 'desk', 'crate'], n: 10, loot: 9, floor: '#4b4f60' },
-    subway:     { props: ['crate', 'desk', 'ammoBox', 'locker'], n: 14, loot: 6, floor: '#4a5260' },
-    'command-center': { props: ['desk', 'locker', 'ammoBox', 'table'], n: 18, loot: 7, floor: '#4c5164' },
-    workshop:   { props: ['locker', 'ammoBox', 'crate', 'pallet'], n: 18, loot: 6, floor: '#4b4f5a' },
-    dock:       { props: ['crate', 'barrel', 'pallet', 'ammoBox'], n: 16, loot: 6, floor: '#5a5646' },
-    fortress:   { props: ['crate', 'locker', 'ammoBox'], n: 10, loot: 7, floor: '#545d66' },
-    arena:      { props: ['crate', 'barrel', 'pallet'], n: 16, loot: 5, floor: '#5a5f6b' },
+    house:      { props: ['bed', 'table', 'chair', 'shelf', 'stove', 'toilet', 'plant'], n: 12, loot: 3, floor: '#6b5741' },
+    mansion:    { props: ['bed', 'table', 'chair', 'plant', 'shelf', 'desk'], n: 22, loot: 6, floor: '#7a6448' },
+    apartments: { props: ['bed', 'table', 'chair', 'stove', 'toilet', 'shelf', 'plant'], n: 26, loot: 7, floor: '#6b5741' },
+    shanty:     { props: ['rubble', 'stove', 'shelf', 'crate', 'pallet'], n: 10, loot: 3, floor: '#5f4e3b' },
+    warehouse:  { props: ['pallet', 'pallet', 'crate', 'barrel', 'shelf'], n: 24, loot: 7, floor: '#4e5666' },
+    hangar:     { props: ['tyre', 'pallet', 'barrel', 'ammoBox', 'cone'], n: 22, loot: 7, floor: '#4a5260' },
+    bunker:     { props: ['ammoBox', 'locker', 'sandpile', 'crate'], n: 12, loot: 5, floor: '#454d5a' },
+    base:       { props: ['locker', 'ammoBox', 'desk', 'chair', 'bed'], n: 20, loot: 6, floor: '#4e5666' },
+    tower:      { props: ['ammoBox', 'desk', 'chair', 'crate'], n: 5, loot: 2, floor: '#454d5a' },
+    farm:       { props: ['pallet', 'shelf', 'stove', 'table', 'crate', 'barrel'], n: 12, loot: 3, floor: '#665338' },
+    depot:      { props: ['pallet', 'barrel', 'crate', 'container'], n: 10, loot: 4, floor: '#5a5646' },
+    camp:       { props: ['tent', 'bed', 'crate', 'stump', 'shelf'], n: 8, loot: 3, floor: '#5c5a44' },
+    checkpoint: { props: ['sandpile', 'ammoBox', 'desk', 'cone'], n: 5, loot: 2, floor: '#4d5462' },
+    'train-station': { props: ['chair', 'chair', 'sign', 'crate', 'pallet'], n: 18, loot: 5, floor: '#4a5260' },
+    school:     { props: ['desk', 'chair', 'chair', 'shelf', 'locker'], n: 18, loot: 5, floor: '#6b5741' },
+    market:     { props: ['table', 'table', 'crate', 'barrel', 'plant', 'shelf'], n: 18, loot: 5, floor: '#6b5a44' },
+    church:     { props: ['chair', 'chair', 'table', 'plant', 'shelf'], n: 14, loot: 5, floor: '#5a5f7a' },
+    museum:     { props: ['table', 'plant', 'locker', 'sign', 'chair'], n: 18, loot: 6, floor: '#5d5c6b' },
+    barracks:   { props: ['bed', 'locker', 'ammoBox', 'chair', 'shelf'], n: 20, loot: 6, floor: '#4e5666' },
+    armory:     { props: ['locker', 'ammoBox', 'ammoBox', 'crate', 'shelf'], n: 14, loot: 8, floor: '#4a5260' },
+    workshop:   { props: ['tyre', 'ammoBox', 'pallet', 'barrel', 'locker'], n: 20, loot: 7, floor: '#4b4f5a' },
+    vault:      { props: ['locker', 'locker', 'ammoBox', 'crate'], n: 12, loot: 8, floor: '#4b4f60' },
+    subway:     { props: ['chair', 'sign', 'rubble', 'crate', 'locker'], n: 16, loot: 7, floor: '#4a5260' },
+    'command-center': { props: ['desk', 'chair', 'locker', 'ammoBox', 'table'], n: 18, loot: 8, floor: '#4c5164' },
+    'power-plant': { props: ['barrel', 'ammoBox', 'pallet', 'rubble', 'desk'], n: 20, loot: 6, floor: '#4a5260' },
+    'gas-station': { props: ['barrel', 'tyre', 'shelf', 'desk', 'crate'], n: 10, loot: 4, floor: '#5a5646' },
+    mine:       { props: ['rock', 'rubble', 'pallet', 'barrel', 'crate'], n: 12, loot: 5, floor: '#5d5852' },
+    vault:      { props: ['locker', 'locker', 'ammoBox', 'crate'], n: 10, loot: 9, floor: '#4b4f60' },
+    subway:     { props: ['chair', 'sign', 'rubble', 'crate', 'locker'], n: 14, loot: 6, floor: '#4a5260' },
+    'command-center': { props: ['desk', 'chair', 'locker', 'ammoBox', 'table'], n: 18, loot: 7, floor: '#4c5164' },
+    workshop:   { props: ['tyre', 'ammoBox', 'pallet', 'barrel', 'locker'], n: 18, loot: 6, floor: '#4b4f5a' },
+    dock:       { props: ['crate', 'pallet', 'barrel', 'container', 'tyre'], n: 16, loot: 6, floor: '#5a5646' },
+    fortress:   { props: ['ammoBox', 'sandpile', 'locker', 'crate'], n: 10, loot: 7, floor: '#545d66' },
+    arena:      { props: ['chair', 'chair', 'crate', 'barrel', 'sign'], n: 16, loot: 5, floor: '#5a5f6b' },
     /* Buildings whose interiors are now proper rooms, and the ones that never
        had a furniture list at all — a hospital and a prison were being drawn
        as empty shells with no floor, because `floor` came from this table and
        neither had an entry in it. */
-    hospital:   { props: ['bed', 'desk', 'locker', 'shelf', 'crate', 'ammoBox'], n: 34, loot: 0, floor: '#c8d4d2' },
-    prison:     { props: ['bed', 'locker', 'desk', 'rubble', 'crate'], n: 36, loot: 0, floor: '#767c84' },
-    bank:       { props: ['desk', 'locker', 'table', 'crate', 'ammoBox'], n: 22, loot: 8, floor: '#a89b7e' },
-    'radio-tower': { props: ['ammoBox', 'crate', 'desk', 'rubble'], n: 12, loot: 5, floor: '#4c5058' },
-    'bridge-fort': { props: ['sandpile', 'crate', 'ammoBox', 'barrel'], n: 14, loot: 6, floor: '#5f5a52' },
-    clinic:     { props: ['bed', 'desk', 'locker', 'crate', 'shelf'], n: 16, loot: 0, floor: '#c4d0cd' },
-    library:    { props: ['shelf', 'desk', 'table', 'crate', 'rubble'], n: 32, loot: 0, floor: '#9c8a6d' },
-    garage:     { props: ['tyre', 'ammoBox', 'crate', 'barrel', 'pallet', 'locker'], n: 26, loot: 0, floor: '#4f545c' },
-    watermill:  { props: ['crate', 'pallet', 'barrel', 'shelf', 'rubble'], n: 20, loot: 0, floor: '#6f6350' },
+    hospital:   { props: ['bed', 'bed', 'shelf', 'locker', 'chair', 'desk'], n: 34, loot: 0, floor: '#c8d4d2' },
+    prison:     { props: ['bed', 'locker', 'toilet', 'desk', 'rubble'], n: 36, loot: 0, floor: '#767c84' },
+    bank:       { props: ['desk', 'chair', 'locker', 'plant', 'table'], n: 22, loot: 8, floor: '#a89b7e' },
+    'radio-tower': { props: ['desk', 'ammoBox', 'locker', 'rubble', 'chair'], n: 12, loot: 5, floor: '#4c5058' },
+    'bridge-fort': { props: ['sandpile', 'ammoBox', 'crate', 'barrel'], n: 14, loot: 6, floor: '#5f5a52' },
+    clinic:     { props: ['bed', 'shelf', 'locker', 'chair', 'desk'], n: 16, loot: 0, floor: '#c4d0cd' },
+    library:    { props: ['shelf', 'shelf', 'desk', 'chair', 'table', 'plant'], n: 32, loot: 0, floor: '#9c8a6d' },
+    garage:     { props: ['tyre', 'tyre', 'barrel', 'ammoBox', 'pallet'], n: 26, loot: 0, floor: '#4f545c' },
+    watermill:  { props: ['pallet', 'barrel', 'shelf', 'crate', 'rubble'], n: 20, loot: 0, floor: '#6f6350' },
     /* The table's buildings. `loot` is ignored for these — their rooms say
        exactly what they hold — but they still want furniture and a floor. */
-    resort:     { props: ['bed', 'table', 'shelf', 'desk', 'toilet', 'crate'], n: 54, loot: 0, floor: '#6b5747' },
-    airfield:   { props: ['crate', 'pallet', 'barrel', 'ammoBox', 'tyre', 'desk'], n: 40, loot: 0, floor: '#4f5560' },
-    harbor:     { props: ['crate', 'pallet', 'barrel', 'ammoBox', 'tyre'], n: 46, loot: 0, floor: '#4a5260' },
-    campground: { props: ['crate', 'bush', 'barrel', 'pallet', 'rubble'], n: 34, loot: 0, floor: '#5c6446' },
+    resort:     { props: ['bed', 'table', 'chair', 'plant', 'toilet', 'shelf'], n: 54, loot: 0, floor: '#6b5747' },
+    airfield:   { props: ['cone', 'crate', 'pallet', 'tyre', 'desk', 'chair'], n: 40, loot: 0, floor: '#4f5560' },
+    harbor:     { props: ['container', 'crate', 'pallet', 'barrel', 'tyre'], n: 46, loot: 0, floor: '#4a5260' },
+    campground: { props: ['tent', 'tent', 'bed', 'stump', 'bush', 'crate'], n: 34, loot: 0, floor: '#5c6446' },
     /* landmarks: much bigger footprints, so much more inside */
-    factory:    { props: ['ammoBox', 'locker', 'desk', 'crate', 'pallet', 'barrel', 'tyre', 'rubble'], n: 46, loot: 12, floor: '#4a5260' },
-    keep:       { props: ['locker', 'ammoBox', 'desk', 'table', 'crate', 'rubble'], n: 40, loot: 11, floor: '#565b6b' },
-    silos:      { props: ['barrel', 'pallet', 'crate', 'ammoBox'], n: 30, loot: 9, floor: '#5a5646' },
+    factory:    { props: ['barrel', 'pallet', 'ammoBox', 'crate', 'tyre', 'rubble'], n: 46, loot: 12, floor: '#4a5260' },
+    keep:       { props: ['table', 'chair', 'locker', 'ammoBox', 'rubble'], n: 40, loot: 11, floor: '#565b6b' },
+    silos:      { props: ['barrel', 'barrel', 'pallet', 'crate'], n: 30, loot: 9, floor: '#5a5646' },
   };
 
   /* ---------------- rooms ----------------
@@ -556,6 +556,16 @@ const Game = (() => {
     lounge:      { props: ['chair', 'table', 'plant', 'shelf'], n: 7, lamps: 2 },
     lobby:       { props: ['chair', 'plant', 'desk', 'table'], n: 6, lamps: 2 },
     hall:        { props: ['plant'], n: 2, lamps: 3, strip: true },
+    living:      { props: ['chair', 'chair', 'table', 'shelf', 'plant'], n: 7, lamps: 2 },
+    foyer:       { props: ['plant', 'plant', 'chair', 'table'], n: 4, lamps: 2 },
+    study:       { props: ['desk', 'chair', 'shelf', 'shelf', 'plant'], n: 6, lamps: 1 },
+    pantry:      { props: ['shelf', 'crate', 'stove'], n: 4, lamps: 1 },
+    opsRoom:     { props: ['table', 'chair', 'chair', 'desk', 'locker'], n: 8, lamps: 2 },
+    briefing:    { props: ['chair', 'chair', 'chair', 'table', 'desk'], n: 10, lamps: 2 },
+    mess:        { props: ['table', 'table', 'chair', 'chair', 'stove', 'shelf'], n: 12, lamps: 2 },
+    radioRoom:   { props: ['desk', 'ammoBox', 'chair', 'locker'], n: 6, lamps: 2 },
+    motorPool:   { props: ['tyre', 'barrel', 'ammoBox', 'pallet'], n: 8, lamps: 2 },
+    watchPost:   { props: ['ammoBox', 'crate', 'chair'], n: 3, lamps: 1 },
     office:      { props: ['desk', 'chair', 'shelf', 'locker', 'plant'], n: 6, lamps: 1 },
     controlRoom: { props: ['desk', 'chair', 'ammoBox', 'locker'], n: 6, lamps: 2 },
     classroom:   { props: ['desk', 'chair', 'chair', 'shelf'], n: 8, lamps: 1 },
@@ -583,9 +593,29 @@ const Game = (() => {
   };
 
   /* Dress a room as what it is, and light it. */
-  function dressRoom(r) {
+  /* What a room holds is mostly decided by what kind of room it is — but a
+     store room in a garage and a store room in a hospital are not the same
+     store room. The building mixes a couple of its own signature props into
+     every room, so the place still reads as itself once you are inside it.
+
+     Only for the generic rooms. A bathroom is a bathroom wherever it is, and
+     salting it with tyres because it happens to be in a workshop would be
+     worse than the flat list it replaced. */
+  const GENERIC_ROOMS = new Set([
+    'storeroom', 'office', 'lobby', 'hall', 'workbay', 'guardRoom',
+    'controlRoom', 'strongroom', 'safe', 'stall', 'gym',
+  ]);
+
+  function dressRoom(r, building) {
     const conf = ROOM_PROPS[r.kind];
     if (!conf) return;
+    let props = conf.props;
+    if (building && GENERIC_ROOMS.has(r.kind)) {
+      const own = (FURNISH[building] || {}).props || [];
+      // the building's first two are its signature; one copy each is enough
+      // to flavour the room without drowning what the room is for
+      props = props.concat(own.slice(0, 2));
+    }
     // a cellar is pitch dark otherwise, and unlit loot is loot nobody finds
     const lamps = (conf.lamps || 0) + (r.basement ? 2 : 0);
     const inset = Math.min(20, r.w / 5, r.h / 5);
@@ -596,7 +626,7 @@ const Game = (() => {
     for (let i = 0; i < conf.n; i++) {
       for (let tries = 0; tries < 16; tries++) {
         const p = spot();
-        const kind = conf.props[Math.floor(Math.random() * conf.props.length)];
+        const kind = props[Math.floor(Math.random() * props.length)];
         const m = Sprites.META[kind];
         if (!m) break;
         const box = { x: p.x - m.r * 0.7, y: p.y - m.r * 0.7, w: m.r * 1.4, h: m.r * 1.4 };
@@ -633,7 +663,7 @@ const Game = (() => {
     return tier;
   }
 
-  function stockRooms(rooms, grade) {
+  function stockRooms(rooms, grade, building) {
     if (!rooms || !rooms.length) return;
     for (const r of rooms) {
       // a cellar is its own floor, and always needs its own light
@@ -689,7 +719,7 @@ const Game = (() => {
         }
       }
     }
-    for (const r of rooms) dressRoom(r);
+    for (const r of rooms) dressRoom(r, building);
   }
   let pendingRoomVehicles = [];
   /* The hulls this map was generated with, kept after they are placed so the
@@ -704,22 +734,10 @@ const Game = (() => {
      round the outside gives the approach some cover of its own — and it tells
      you what the building is before you go in: barrels and pallets at a
      depot, tyres at a garage, bushes and stumps round a farmhouse. */
-  const OUTSIDE = {
-    industrial: ['barrel', 'pallet', 'crate', 'tyre', 'rubble'],
-    residential: ['bush', 'stump', 'crate', 'rubble'],
-    institutional: ['bush', 'crate', 'cone', 'rubble'],
-    military: ['sandpile', 'crate', 'ammoBox', 'tyre'],
-    other: ['crate', 'rubble', 'bush'],
-  };
-  const outsideKindFor = (name) => {
-    for (const [cat, names] of Object.entries(Structures.BUILDING_CATEGORIES)) {
-      if (names.includes(name)) return OUTSIDE[cat] || OUTSIDE.other;
-    }
-    return OUTSIDE.other;
-  };
 
   function clutterAround(name, bb) {
-    const kinds = outsideKindFor(name);
+    // what this particular building keeps outside its door — see Structures.DECOR
+    const kinds = Structures.decorFor(name);
     // scaled to the perimeter, so a harbor gets more than a shed
     const n = Math.round(clamp((bb.w + bb.h) / 110, 3, 16));
     for (let i = 0; i < n; i++) {
@@ -753,7 +771,7 @@ const Game = (() => {
   function furnish(name, bb, rooms) {
     /* Rooms replace the loot roll entirely — a resort's ten bedrooms are ten
        crates because the table says so, not because the footprint is big. */
-    if (rooms && rooms.length) stockRooms(rooms, Structures.purposeOf(name).grade);
+    if (rooms && rooms.length) stockRooms(rooms, Structures.purposeOf(name).grade, name);
     clutterAround(name, bb);
     const conf = FURNISH[name];
     if (!conf) return;
@@ -1180,6 +1198,10 @@ const Game = (() => {
       respawnTimer: 0, lives: 1,
       // ai
       strafeDir: Math.random() < 0.5 ? 1 : -1, strafeTimer: rand(0.5, 2), aiRepath: 0, aiTargetPt: null,
+      /* fixed per bot so a squad spreads out instead of stacking, and so each
+         one searches a different arc for cover */
+      flankBias: rand(-1, 1), coverSeed: Math.random() * Math.PI * 2,
+      lastSeen: null, coverPt: null, coverT: 0,
       name: isPlayer ? 'You' : `${TEAM_NAMES[team]}-${Math.floor(rand(1, 99))}`,
       // scoreboard: kills/deaths persist across respawns, streak resets on death
       kills: 0, deaths: 0, streak: 0,
@@ -2990,6 +3012,48 @@ const Game = (() => {
   }
 
   /* ---------------- bot AI ---------------- */
+  /* ---------------- what a bot knows and where it hides ----------------
+     The bots could aim, lead a target and hold a standoff distance, but they
+     fought in the open and forgot a contact the instant a wall came between
+     them. Three things change that: they remember where they last saw you,
+     they look for something to stand behind, and a squad approaches from more
+     than one angle instead of filing down the same line.
+
+     All of it keys off the existing difficulty traits, so a level-2 bot still
+     blunders and a level-10 one does this properly. */
+
+  /* Somewhere near `a` that breaks line of sight to `from`. Samples a ring of
+     candidate spots rather than reasoning about geometry — cheap, and good
+     enough that the bot ends up behind the wall rather than beside it. */
+  const COVER_R = 210;
+  function findCover(a, from) {
+    let best = null, bestScore = -Infinity;
+    for (let i = 0; i < 10; i++) {
+      const ang = (i / 10) * Math.PI * 2 + a.coverSeed;
+      const r = COVER_R * (0.45 + (i % 3) * 0.28);
+      const x = a.x + Math.cos(ang) * r, y = a.y + Math.sin(ang) * r;
+      if (x < 40 || y < 40 || x > MAP_W - 40 || y > MAP_H - 40) continue;
+      if (pointInObstacle(x, y)) continue;
+      if (hasLOS(x, y, from.x, from.y)) continue;         // still exposed
+      // prefer close cover, and cover that isn't further into the open
+      const score = -dist2(a.x, a.y, x, y) / 1000;
+      if (score > bestScore) { bestScore = score; best = { x, y }; }
+    }
+    return best;
+  }
+
+  /* A squad that all walks the same bearing gets shot one at a time. Each bot
+     carries a fixed offset so the four of them arrive spread across an arc. */
+  function flankPoint(a, target, spread) {
+    const base = Math.atan2(a.y - target.y, a.x - target.x);
+    const ang = base + a.flankBias * spread;
+    const r = Math.max(140, Math.hypot(a.x - target.x, a.y - target.y) * 0.85);
+    return {
+      x: clamp(target.x + Math.cos(ang) * r, 40, MAP_W - 40),
+      y: clamp(target.y + Math.sin(ang) * r, 40, MAP_H - 40),
+    };
+  }
+
   function updateBot(a, dt) {
     // flashed: stumble blindly, can't fight
     if (a.blindTimer > 0) {
@@ -3040,8 +3104,22 @@ const Game = (() => {
 
     const canSee = target && botCanSee(a, target);
     // AIM — reaction time: they must have held the contact before they shoot
-    if (canSee) { a.contactT = (a.contactT || 0) + dt; shareContact(a, target); }
-    else a.contactT = 0;
+    if (canSee) {
+      a.contactT = (a.contactT || 0) + dt;
+      shareContact(a, target);
+      /* Remember where they were. Losing sight used to wipe the contact
+         entirely, so a bot that ducked behind a wall was instantly forgotten
+         and the bot outside wandered off — you could break every engagement
+         by stepping sideways. */
+      a.lastSeen = { x: target.x, y: target.y, t: 0 };
+    } else {
+      a.contactT = 0;
+      if (a.lastSeen) {
+        a.lastSeen.t += dt;
+        // TEAMWORK — how long they hold the memory scales with the level
+        if (a.lastSeen.t > 2 + TEAM.cohesion * 4) a.lastSeen = null;
+      }
+    }
     const reacted = a.contactT >= AIM.reaction;
 
     // SURVIVAL — hurt bots use a heal, then break contact
@@ -3087,13 +3165,49 @@ const Game = (() => {
           triggerFire(a);
         } else triggerFire(a);
       }
-      // SURVIVAL — reload when you've broken off rather than mid-fight
-      if (SURV.reloadsInCover && retreating && a.ammo < a.weapon.mag) startReload(a);
+      /* SURVIVAL — take cover rather than standing in the open trading shots.
+         Three reasons to break contact: hurt, empty, or simply having stood
+         in the open too long.
+
+         That last one uses `exposureTolerance`, a trait that has always been
+         in the difficulty table — "seconds they'll stay exposed before
+         looking for cover" — and was read by nothing. A level-10 bot ducks
+         after 1.2s of being visible; a level-1 bot stands there for six. */
+      a.exposedT = canSee ? (a.exposedT || 0) + dt : 0;
+      const needsCover = retreating
+        || (a.ammo <= 0 && a.weapon.mag > 1)
+        || a.exposedT > SURV.exposureTolerance;
+      if (SURV.reloadsInCover && needsCover) {
+        a.coverT = (a.coverT || 0) - dt;
+        if (!a.coverPt || a.coverT <= 0) {
+          a.coverPt = findCover(a, target);
+          a.coverT = 1.2;
+        }
+        if (a.coverPt) {
+          const ca = Math.atan2(a.coverPt.y - a.y, a.coverPt.x - a.x);
+          moveX += Math.cos(ca) * 1.4; moveY += Math.sin(ca) * 1.4;
+          // arrived: the clock resets, and they lean back out to fight
+          if (dist2(a.x, a.y, a.coverPt.x, a.coverPt.y) < 60 * 60) {
+            a.coverPt = null; a.exposedT = 0;
+          }
+        }
+      } else { a.coverPt = null; }
+      // reload the moment you're out of their sight, not only while running
+      if (SURV.reloadsInCover && a.ammo < a.weapon.mag && (!canSee || needsCover)) startReload(a);
     } else {
       // Not fighting: route somewhere. Head for the objective if there is one,
       // otherwise toward the nearest enemy — but *around* the buildings rather
       // than into them.
-      const goal = a.aiTargetPt || (enemy ? { x: enemy.x, y: enemy.y } : null);
+      /* Where to go when nobody is in sight. In order: the place we last saw
+         somebody (they are probably still near it), then the objective, then
+         the nearest enemy — and the approach is offset so a squad arrives on
+         a front rather than in single file. */
+      let goal = a.aiTargetPt || (enemy ? { x: enemy.x, y: enemy.y } : null);
+      if (a.lastSeen && a.lastSeen.t < 3) {
+        goal = { x: a.lastSeen.x, y: a.lastSeen.y };
+      } else if (enemy && !a.aiTargetPt && TEAM.sharesContacts) {
+        goal = flankPoint(a, enemy, 0.9);
+      }
       if (goal) {
         let dir = null;
         // a clear straight line is cheaper than a path, and looks better
@@ -4161,6 +4275,7 @@ const Game = (() => {
     }
 
     drawTacticalHud();
+    drawSightShadows();   // hide what the walls are standing in front of
     drawSoundPings();
     drawMinimap();
     drawKillFeed();
@@ -4605,6 +4720,115 @@ const Game = (() => {
       }
     }
     return lightCache.get(b) || [];
+  }
+
+  /* ---------------- what you can actually see ----------------
+     You used to see the whole screen regardless of what was in the way: a
+     warehouse wall stopped your bullets and your bots' line of sight, but not
+     your eyes, so an enemy behind it was drawn as plainly as one in the open.
+     Cover was something that mattered to the simulation and not to the player
+     looking at it.
+
+     Every high wall now throws a shadow away from you, and what falls inside
+     one is hidden. The technique is silhouette projection rather than a full
+     visibility polygon: for each blocker, find the two corners it presents to
+     you, push them out past the view edge, and fill the quad between. That is
+     a handful of triangles per wall instead of a sort over every corner in
+     the level, which is what keeps it inside a frame at two thousand
+     obstacles.
+
+     Deliberately not pitch black — SIGHT_DARK leaves enough to read the
+     terrain and your own minimap knowledge. This is "you cannot see who is
+     back there", not "the screen is off". */
+  const SIGHT_R = 1500;              // how far you can see at all
+  const SIGHT_DARK = 0.82;           // how completely a shadow hides things
+
+  /* The two corners of a rect that form its silhouette from a point.
+
+     Measured relative to the bearing of the rect's centre, which sidesteps the
+     wrap at ±π and turns the job into "smallest and largest offset" — four
+     atan2 calls rather than the twelve an all-pairs search costs. This runs
+     for every wall on screen every frame, so the constant matters. */
+  const CORNER = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+  function silhouette(s, px, py) {
+    const mid = Math.atan2(s.y + s.h / 2 - py, s.x + s.w / 2 - px);
+    let lo = 0, hi = 0, loX = s.x, loY = s.y, hiX = s.x, hiY = s.y;
+    for (let i = 0; i < 4; i++) {
+      const cx = i === 1 || i === 2 ? s.x + s.w : s.x;
+      const cy = i >= 2 ? s.y + s.h : s.y;
+      let d = Math.atan2(cy - py, cx - px) - mid;
+      if (d > Math.PI) d -= Math.PI * 2; else if (d < -Math.PI) d += Math.PI * 2;
+      if (d < lo) { lo = d; loX = cx; loY = cy; }
+      if (d > hi) { hi = d; hiX = cx; hiY = cy; }
+    }
+    CORNER[0].x = loX; CORNER[0].y = loY;
+    CORNER[1].x = hiX; CORNER[1].y = hiY;
+    return CORNER;
+  }
+
+  function drawSightShadows() {
+    if (!player || !player.alive) return;
+    const px = player.x, py = player.y;
+    const g = sightIndex();
+    if (!g.cells.size) return;
+    /* Only walls actually on screen can shadow anything you can see, so the
+       query is the view rather than the full sight radius — off-screen walls
+       used to be projected and then clipped away, which is the same work for
+       nothing. */
+    const reach = Math.min(SIGHT_R, Math.hypot(W / zoom, H / zoom) * 0.75);
+    const blockers = nearRects(g, px, py, reach);
+    if (!blockers.length) return;
+
+    /* Built on an offscreen layer: the shadows are unioned there first, so
+       overlapping walls don't darken the same ground twice and show their
+       seams. */
+    const layer = sightLayer();
+    const lx = layer.getContext('2d');
+    lx.setTransform(1, 0, 0, 1, 0, 0);
+    lx.clearRect(0, 0, layer.width, layer.height);
+    lx.save();
+    lx.scale(zoom, zoom);
+    lx.translate(-camX, -camY);
+    lx.fillStyle = '#000';
+    lx.beginPath();
+    const FAR = SIGHT_R * 2.2;
+    for (const s of blockers) {
+      if (s.open || !rectOnScreen(s)) continue;
+      // standing inside the wall itself: it can't shadow you
+      if (px > s.x && px < s.x + s.w && py > s.y && py < s.y + s.h) continue;
+      const [p1, p2] = silhouette(s, px, py);
+      const a1 = Math.atan2(p1.y - py, p1.x - px);
+      const a2 = Math.atan2(p2.y - py, p2.x - px);
+      const f1 = { x: px + Math.cos(a1) * FAR, y: py + Math.sin(a1) * FAR };
+      const f2 = { x: px + Math.cos(a2) * FAR, y: py + Math.sin(a2) * FAR };
+      lx.moveTo(p1.x, p1.y);
+      lx.lineTo(f1.x, f1.y);
+      lx.lineTo(f2.x, f2.y);
+      lx.lineTo(p2.x, p2.y);
+      lx.closePath();
+    }
+    lx.fill();
+    lx.restore();
+
+    /* Fade the shadow out at the edge of sight, so the world doesn't end in a
+       hard ring — beyond SIGHT_R everything is dim anyway. */
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = SIGHT_DARK;
+    ctx.drawImage(layer, 0, 0);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  /* the offscreen canvas the shadow volumes are unioned on */
+  let _sightLayer = null;
+  function sightLayer() {
+    if (!_sightLayer) _sightLayer = document.createElement('canvas');
+    if (_sightLayer.width !== canvas.width || _sightLayer.height !== canvas.height) {
+      _sightLayer.width = canvas.width;
+      _sightLayer.height = canvas.height;
+    }
+    return _sightLayer;
   }
 
   function drawStructure(s) {
@@ -6308,6 +6532,76 @@ const Game = (() => {
         floors: floors.size, roofs: roofs.size, repeats, rooms, styledRooms,
         signature: (h >>> 0).toString(16) + ':' + buildings.length,
       };
+    },
+    decorByBuilding() {
+      const rows = [];
+      const profiles = new Set();
+      for (const b of buildings) {
+        const want = Structures.decorFor(b.name);
+        /* Only what is genuinely OUTSIDE the walls, and not a light — lamps
+           are interior fittings that also carry a building name, and counting
+           them as exterior clutter says a resort's front garden is made of
+           twenty-one lamps. */
+        const outside = (o) => o.x < b.x || o.x > b.x + b.w || o.y < b.y || o.y > b.y + b.h;
+        const near = obstacles.filter(o => o.isProp && o.building === b.name
+          && !kindOf(o).lights && outside(o)
+          && o.x > b.x - 140 && o.x < b.x + b.w + 140
+          && o.y > b.y - 140 && o.y < b.y + b.h + 140);
+        const counts = {};
+        for (const o of near) { const k = kindOf(o).prop; counts[k] = (counts[k] || 0) + 1; }
+        const top = Object.entries(counts).sort((x, y) => y[1] - x[1]).slice(0, 3).map(e => `${e[0]}x${e[1]}`);
+        const offList = near.filter(o => !want.includes(kindOf(o).prop)).length;
+        rows.push({ name: b.name, n: near.length, top, offList });
+        profiles.add(Object.keys(counts).sort().join(','));
+      }
+      return { rows, profiles: profiles.size };
+    },
+    newBits() {
+      const kinds = new Set();
+      for (const b of buildings) for (const r of b.rooms || []) kinds.add(r.kind);
+      return {
+        kinds: [...kinds],
+        posts: obstacles.filter(o => o.type === 'post' || o.type === 'pillar').length,
+      };
+    },
+    /* a spot with clear sight, and a spot the same wall hides */
+    behindWall() {
+      for (const o of obstacles) {
+        if (!Structures.blocksSight(o) || o.w < 60) continue;
+        const cx = o.x + o.w / 2;
+        const from = { x: cx, y: o.y - 150 };
+        const lit = { x: cx + 220, y: o.y - 150 };
+        const shadowed = { x: cx, y: o.y + o.h + 130 };
+        if (pointInObstacle(from.x, from.y) || pointInObstacle(lit.x, lit.y)) continue;
+        if (pointInObstacle(shadowed.x, shadowed.y)) continue;
+        if (hasLOS(from.x, from.y, shadowed.x, shadowed.y)) continue;
+        return { from, lit, shadowed };
+      }
+      return null;
+    },
+    sampleBrightness(a2, b2) {
+      const g = canvas.getContext('2d');
+      const at = (wx, wy) => {
+        const sx = Math.round((wx - camX) * zoom), sy = Math.round((wy - camY) * zoom);
+        if (sx < 2 || sy < 2 || sx > canvas.width - 2 || sy > canvas.height - 2) return -1;
+        const d = g.getImageData(sx - 2, sy - 2, 5, 5).data;
+        let t = 0;
+        for (let i = 0; i < d.length; i += 4) t += d[i] + d[i + 1] + d[i + 2];
+        return Math.round(t / (d.length / 4) / 3);
+      };
+      return { lit: at(a2.x, a2.y), shadowed: at(b2.x, b2.y) };
+    },
+    botBrains() {
+      let remembering = 0, takingCover = 0, flanking = false, inContact = 0, exposed = 0;
+      for (const a2 of agents) {
+        if (!a2.alive || a2.isPlayer || a2.isVehicle) continue;
+        if (a2.lastSeen) remembering++;
+        if (a2.coverPt) takingCover++;
+        if (a2.contactT > 0) inContact++;
+        if ((a2.exposedT || 0) > 0.5) exposed++;
+        if (a2.flankBias !== undefined && Math.abs(a2.flankBias) > 0.3) flanking = true;
+      }
+      return { remembering, takingCover, flanking, inContact, exposed };
     },
     secrets: () => obstacles.filter(o => o.secret)
       .map(o => ({ x: o.x + o.w / 2, y: o.y + o.h / 2, hides: o.hides, found: !!o.found })),

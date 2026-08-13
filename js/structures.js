@@ -203,6 +203,18 @@ const Structures = (() => {
       fill: '#2d5a8a', stroke: '#1a3f5a',
       effect: 'Steel box: bullets ricochet off it',
     },
+    post: {
+      name: 'Support Post', height: 'high', hp: 240, toughness: 4, prop: 'post',
+      bullets: 'stop', round: true,
+      fill: '#9ca5b5', stroke: '#3f4652',
+      effect: 'Concrete column — hard cover, and it blocks sight',
+    },
+    pillar: {
+      name: 'Timber Pillar', height: 'high', hp: 150, toughness: 2, prop: 'pillar',
+      bullets: 'stop',
+      fill: '#6b5231', stroke: '#3a2c1c',
+      effect: 'Roof support — cover you can get behind, or cut down',
+    },
     chair: {
       name: 'Chair', height: 'low', hp: 25, toughness: 1, prop: 'chair',
       bullets: 'through', passable: true,
@@ -226,6 +238,30 @@ const Structures = (() => {
       bullets: 'through', passable: true, lights: 150,
       fill: '#fff3d2', stroke: '#b9a36a',
       effect: 'Lights a corridor — and goes out when shot',
+    },
+    palm: {
+      name: 'Palm', height: 'high', hp: 140, toughness: 2, prop: 'palm',
+      bullets: 'stop', round: true,
+      fill: '#5ab947', stroke: '#2d7a1a',
+      effect: 'Blocks sight and gunfire until it comes down',
+    },
+    tent: {
+      name: 'Tent', height: 'low', hp: 45, toughness: 1, prop: 'tent',
+      bullets: 'through', passable: true, conceals: true,
+      fill: 'rgba(90,113,144,0.55)', stroke: 'rgba(47,64,82,0.85)',
+      effect: 'Canvas — hides you, stops nothing',
+    },
+    antenna: {
+      name: 'Antenna Mast', height: 'low', hp: 90, toughness: 3, prop: 'antenna',
+      bullets: 'stop', round: true,
+      fill: '#8ea0c9', stroke: '#4a5568',
+      effect: 'A steel mast — thin, but solid',
+    },
+    sign: {
+      name: 'Sign', height: 'low', hp: 30, toughness: 1, prop: 'sign',
+      bullets: 'through', passable: true,
+      fill: '#b9a36a', stroke: '#6b5a33',
+      effect: 'Tells you where you are and nothing else',
     },
     stump: {
       name: 'Tree Stump', height: 'low', hp: 120, toughness: 2, prop: 'stump',
@@ -253,7 +289,7 @@ const Structures = (() => {
     },
   };
   /* wall types that are really world props, drawn with a sprite */
-  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush', 'desk', 'locker', 'ammoBox', 'pallet', 'tyre', 'rubble', 'stump', 'cone', 'sandpile', 'chair', 'plant', 'lamp', 'striplight'];
+  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush', 'desk', 'locker', 'ammoBox', 'pallet', 'tyre', 'rubble', 'stump', 'cone', 'sandpile', 'chair', 'plant', 'lamp', 'striplight', 'palm', 'tent', 'antenna', 'sign', 'post', 'pillar'];
 
   /* ---------- derived stats ---------- */
   const def = (type) => WALL_TYPES[type] || WALL_TYPES.wood;
@@ -402,6 +438,20 @@ const Structures = (() => {
     chickenCoop:    { name: 'Chicken Coop',    crates: [['gold', 1]] },
     lobby:          { name: 'Lobby',           crates: [['silver', 1]] },
     hall:           { name: 'Hallway',         crates: [] },
+
+    /* Rooms with a job, rather than a generic box. Each one is somewhere you
+       recognise on sight: a foyer is the wide open bit inside the front door,
+       an ops room is a map table ringed by chairs, a mess is long tables. */
+    living:         { name: 'Living Room',     crates: [['regular', 2]] },
+    foyer:          { name: 'Foyer',           crates: [['regular', 1]] },
+    study:          { name: 'Study',           crates: [['silver', 1]] },
+    pantry:         { name: 'Pantry',          crates: [['regular', 2]] },
+    opsRoom:        { name: 'Operations Room', crates: [['silver', 1]] },
+    briefing:       { name: 'Briefing Room',   crates: [['regular', 2]] },
+    mess:           { name: 'Mess Hall',       crates: [['regular', 3]] },
+    radioRoom:      { name: 'Radio Room',      crates: [['silver', 1]] },
+    motorPool:      { name: 'Motor Pool',      crates: [['regular', 2]] },
+    watchPost:      { name: 'Watch Post',      crates: [['regular', 1]] },
 
     /* Rooms for the buildings that aren't in the design table. Sized so a
        building holds roughly what its old flat loot count gave it — the point
@@ -611,8 +661,13 @@ const Structures = (() => {
       const cellar = basement('storeroom', ox + 60, oy + h + 40, 300, 180,
         { wall: 'wood', thickness: 0.35, hatchAt: 150 });
       out.push(...cellar.parts);
+      // a post holding the ridge up, in the middle of the front room
+      out.push(prop('pillar', ox + 120, oy + 250, 32));
       out.rooms = [
         cellar.room,
+        room('foyer',    ox + 258, oy + 205, 142, 110),
+        room('living',   ox + 20,  oy + 175, 200, 145),
+        room('pantry',   ox + 330, oy + 232, 62, 78),
         room('bedroom',  ox + 20,  oy + 20,  200, 140),
         room('bedroom',  ox + 20,  oy + 175, 200, 145),
         room('kitchen',  ox + 258, oy + 20,  142, 180),
@@ -665,7 +720,7 @@ const Structures = (() => {
         ...cellRooms(beds.cells, 'bedroom'),
         room('kitchen',  ox + 30,  oy + 350, 250, 190),
         room('dining',   ox + 320, oy + 350, 200, 190),
-        room('office',   ox + 560, oy + 350, 180, 100),
+        room('study',    ox + 560, oy + 350, 180, 100),
         room('safe',     ox + 560, oy + 462, 180, 80),
         room('bathroom', ox + 30,  oy + 262, 120, 60),
         room('bathroom', ox + 620, oy + 262, 120, 60),
@@ -876,7 +931,7 @@ const Structures = (() => {
       for (const dx of [60, 300, 540]) out.push(seg('window', ox + dx, oy + 12, 1.6, 'h', 0.15));
       out.rooms = [
         room('classroom', ox + 90, oy + 70, 440, 250),
-        room('office',    back.cells[0].x, back.cells[0].y, back.cells[0].w, back.cells[0].h),
+        room('study',     back.cells[0].x, back.cells[0].y, back.cells[0].w, back.cells[0].h),
         room('staffRoom', back.cells[1].x, back.cells[1].y, back.cells[1].w, back.cells[1].h),
         room('strongroom', back.cells[2].x, back.cells[2].y, back.cells[2].w, back.cells[2].h),
         room('hall', hall.rect.x, hall.rect.y, hall.rect.w, hall.rect.h),
@@ -929,26 +984,43 @@ const Structures = (() => {
     /* military base: metal shell that ricochets rifle fire, wire + sandbags outside */
     /* military base: metal shell that ricochets rifle fire, a barrack block
        and an ops room inside, wire and sandbags outside */
+    /* military base: a working post rather than a shed with a wall round it.
+       Ops room and radio down one side, briefing and mess the other, the
+       motor pool at the back, and a watch post on the wire. */
     base(ox, oy) {
-      const w = 660, h = 440;
+      const w = 760, h = 560;
       const out = shell(ox, oy, w, h, 'metal', 0.6, [
-        { side: 'w', at: 180, type: 'rdoor' }, { side: 'e', at: 220, type: 'rdoor' },
+        { side: 'w', at: 240, type: 'rdoor' }, { side: 'e', at: 300, type: 'rdoor' },
+        { side: 'n', at: 400, type: 'rdoor' },
       ]);
-      out.push(...partition('metal', ox + 320, oy + 14, h - 28, 'v', 0.35, [h / 2], 'rdoor'));
-      const west = roomGrid('metal', ox + 14, oy + 14, 306, h - 28, 1, 2, { access: 'e' });
-      const east = roomGrid('metal', ox + 334, oy + 14, w - 348, h - 28, 1, 2, { access: 'w' });
-      out.push(...west.parts, ...east.parts);
+      // spine corridor, rooms opening off both sides
+      const hall = hallway('metal', ox + 14, oy + 230, w - 28, 80, 'h', {
+        doorsA: [130, 350, 570], doorsB: [180, 420, 640],
+      });
+      out.push(...hall.parts);
+      const north = roomGrid('metal', ox + 14, oy + 14, w - 28, 216, 3, 1, { access: 's' });
+      const south = roomGrid('metal', ox + 14, oy + 324, w - 28, h - 338, 3, 1, { access: 'n' });
+      out.push(...north.parts, ...south.parts);
+      // posts holding the roof up, and cover in the corridor
+      for (const dx of [190, 380, 570]) out.push(prop('post', ox + dx, oy + 270, 30));
       // emplacements + perimeter wire
-      out.push(seg('sandbag', ox - 90, oy + 60, 3.2, 'h', 0.5));
-      out.push(seg('sandbag', ox - 90, oy + 340, 3.2, 'h', 0.5));
-      out.push(seg('sandbag', ox + w + 20, oy + 200, 3.2, 'h', 0.5));
-      out.push(seg('wire', ox - 120, oy - 60, 20, 'h', 0.4));
-      out.push(seg('wire', ox - 120, oy - 60, 13, 'v', 0.4));
+      out.push(seg('sandbag', ox - 90, oy + 80, 3.2, 'h', 0.5));
+      out.push(seg('sandbag', ox - 90, oy + 430, 3.2, 'h', 0.5));
+      out.push(seg('sandbag', ox + w + 20, oy + 260, 3.2, 'h', 0.5));
+      out.push(seg('wire', ox - 120, oy - 60, 23, 'h', 0.4));
+      out.push(seg('wire', ox - 120, oy - 60, 17, 'v', 0.4));
+      // watch post out on the wire
+      out.push(...partition('sandbag', ox - 130, oy + 620, 150, 'h', 0.5, [], null));
+      out.push(...partition('sandbag', ox - 130, oy + 620, 110, 'v', 0.5, [], null));
       out.rooms = [
-        room('bunkroom', west.cells[0].x, west.cells[0].y, west.cells[0].w, west.cells[0].h),
-        room('bunkroom', west.cells[1].x, west.cells[1].y, west.cells[1].w, west.cells[1].h),
-        room('controlRoom', east.cells[0].x, east.cells[0].y, east.cells[0].w, east.cells[0].h),
-        room('armoury', east.cells[1].x, east.cells[1].y, east.cells[1].w, east.cells[1].h),
+        room('opsRoom',   north.cells[0].x, north.cells[0].y, north.cells[0].w, north.cells[0].h),
+        room('radioRoom', north.cells[1].x, north.cells[1].y, north.cells[1].w, north.cells[1].h),
+        room('armoury',   north.cells[2].x, north.cells[2].y, north.cells[2].w, north.cells[2].h),
+        room('briefing',  south.cells[0].x, south.cells[0].y, south.cells[0].w, south.cells[0].h),
+        room('mess',      south.cells[1].x, south.cells[1].y, south.cells[1].w, south.cells[1].h),
+        room('bunkroom',  south.cells[2].x, south.cells[2].y, south.cells[2].w, south.cells[2].h),
+        room('hall',      hall.rect.x, hall.rect.y, hall.rect.w, hall.rect.h),
+        room('watchPost', ox - 115, oy + 635, 120, 85),
       ];
       return out;
     },
@@ -1908,6 +1980,16 @@ const Structures = (() => {
     lounge:      { floor: '#6f5a68', pattern: 'planks' },
     lobby:       { floor: '#9c9484', pattern: 'tile' },
     hall:        { floor: '#8d8578', pattern: 'tile' },
+    living:      { floor: '#8a6a52', pattern: 'planks' },
+    foyer:       { floor: '#a3907a', pattern: 'tile' },
+    study:       { floor: '#6a5648', pattern: 'planks' },
+    pantry:      { floor: '#8f8a72', pattern: 'tile' },
+    opsRoom:     { floor: '#4a5364', pattern: 'metal' },
+    briefing:    { floor: '#565f4e', pattern: 'concrete' },
+    mess:        { floor: '#6e6a54', pattern: 'tile' },
+    radioRoom:   { floor: '#454e5c', pattern: 'metal' },
+    motorPool:   { floor: '#4a4f56', pattern: 'concrete' },
+    watchPost:   { floor: '#5c604e', pattern: 'concrete' },
     office:      { floor: '#6e6a62', pattern: 'planks' },
     controlRoom: { floor: '#4e5866', pattern: 'metal' },
     classroom:   { floor: '#8a7a5e', pattern: 'planks' },
@@ -2119,6 +2201,86 @@ const Structures = (() => {
     poor:   { upgrade: 0.00, extra: 0.00, downgrade: 0.35 },
   };
 
+  /* ============================================================
+     WHAT STANDS OUTSIDE A BUILDING
+
+     The clutter round a building used to be picked from five category
+     buckets, so a hospital and a church both got bushes and traffic cones and
+     every industrial building got the same barrels. From outside you could
+     not tell a farm from a factory until you were close enough to read the
+     roof.
+
+     Each building names its own. This is the ground you fight across on the
+     way in, so it is also a label: hay bales and stumps mean a farm, shipping
+     containers mean a harbour, sandbags and ammo crates mean somebody
+     military lives here.
+
+     `props` are what gets scattered; `weight` biases the roll toward the
+     first entries, so the first one or two read as the building's signature
+     and the rest are texture.
+     ============================================================ */
+  const DECOR = {
+    /* ---- residential: gardens, washing lines, firewood ---- */
+    house:        ['bush', 'bush', 'stump', 'plant', 'crate'],
+    mansion:      ['plant', 'plant', 'bush', 'bush', 'cone'],
+    shanty:       ['rubble', 'rubble', 'tyre', 'pallet', 'crate'],
+    apartments:   ['bush', 'crate', 'rubble', 'cone', 'plant'],
+    clinic:       ['bush', 'plant', 'cone', 'crate'],
+    watermill:    ['stump', 'bush', 'barrel', 'pallet', 'crate'],
+
+    /* ---- rural ---- */
+    farm:         ['stump', 'stump', 'pallet', 'bush', 'barrel', 'crate'],
+    camp:         ['tent', 'stump', 'bush', 'crate', 'rubble'],
+    campground:   ['tent', 'tent', 'stump', 'bush', 'crate'],
+
+    /* ---- industrial: pallets, drums, tyres, steel ---- */
+    warehouse:    ['pallet', 'pallet', 'crate', 'barrel', 'tyre'],
+    factory:      ['barrel', 'barrel', 'pallet', 'rubble', 'container'],
+    workshop:     ['tyre', 'tyre', 'barrel', 'pallet', 'ammoBox'],
+    garage:       ['tyre', 'tyre', 'tyre', 'barrel', 'cone', 'pallet'],
+    depot:        ['crate', 'pallet', 'barrel', 'container', 'tyre'],
+    'power-plant': ['barrel', 'container', 'rubble', 'cone', 'pallet'],
+    silos:        ['barrel', 'pallet', 'crate', 'stump'],
+    mine:         ['rock', 'rock', 'rubble', 'stump', 'barrel', 'pallet'],
+
+    /* ---- maritime and air ---- */
+    dock:         ['container', 'container', 'crate', 'pallet', 'barrel'],
+    harbor:       ['container', 'container', 'container', 'pallet', 'crate', 'tyre'],
+    hangar:       ['cone', 'cone', 'tyre', 'barrel', 'pallet'],
+    airfield:     ['cone', 'cone', 'cone', 'tyre', 'crate', 'antenna'],
+
+    /* ---- institutional: kept grounds, signs, a little decay ---- */
+    hospital:     ['bush', 'plant', 'cone', 'sign', 'crate'],
+    school:       ['bush', 'bush', 'sign', 'crate', 'cone'],
+    church:       ['bush', 'stump', 'plant', 'sign'],
+    library:      ['bush', 'plant', 'sign', 'crate'],
+    museum:       ['plant', 'plant', 'bush', 'sign', 'cone'],
+    bank:         ['plant', 'cone', 'sign', 'bush'],
+    prison:       ['sandpile', 'rubble', 'cone', 'crate', 'tyre'],
+    vault:        ['sandpile', 'rubble', 'cone', 'crate'],
+    'train-station': ['crate', 'pallet', 'sign', 'bush', 'container'],
+    subway:       ['rubble', 'rubble', 'sign', 'crate', 'cone'],
+    market:       ['crate', 'crate', 'pallet', 'plant', 'barrel'],
+    'gas-station': ['barrel', 'barrel', 'tyre', 'cone', 'sign'],
+
+    /* ---- military: sandbags, ammunition, wire-adjacent clutter ---- */
+    base:         ['sandpile', 'sandpile', 'ammoBox', 'crate', 'tyre'],
+    barracks:     ['sandpile', 'ammoBox', 'crate', 'tyre', 'pallet'],
+    armory:       ['ammoBox', 'ammoBox', 'sandpile', 'crate', 'barrel'],
+    bunker:       ['sandpile', 'sandpile', 'rubble', 'ammoBox'],
+    fortress:     ['sandpile', 'rubble', 'rock', 'ammoBox', 'crate'],
+    keep:         ['rock', 'rubble', 'sandpile', 'crate'],
+    checkpoint:   ['sandpile', 'cone', 'cone', 'ammoBox', 'tyre'],
+    tower:        ['sandpile', 'crate', 'ammoBox', 'stump'],
+    'bridge-fort': ['sandpile', 'rubble', 'cone', 'ammoBox'],
+    'command-center': ['antenna', 'antenna', 'sandpile', 'ammoBox', 'cone'],
+    'radio-tower': ['antenna', 'antenna', 'crate', 'rubble', 'sandpile'],
+    arena:        ['crate', 'barrel', 'cone', 'sign', 'rubble'],
+    resort:       ['plant', 'plant', 'bush', 'palm', 'cone'],
+  };
+  const DEFAULT_DECOR = ['crate', 'rubble', 'bush'];
+  const decorFor = (name) => DECOR[name] || DEFAULT_DECOR;
+
   /* ---------- how many of each the map must have ----------
      The design table gives exact counts, not weights: a map has five houses
      and exactly one mansion, whatever the dice say. Everything outside this
@@ -2158,7 +2320,7 @@ const Structures = (() => {
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
     STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid,
-    PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement,
+    PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement, DECOR, decorFor,
     ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
     /* place a named building and tag every piece with it. `rooms` rides along

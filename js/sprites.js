@@ -226,6 +226,19 @@ const Sprites = (() => {
         circle(ctx, dx * r, dy * r, r * 0.22, '#2c333d', P.metalLight, 1.5);
       }
     },
+    /* a structural post seen from above: a squat column with a base ring */
+    post(ctx, r) {
+      circle(ctx, 0, 0, r * 0.95, 'rgba(0,0,0,0.18)', null);
+      circle(ctx, 0, 0, r * 0.78, P.stoneDark, '#3f4652', 2);
+      circle(ctx, 0, 0, r * 0.54, P.stone, null);
+      circle(ctx, -r * 0.14, -r * 0.14, r * 0.26, P.stoneLight, null);
+    },
+    /* a timber pillar: square section, banded */
+    pillar(ctx, r) {
+      box(ctx, -r * 0.62, -r * 0.62, r * 1.24, r * 1.24, P.woodDark, '#3a2c1c', 2, 3);
+      box(ctx, -r * 0.4, -r * 0.4, r * 0.8, r * 0.8, P.wood, null, 0, 2);
+      box(ctx, -r * 0.66, -r * 0.14, r * 1.32, r * 0.28, '#4a3a24', null, 0, 2);
+    },
     /* a chair from above: seat, back, four legs poking out */
     chair(ctx, r) {
       ctx.globalAlpha = 0.9;
@@ -317,6 +330,8 @@ const Sprites = (() => {
     toilet:    { r: 21, shadow: 4 },
     desk:      { r: 31, shadow: 4 },
     ammoBox:   { r: 22, shadow: 4 },
+    post:      { r: 15, shadow: 8, tall: true },
+    pillar:    { r: 17, shadow: 9, tall: true },
     chair:     { r: 17, shadow: 3 },
     plant:     { r: 20, shadow: 4 },
     lamp:      { r: 16, shadow: 3, light: 190 },      // light = glow radius in px
