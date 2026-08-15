@@ -75,6 +75,32 @@ const Items = (() => {
       { id: 'legendary',      w: 30, label: 'Legendary Weapon' },
       { id: 'armorT3',        w: 20, label: 'Armor T3' },
     ],
+    /* A chest is the thing at the end of the tunnel. It pays out three times
+       rather than once (see CRATE_PAYOUT), so it is worth the walk down and
+       worth fighting somebody over — and it takes long enough to open that
+       doing so in the open is a decision rather than a reflex. */
+    chest: [
+      { id: 'legendary',      w: 26, label: 'Legendary Weapon' },
+      { id: 'armorT3',        w: 20, label: 'Armor T3' },
+      { id: 'stim',           w: 14, label: 'Stim Injection' },
+      { id: 'medkit',         w: 12, label: 'Medkit' },
+      { id: 'classConsumable',w: 12, label: 'Class Consumable' },
+      { id: 'tank',           w: 8,  label: 'Tank' },
+      { id: 'jeep',           w: 8,  label: 'Armored Jeep' },
+    ],
+    /* What you find in the furniture. Searching a locker is not opening a
+       crate — it is quick, it is everywhere, and it mostly turns up something
+       small. The point is that a furnished room is worth walking through
+       rather than worth looking at. */
+    furniture: [
+      { id: 'ammo',           w: 30, label: 'Ammo' },
+      { id: 'bandage',        w: 22, label: 'Bandage' },
+      { id: 'soda',           w: 14, label: 'Soda' },
+      { id: 'classConsumable',w: 12, label: 'Class Consumable' },
+      { id: 'pills',          w: 10, label: 'Pills' },
+      { id: 'armorT1',        w: 8,  label: 'Armor T1' },
+      { id: 'stim',           w: 4,  label: 'Stim Injection' },
+    ],
     /* Regional pools — building-type loot tied to theme */
     medical: [
       { id: 'bandage',        w: 25, label: 'Bandage' },
@@ -106,10 +132,22 @@ const Items = (() => {
     regular: { color: '#8ea0c9', icon: '📦', name: 'Crate' },
     silver:  { color: '#cfd8ee', icon: '🎁', name: 'Silver Crate' },
     gold:    { color: '#ffcf4a', icon: '🏆', name: 'Gold Crate' },
+    chest:   { color: '#e0913a', icon: '🧰', name: 'Chest' },
     medical: { color: '#c46bff', icon: '⛑️', name: 'Medical Cache' },
     industrial: { color: '#9bacc9', icon: '🔧', name: 'Supply Crate' },
     military: { color: '#4a6280', icon: '🎖️', name: 'Ammo Cache' },
+    furniture: { color: '#b08a55', icon: '🔍', name: 'Search' },
   };
+
+  /* How many rolls opening one of these gives you, and how long it takes.
+     A crate is one roll and instant; a chest is three and takes a moment,
+     which is what makes standing over one a risk worth taking. */
+  const CRATE_PAYOUT = {
+    chest: { rolls: 3, openMs: 1400 },
+    gold: { rolls: 1, openMs: 0 },
+    furniture: { rolls: 1, openMs: 0 },
+  };
+  const payoutFor = (tier) => CRATE_PAYOUT[tier] || { rolls: 1, openMs: 0 };
 
   // "Class Consumable" pool — fallback when we don't know the opener's class
   const CLASS_CONSUMABLES = ['frag', 'impact', 'smoke', 'flashbang', 'mine', 'barricade', 'ammobox', 'c4'];
@@ -159,7 +197,7 @@ const Items = (() => {
   }
 
   return {
-    CONSUMABLES, CRATE_TABLES, CRATE_RARITY, CRATE_STYLE, LEGENDARY_MODS,
+    CONSUMABLES, CRATE_TABLES, CRATE_RARITY, CRATE_STYLE, CRATE_PAYOUT, payoutFor, LEGENDARY_MODS,
     weightedPick, rollCrateTier, rollLoot, randomClassConsumable, classConsumableFor,
     bestOfClass, makeLegendary,
   };

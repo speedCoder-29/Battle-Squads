@@ -12,7 +12,7 @@ const Game = (() => {
      which meant an online match simulated in one size and rendered in another. */
   const MAP_SIZES = (typeof RoomSim !== 'undefined' && RoomSim.MAP_SIZES)
     ? RoomSim.MAP_SIZES
-    : { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
+    : { domination: { w: 7400, h: 7400 }, elimination: { w: 5200, h: 5200 } };
 
   /* ---------------- world seed ----------------
      Every client builds its own copy of the map, so the two have to agree
@@ -282,11 +282,17 @@ const Game = (() => {
   /* How much of everything a map gets, per million pixels of playable ground.
      Everything scales from the board size, so making the map bigger fills it
      instead of stretching it thin. */
+  /* Loose cover and scenery scattered across the open map, per million px².
+     Cover and props are both down: buildings are bigger and now carry their
+     own arranged yards, so the ground between them was getting cluttered
+     enough that crossing it was an obstacle course rather than a risk. Less
+     out here also makes the organised stuff round a building read as
+     deliberate rather than as more of the same. */
   const DENSITY = {
     buildings: 3.2,
-    cover: 11.0,
+    cover: 7.5,        // was 11.0
     crates: 4.2,
-    props: 120,
+    props: 78,         // was 120
     grassPatches: 2.4,
   };
   /* the buildings that can be rolled, and how common each is */
@@ -303,7 +309,7 @@ const Game = (() => {
        generated maps in a row contained none of them. The four after those are
        new. A building nothing can place is a building nobody has ever seen. */
     ['hospital', 5], ['prison', 3], ['bank', 3], ['bridge-fort', 2],
-    ['clinic', 7], ['library', 5], ['garage', 6], ['watermill', 4],
+    ['clinic', 7], ['library', 5], ['garage', 6], ['watermill', 4], ['bunker-complex', 5],
   ];
   const COVER_MIX = [
     ['sandbag', 26], ['barricade', 22], ['wire', 20], ['wood', 16], ['metal', 10], ['rwall', 6],
@@ -320,6 +326,8 @@ const Game = (() => {
     obstacles = []; trenches = []; decor = []; grass = [];
     buildings = []; landmarks = []; pendingIndoorCrates = [];
     requiredPlacements = []; pendingRoomVehicles = []; basements = [];
+    requiredTally = {}; pendingYards = []; roomAnchors = new WeakMap();
+    for (const k in sizeCache) delete sizeCache[k];
     genReset();
     invalidateRects();
     terrain = Terrain.generate(MAP_W, MAP_H, worldSeed);
@@ -333,6 +341,7 @@ const Game = (() => {
     placeLandmarks();                                   // the big one-offs get first pick
     placeRequiredBuildings();                           // then the ones the map must have
     placeBuildingsProcedural(Math.round(area * DENSITY.buildings));
+    layOutYards();                                      // now that nothing else needs the ground
     placeCover(Math.round(area * DENSITY.cover));
     placeGrass(Math.round(area * DENSITY.grassPatches));
     placeProps(Math.round(area * DENSITY.props));
@@ -416,24 +425,40 @@ const Game = (() => {
      buildings comfortably apart; the required-building fallback lowers it,
      because a map that is short of a museum is worse than one where the
      museum is a bit close to its neighbour. */
+  let lastReject = '';
   function placeBuilding(name, x, y, pad) {
+    /* Sight the footprint before drawing the building. Constructing the
+       blueprint is by far the most expensive step, and measured over a real
+       generation ~97% of candidates are then thrown away for clearance — so
+       nearly all of that work was being done only to be discarded. A blueprint
+       scales about its own origin, so its bounding box is known from the
+       origin alone, and the box can be tested first. The margin keeps this
+       strictly conservative: it may let a doomed candidate through to the real
+       check below, but it can never reject one that would have fitted. */
+    const guess = placedSize(name);
+    if (guess.w) {
+      const pb = { x: x + guess.x, y: y + guess.y, w: guess.w, h: guess.h };
+      if (pb.x < 16 || pb.y < 16 || pb.x + pb.w > MAP_W - 16 || pb.y + pb.h > MAP_H - 16) { lastReject = 'offMap'; return []; }
+      if (genHits(pb, Math.max(0, (pad === undefined ? 120 : pad) - 24))) { lastReject = 'occupied'; return []; }
+    }
     const parts = Structures.place(name, x, y);
-    if (!parts.length) return [];
+    if (!parts.length) { lastReject = 'blueprint'; return []; }
     const bb = boundsOf(parts);
-    if (bb.x < 40 || bb.y < 40 || bb.x + bb.w > MAP_W - 40 || bb.y + bb.h > MAP_H - 40) return [];
+    if (bb.x < 40 || bb.y < 40 || bb.x + bb.w > MAP_W - 40 || bb.y + bb.h > MAP_H - 40) { lastReject = 'offMap'; return []; }
     // Cheap rejections first. Most candidates fail, and the per-segment terrain
     // check below runs a distance-to-river test per probe — doing that for a
     // building that already overlaps something was most of the generation cost.
-    if (genHits(bb, pad === undefined ? 120 : pad)) return [];
-    if (!Terrain.isBuildable(terrain, bb.x + bb.w / 2, bb.y + bb.h / 2, 10)) return [];
+    if (genHits(bb, pad === undefined ? 120 : pad)) { lastReject = 'occupied'; return []; }
+    if (!Terrain.isBuildable(terrain, bb.x + bb.w / 2, bb.y + bb.h / 2, 10)) { lastReject = 'terrain'; return []; }
     // Check every segment, not just the bounding box: a river bending through
     // the middle of a large building passes between the corners unnoticed, and
     // half a warehouse standing in the water is worse than not placing it.
     for (const s of parts) {
-      if (!Terrain.isBuildable(terrain, s.x + s.w / 2, s.y + s.h / 2, 8)) return [];
-      if (!Terrain.isBuildable(terrain, s.x, s.y, 4)) return [];
-      if (!Terrain.isBuildable(terrain, s.x + s.w, s.y + s.h, 4)) return [];
+      if (!Terrain.isBuildable(terrain, s.x + s.w / 2, s.y + s.h / 2, 8)
+        || !Terrain.isBuildable(terrain, s.x, s.y, 4)
+        || !Terrain.isBuildable(terrain, s.x + s.w, s.y + s.h, 4)) { lastReject = 'terrain'; return []; }
     }
+    lastReject = '';
     return parts;
   }
 
@@ -492,6 +517,7 @@ const Game = (() => {
     clinic:     { props: ['bed', 'shelf', 'locker', 'chair', 'desk'], n: 16, loot: 0, floor: '#c4d0cd' },
     library:    { props: ['shelf', 'shelf', 'desk', 'chair', 'table', 'plant'], n: 32, loot: 0, floor: '#9c8a6d' },
     garage:     { props: ['tyre', 'tyre', 'barrel', 'ammoBox', 'pallet'], n: 26, loot: 0, floor: '#4f545c' },
+    'bunker-complex': { props: ['ammoBox', 'crate', 'locker', 'barrel'], n: 14, loot: 0, floor: '#3e4147' },
     watermill:  { props: ['pallet', 'barrel', 'shelf', 'crate', 'rubble'], n: 20, loot: 0, floor: '#6f6350' },
     /* The table's buildings. `loot` is ignored for these — their rooms say
        exactly what they hold — but they still want furniture and a floor. */
@@ -566,6 +592,10 @@ const Game = (() => {
     radioRoom:   { props: ['desk', 'ammoBox', 'chair', 'locker'], n: 6, lamps: 2 },
     motorPool:   { props: ['tyre', 'barrel', 'ammoBox', 'pallet'], n: 8, lamps: 2 },
     watchPost:   { props: ['ammoBox', 'crate', 'chair'], n: 3, lamps: 1 },
+    /* Lit end to end, because a passage you cannot see down is a passage
+       nobody walks. Sparse otherwise — it is a route, not a room. */
+    tunnel:      { props: ['crate', 'barrel', 'ammoBox'], n: 5, lamps: 5, strip: true },
+    passage:     { props: ['crate', 'shelf', 'barrel'], n: 3, lamps: 2, strip: true },
     office:      { props: ['desk', 'chair', 'shelf', 'locker', 'plant'], n: 6, lamps: 1 },
     controlRoom: { props: ['desk', 'chair', 'ammoBox', 'locker'], n: 6, lamps: 2 },
     classroom:   { props: ['desk', 'chair', 'chair', 'shelf'], n: 8, lamps: 1 },
@@ -601,14 +631,53 @@ const Game = (() => {
      Only for the generic rooms. A bathroom is a bathroom wherever it is, and
      salting it with tyres because it happens to be in a workshop would be
      worse than the flat list it replaced. */
+  /* Where each kind of thing belongs in a room, and what has to be put down
+     before what. Beds, shelves, lockers, desks and stoves go against a wall;
+     a toilet or a pot plant goes in a corner; a table sits in the middle with
+     the chairs pulled up to it. */
+  const PLACEMENT = {
+    bed: 'wall', shelf: 'wall', locker: 'wall', desk: 'wall', stove: 'wall',
+    toilet: 'corner', plant: 'corner', ammoBox: 'corner', barrel: 'corner',
+    table: 'centre',
+    chair: 'byTable',
+    /* A light is on a wall or a ceiling. Dropping one in the middle of a
+       corridor put a 44px obstacle in a 68px passage, which is a blocked
+       hallway — the same mistake as a support post on the centreline. */
+    lamp: 'wall', striplight: 'wall',
+  };
+  // tables and desks first, then wall furniture, then the chairs that go with them
+  const rank = (kind) => (PLACEMENT[kind] === 'centre' ? 0
+    : PLACEMENT[kind] === 'wall' ? 1
+      : PLACEMENT[kind] === 'byTable' ? 3 : 2);
+
   const GENERIC_ROOMS = new Set([
     'storeroom', 'office', 'lobby', 'hall', 'workbay', 'guardRoom',
     'controlRoom', 'strongroom', 'safe', 'stall', 'gym',
   ]);
 
-  function dressRoom(r, building) {
+  /* Furniture you can go through. A locker, a cabinet, a desk and a shelf are
+     the things a person would actually rifle through on the way past, so a
+     share of them are made searchable — one quick roll on the furniture
+     table. They are spawned as crates rather than as decor, which is what
+     makes them work online for free: the room already arbitrates who opened
+     which crate, so two players cannot both loot the same locker. */
+  const SEARCHABLE = { locker: 0.75, shelf: 0.4, desk: 0.5, crate: 0.5, ammoBox: 0.6, barrel: 0.25 };
+
+  /* What got put in each room, so the loot pass can stack against it. Keyed by
+     the room object itself — rooms are generated fresh each map, so the map is
+     cleared with the world rather than accumulating across generations. */
+  let roomAnchors = new WeakMap();
+  function anchorsFor(r) {
+    let a = roomAnchors.get(r);
+    if (!a) { a = []; roomAnchors.set(r, a); }
+    return a;
+  }
+
+  function dressRoom(r, building, phase) {
     const conf = ROOM_PROPS[r.kind];
     if (!conf) return;
+    const doFurniture = phase !== 'lights';
+    const doLights = phase !== 'furniture';
     let props = conf.props;
     if (building && GENERIC_ROOMS.has(r.kind)) {
       const own = (FURNISH[building] || {}).props || [];
@@ -623,24 +692,95 @@ const Game = (() => {
       x: rand(r.x + inset, r.x + r.w - inset),
       y: rand(r.y + inset, r.y + r.h - inset),
     });
-    for (let i = 0; i < conf.n; i++) {
+    /* Furniture goes where furniture goes. Nobody puts a bed in the middle of
+       a room at 43 degrees, and a room full of things at random angles is the
+       single thing that most makes a generated interior read as generated.
+       Each prop knows whether it belongs against a wall, tucked in a corner,
+       out in the middle, or pulled up to a table, and everything is square to
+       the room it is in. */
+    const placed = [];
+    const put = (kind, m) => {
+      const how = PLACEMENT[kind] || 'free';
+      const pad = m.r + 5;
+      if (r.w < pad * 2.4 || r.h < pad * 2.4) return spot();      // too tight to be fussy
+      if (how === 'wall') {
+        const side = ['n', 's', 'w', 'e'][Math.floor(Math.random() * 4)];
+        if (side === 'n') return { x: rand(r.x + pad, r.x + r.w - pad), y: r.y + pad, rot: 0 };
+        if (side === 's') return { x: rand(r.x + pad, r.x + r.w - pad), y: r.y + r.h - pad, rot: Math.PI };
+        if (side === 'w') return { x: r.x + pad, y: rand(r.y + pad, r.y + r.h - pad), rot: Math.PI / 2 };
+        return { x: r.x + r.w - pad, y: rand(r.y + pad, r.y + r.h - pad), rot: -Math.PI / 2 };
+      }
+      if (how === 'corner') {
+        const cx = Math.random() < 0.5 ? r.x + pad : r.x + r.w - pad;
+        const cy = Math.random() < 0.5 ? r.y + pad : r.y + r.h - pad;
+        return { x: cx, y: cy, rot: cy < r.y + r.h / 2 ? 0 : Math.PI };
+      }
+      if (how === 'centre') {
+        return {
+          x: r.x + r.w / 2 + rand(-r.w / 8, r.w / 8),
+          y: r.y + r.h / 2 + rand(-r.h / 8, r.h / 8),
+          rot: r.w >= r.h ? 0 : Math.PI / 2,
+        };
+      }
+      if (how === 'byTable') {
+        // a chair belongs at a table, on one of its four sides, facing it
+        const t = placed.filter(q => q.kind === 'table' || q.kind === 'desk');
+        if (t.length) {
+          const at = t[Math.floor(Math.random() * t.length)];
+          const tr = Sprites.META[at.kind].r;
+          const a2 = Math.floor(Math.random() * 4) * (Math.PI / 2);
+          return {
+            x: at.x + Math.cos(a2) * (tr + m.r * 0.8),
+            y: at.y + Math.sin(a2) * (tr + m.r * 0.8),
+            rot: a2 + Math.PI,
+          };
+        }
+        /* No table in here — a bedroom's chair isn't a dining chair. Put it
+           against a wall rather than leaving it adrift in the middle. */
+        const side = ['n', 's', 'w', 'e'][Math.floor(Math.random() * 4)];
+        if (side === 'n') return { x: rand(r.x + pad, r.x + r.w - pad), y: r.y + pad, rot: Math.PI };
+        if (side === 's') return { x: rand(r.x + pad, r.x + r.w - pad), y: r.y + r.h - pad, rot: 0 };
+        if (side === 'w') return { x: r.x + pad, y: rand(r.y + pad, r.y + r.h - pad), rot: -Math.PI / 2 };
+        return { x: r.x + r.w - pad, y: rand(r.y + pad, r.y + r.h - pad), rot: Math.PI / 2 };
+      }
+      const p = spot();
+      p.rot = Math.round(Math.random() * 4) * (Math.PI / 2);   // still square to the room
+      return p;
+    };
+    /* Tables before chairs, so the chairs have something to be pulled up to. */
+    const order = props.slice().sort((a, b) => rank(a) - rank(b));
+    for (let i = 0; doFurniture && i < conf.n; i++) {
+      const kind = order[i % order.length];
+      const m = Sprites.META[kind];
+      if (!m) continue;
       for (let tries = 0; tries < 16; tries++) {
-        const p = spot();
-        const kind = props[Math.floor(Math.random() * props.length)];
-        const m = Sprites.META[kind];
-        if (!m) break;
+        const p = put(kind, m);
+        if (p.x < r.x || p.y < r.y || p.x > r.x + r.w || p.y > r.y + r.h) continue;
         const box = { x: p.x - m.r * 0.7, y: p.y - m.r * 0.7, w: m.r * 1.4, h: m.r * 1.4 };
         if (genHits(box, 6)) continue;
-        decor.push({ kind, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 1, indoors: true });
+        const item = { kind, x: p.x, y: p.y, rot: p.rot || 0, scale: 1, indoors: true };
+        /* Some of it is worth going through. A searchable piece becomes a
+           crate that draws as this furniture, so it is one object rather than
+           a box parked on top of a locker. */
+        if (Math.random() < (SEARCHABLE[kind] || 0)) {
+          pendingIndoorCrates.push({
+            x: p.x, y: p.y, tier: 'furniture', room: r.kind,
+            look: kind, rot: p.rot || 0,
+          });
+        } else {
+          decor.push(item);
+        }
+        placed.push(item);
+        anchorsFor(r).push(item);
         break;
       }
     }
     /* Lights are obstacles rather than decor, because you can shoot them out
        and the lighting pass reads them off the obstacle list. */
     const lampKind = conf.strip ? 'striplight' : 'lamp';
-    for (let i = 0; i < lamps; i++) {
+    for (let i = 0; doLights && i < lamps; i++) {
       for (let tries = 0; tries < 16; tries++) {
-        const p = spot();
+        const p = put(lampKind, Sprites.META[lampKind]);
         const s2 = Structures.prop(lampKind, p.x, p.y, Sprites.META[lampKind].r * 2, 1);
         if (genHits(s2, 6)) continue;
         s2.building = r.building;
@@ -669,19 +809,49 @@ const Game = (() => {
       // a cellar is its own floor, and always needs its own light
       if (r.basement) basements.push({ x: r.x, y: r.y, w: r.w, h: r.h });
     }
-    /* Loot first, furniture after. Lamps are obstacles — that is what lets you
-       shoot them out — so dressing a room before stocking it meant the lamps
-       took the floor space the crates needed, and rooms quietly ended up
-       holding less than the table says. The loot is the reason the room
-       exists; the furniture fills in around it. */
+    /* Furniture, then loot against it, then the lights.
+
+       Loot used to go down first, on the open floor, because lamps are
+       obstacles and dressing a room first meant they took the space the crates
+       needed. That fixed the count and left the arrangement wrong: crates in
+       the middle of the floor and the shelving round the edge, as if the two
+       had nothing to do with each other. Nobody stacks supplies in the middle
+       of a room — they go against the shelf, beside the lockers, under the
+       workbench.
+
+       So the furniture goes first (it is decor and blocks nothing), the loot
+       is placed against it, and the lamps go last so they still cannot steal
+       the floor. */
+    for (const r of rooms) dressRoom(r, building, 'furniture');
     for (const r of rooms) {
       const spec = Structures.ROOM_LOOT[r.kind];
       if (!spec) continue;
       const inset = Math.min(22, r.w / 4, r.h / 4);
-      const spot = () => ({
-        x: rand(r.x + inset, r.x + r.w - inset),
-        y: rand(r.y + inset, r.y + r.h - inset),
-      });
+      /* Stack it against the furniture. Supplies go beside the shelving and
+         under the bench, not marooned in the middle of the floor — so a spot
+         is chosen next to a piece of furniture that is already in the room,
+         on the side of it that faces into the room. Open floor is the
+         fallback, not the rule. */
+      const anchors = anchorsFor(r);
+      const spot = () => {
+        if (anchors.length && Math.random() < 0.8) {
+          const a = anchors[Math.floor(Math.random() * anchors.length)];
+          const m = Sprites.META[a.kind] || { r: 20 };
+          const off = m.r + 19;
+          // push away from the nearest wall, so the crate lands in the room
+          const towardX = a.x < r.x + r.w / 2 ? 1 : -1;
+          const towardY = a.y < r.y + r.h / 2 ? 1 : -1;
+          const along = Math.random() < 0.5;
+          const p = along
+            ? { x: a.x + towardX * off, y: a.y + rand(-off * 0.4, off * 0.4) }
+            : { x: a.x + rand(-off * 0.4, off * 0.4), y: a.y + towardY * off };
+          if (p.x > r.x + 12 && p.x < r.x + r.w - 12 && p.y > r.y + 12 && p.y < r.y + r.h - 12) return p;
+        }
+        return {
+          x: rand(r.x + inset, r.x + r.w - inset),
+          y: rand(r.y + inset, r.y + r.h - inset),
+        };
+      };
       const taken = [];
       for (const [tier, count] of spec.crates || []) {
         for (let i = 0; i < count; i++) {
@@ -719,7 +889,7 @@ const Game = (() => {
         }
       }
     }
-    for (const r of rooms) dressRoom(r, building);
+    for (const r of rooms) dressRoom(r, building, 'lights');
   }
   let pendingRoomVehicles = [];
   /* The hulls this map was generated with, kept after they are placed so the
@@ -735,44 +905,114 @@ const Game = (() => {
      you what the building is before you go in: barrels and pallets at a
      depot, tyres at a garage, bushes and stumps round a farmhouse. */
 
+  /* Clutter arranged rather than sprinkled. Random scatter round a perimeter
+     reads as litter — it tells you a building is there and nothing else. Real
+     yards are organised: things are stacked against a wall, piled in a corner,
+     or set out either side of the door.
+
+     Three arrangements, picked per wall:
+       row      a line parallel to the wall, evenly spaced
+       corner   a tight cluster at one end
+       gate     a symmetrical pair flanking the entrance
+
+     Everything still respects the body-width clearance, so none of these can
+     build a pocket you get stuck in. */
+  const CLUTTER_GAP = BODY_R * 2 + 8;
+
+  function placeProp(kind, x, y, name, jitter) {
+    const m = Sprites.META[kind];
+    if (!m) return false;
+    const px = x + (jitter ? rand(-jitter, jitter) : 0);
+    const py = y + (jitter ? rand(-jitter, jitter) : 0);
+    if (!Terrain.isSpawnable(terrain, px, py)) return false;
+    /* Never inside a building — anyone's. A yard prop only has to miss the
+       *walls* to be legal, and the inside of a neighbour is empty space, so a
+       crate could land in someone else's hallway and pinch it below a body's
+       width. Measured: one base corridor narrowed to 29px that way. */
+    if (insideAnyBuilding(px, py, 8)) return false;
+    const s2 = Structures.prop(kind, px, py, m.r * 2, 0.85 + Math.random() * 0.35);
+    if (genHits(s2, CLUTTER_GAP)) return false;
+    s2.building = name;
+    genAdd(s2); obstacles.push(s2);
+    return true;
+  }
+
+  /* Is this spot inside a building? The outdoor scatter passes only ever
+     tested "does this overlap existing geometry", and the inside of a building
+     is empty space — so loose cover, scenery and a neighbour's yard props
+     could all legally land in somebody's hallway. Measured, that narrowed a
+     base corridor to 24px, which is narrower than a body: the building was
+     impassable through its own spine. */
+  const insideAnyBuilding = (x, y, pad) => {
+    const q = pad || 0;
+    for (const b of buildings) {
+      if (x > b.x - q && x < b.x + b.w + q && y > b.y - q && y < b.y + b.h + q) return true;
+    }
+    return false;
+  };
+
   function clutterAround(name, bb) {
     // what this particular building keeps outside its door — see Structures.DECOR
     const kinds = Structures.decorFor(name);
-    // scaled to the perimeter, so a harbor gets more than a shed
-    const n = Math.round(clamp((bb.w + bb.h) / 110, 3, 16));
-    for (let i = 0; i < n; i++) {
-      for (let tries = 0; tries < 14; tries++) {
-        // pick a side, then a point just off it
-        const side = Math.floor(Math.random() * 4);
-        const pad = rand(26, 84);
-        const p = side === 0 ? { x: rand(bb.x - 40, bb.x + bb.w + 40), y: bb.y - pad }
-          : side === 1 ? { x: rand(bb.x - 40, bb.x + bb.w + 40), y: bb.y + bb.h + pad }
-            : side === 2 ? { x: bb.x - pad, y: rand(bb.y - 40, bb.y + bb.h + 40) }
-              : { x: bb.x + bb.w + pad, y: rand(bb.y - 40, bb.y + bb.h + 40) };
-        if (!Terrain.isSpawnable(terrain, p.x, p.y)) continue;
-        const kind = kinds[Math.floor(Math.random() * kinds.length)];
-        const m = Sprites.META[kind];
-        if (!m) break;
-        const s = Structures.prop(kind, p.x, p.y, m.r * 2, 0.85 + Math.random() * 0.4);
-        /* Wide enough for a player to walk between. At 14px two props could
-           sit closer together than a body is across, making pockets you could
-           get into and not out of — and the two sides disagreed about them:
-           the client slid free while the room kept you pinned, and the gap
-           between them grew into the hundreds. Cover you can be trapped by is
-           a bug whichever side notices first. */
-        if (genHits(s, BODY_R * 2 + 8)) continue;
-        s.building = name;
-        genAdd(s); obstacles.push(s);
-        break;
+    const pick = () => kinds[Math.floor(Math.random() * kinds.length)];
+    // the signature prop leads each arrangement, so a yard reads as one idea
+    const lead = kinds[0];
+
+    const sides = [
+      { horiz: true, y: bb.y - 62, x0: bb.x, x1: bb.x + bb.w },
+      { horiz: true, y: bb.y + bb.h + 62, x0: bb.x, x1: bb.x + bb.w },
+      { horiz: false, x: bb.x - 62, y0: bb.y, y1: bb.y + bb.h },
+      { horiz: false, x: bb.x + bb.w + 62, y0: bb.y, y1: bb.y + bb.h },
+    ];
+
+    for (const side of sides) {
+      const span = side.horiz ? side.x1 - side.x0 : side.y1 - side.y0;
+      if (span < 140) continue;
+      const layout = Math.random();
+      const at = (t) => (side.horiz
+        ? { x: side.x0 + span * t, y: side.y }
+        : { x: side.x, y: side.y0 + span * t });
+
+      if (layout < 0.45) {
+        // a row stacked along the wall, evenly spaced
+        const n = Math.max(2, Math.min(6, Math.floor(span / 150)));
+        for (let i = 0; i < n; i++) {
+          const p2 = at((i + 0.5) / n);
+          placeProp(i === 0 ? lead : pick(), p2.x, p2.y, name, 14);
+        }
+      } else if (layout < 0.75) {
+        // a cluster piled into one end
+        const end = Math.random() < 0.5 ? 0.12 : 0.88;
+        const p2 = at(end);
+        for (let i = 0; i < 3; i++) placeProp(i === 0 ? lead : pick(), p2.x, p2.y, name, 46);
+      } else {
+        // a matched pair either side of the middle, like a gateway
+        const a2 = at(0.36), b2 = at(0.64);
+        placeProp(lead, a2.x, a2.y, name, 10);
+        placeProp(lead, b2.x, b2.y, name, 10);
       }
     }
+  }
+
+  let pendingYards = [];
+  function layOutYards() {
+    for (const y of pendingYards) clutterAround(y.name, y.bb);
+    pendingYards = [];
   }
 
   function furnish(name, bb, rooms) {
     /* Rooms replace the loot roll entirely — a resort's ten bedrooms are ten
        crates because the table says so, not because the footprint is big. */
     if (rooms && rooms.length) stockRooms(rooms, Structures.purposeOf(name).grade, name);
-    clutterAround(name, bb);
+    /* The yard waits until every building has its ground. A building's clutter
+       sits up to ~100px outside its walls and goes into the same collision grid
+       the placer reads, so furnishing as we went meant each finished building
+       pushed the next one further away — with bigger buildings that was enough
+       to cost the map a museum outright. Nothing outside a building should
+       outrank a building. Deferring also makes the yards tidier: by the time
+       they are laid out, every neighbour exists, so a prop can no longer be
+       dropped where a wall is about to appear. */
+    pendingYards.push({ name, bb });
     const conf = FURNISH[name];
     if (!conf) return;
     const inset = 46;
@@ -780,7 +1020,12 @@ const Game = (() => {
       x: rand(bb.x + inset, bb.x + bb.w - inset),
       y: rand(bb.y + inset, bb.y + bb.h - inset),
     });
-    for (let i = 0; i < conf.n; i++) {
+    /* Only for buildings with no rooms of their own. A building that declares
+       rooms has already been furnished a room at a time, each piece against
+       the wall or corner it belongs to — scattering another two dozen props
+       across the same floor on top of that put furniture in doorways and
+       undid the arrangement. */
+    for (let i = 0; i < (rooms && rooms.length ? 0 : conf.n); i++) {
       for (let tries = 0; tries < 20; tries++) {
         const p = spot();
         const kind = conf.props[Math.floor(Math.random() * conf.props.length)];
@@ -789,7 +1034,8 @@ const Game = (() => {
         const box = { x: p.x - m.r, y: p.y - m.r, w: m.r * 2, h: m.r * 2 };
         if (genHits(box, 8)) continue;
         if (decor.some(d => dist2(d.x, d.y, p.x, p.y) < 46 * 46)) continue;
-        decor.push({ kind, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 1, indoors: true });
+        // square to the building, even with no room to be square to
+        decor.push({ kind, x: p.x, y: p.y, rot: Math.round(Math.random() * 4) * (Math.PI / 2), scale: 1, indoors: true });
         break;
       }
     }
@@ -943,15 +1189,23 @@ const Game = (() => {
              holding it to that band meant it simply never got placed, and the
              map lost a required building and seven room types with it. Try the
              ring first, then take anywhere that will have it. */
-          const spot = tries < 260 ? ringSpot(name) : {
-            x: rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET),
-            y: rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET),
-          };
-          const parts = placeBuilding(name, spot.x, spot.y);
-          if (!parts.length) continue;
+          /* Both the position and the elbow room get less fussy as the budget
+             runs down. Holding out for a 120px margin is right on an empty map
+             and hopeless on a full one: measured over a whole required pass,
+             97% of candidates were being turned down for clearance alone, and
+             the museum — 813px across, on a map with room for it — used all
+             900 of its attempts without once being offered a spot it would
+             accept. First choice is still a generous gap in its own ring;
+             last resort is a building that is merely close to its neighbour,
+             which beats a map with no museum on it. */
+          const spot = tries < 150 ? ringSpot(name) : fittingSpot(name);
+          const pad = tries < 150 ? 120 : tries < 280 ? 84 : 54;
+          const parts = placeBuilding(name, spot.x, spot.y, pad);
+          if (!parts.length) { tally(name, lastReject); continue; }
           const bb = boundsOf(parts);
-          if (requiredPlacements.some(b => padOverlap(bb, b, 120))) continue;
-          if (landmarks.some(l => padOverlap(bb, l, 200))) continue;
+          if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(104, pad)))) { tally(name, 'spacing'); continue; }
+          if (landmarks.some(l => padOverlap(bb, l, tries < 150 ? 200 : 120))) { tally(name, 'landmark'); continue; }
+          tally(name, 'placed');
           requiredPlacements.push(bb);
           const pid = 'r' + requiredPlacements.length;
           for (const part of parts) { part.placement = pid; genAdd(part); }
@@ -973,28 +1227,98 @@ const Game = (() => {
       /* Anything that still didn't fit gets one more pass with no ring and
          tighter spacing — a required building is required. */
       for (let i = 0; i < missed; i++) {
-        for (let tries = 0; tries < 500; tries++) {
-          const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
-          const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
-          const parts = placeBuilding(name, x, y, tries < 250 ? 80 : 34);
-          if (!parts.length) continue;
+        let done = false;
+        for (let tries = 0; tries < 500 && !done; tries++) {
+          const spot = fittingSpot(name);
+          const parts = placeBuilding(name, spot.x, spot.y, tries < 250 ? 80 : 34);
+          if (!parts.length) { tally(name, lastReject); continue; }
           const bb = boundsOf(parts);
-          if (requiredPlacements.some(b => padOverlap(bb, b, tries < 250 ? 70 : 30))) continue;
-          if (landmarks.some(l => padOverlap(bb, l, 120))) continue;
-          requiredPlacements.push(bb);
-          const pid = 'r' + requiredPlacements.length;
-          for (const part of parts) { part.placement = pid; genAdd(part); }
-          obstacles.push(...parts);
-          invalidateRects();
-          const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-          buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
-          furnish(name, bb, parts.rooms);
-          break;
+          if (requiredPlacements.some(b => padOverlap(bb, b, tries < 250 ? 70 : 30))) { tally(name, 'spacing'); continue; }
+          if (landmarks.some(l => padOverlap(bb, l, 120))) { tally(name, 'landmark'); continue; }
+          done = commitRequired(name, parts, bb);
         }
+        /* Last resort: walk the map instead of sampling it. Throwing more darts
+           has diminishing returns on a crowded map — a thousand random spots
+           can all miss the one gap the museum would have fitted in, which is
+           exactly how a seed here and there ended up with no museum on it. A
+           sweep either finds that gap or proves there wasn't one. */
+        if (!done) done = sweepFor(name);
+        if (!done) console.warn('[worldgen] no room for required building:', name);
       }
     }
   }
+  /* add a placed required building to the world */
+  function commitRequired(name, parts, bb) {
+    tally(name, 'placed');
+    requiredPlacements.push(bb);
+    const pid = 'r' + requiredPlacements.length;
+    for (const part of parts) { part.placement = pid; genAdd(part); }
+    obstacles.push(...parts);
+    invalidateRects();
+    const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+    buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
+    furnish(name, bb, parts.rooms);
+    return true;
+  }
+
+  /* Walk the map on a coarse lattice and take the first spot that will hold
+     this building, easing the clearance on each sweep. Deterministic: if a
+     gap exists at the loosest setting, this finds it. */
+  const SWEEP_STEP = 110;
+  function sweepFor(name) {
+    const sz = placedSize(name);
+    const lo = Terrain.BEACH_INSET;
+    for (const pad of [60, 34, 16]) {
+      // start the lattice at a different offset each sweep so a building that
+      // just missed on a cell boundary gets a second look half a cell over
+      const jx = (pad % 3) * (SWEEP_STEP / 3), jy = (pad % 2) * (SWEEP_STEP / 2);
+      for (let y = lo + jy; y < MAP_H - lo - sz.h; y += SWEEP_STEP) {
+        for (let x = lo + jx; x < MAP_W - lo - sz.w; x += SWEEP_STEP) {
+          const parts = placeBuilding(name, x, y, pad);
+          if (!parts.length) continue;
+          const bb = boundsOf(parts);
+          if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(pad, 30)))) continue;
+          if (landmarks.some(l => padOverlap(bb, l, Math.min(pad, 60)))) continue;
+          return commitRequired(name, parts, bb);
+        }
+      }
+    }
+    return false;
+  }
+
   let requiredPlacements = [];
+  /* why each required building's candidate spots were turned down, kept from
+     the last map build so a short map can be diagnosed instead of guessed at */
+  let requiredTally = {};
+  function tally(name, reason) {
+    const t2 = requiredTally[name] || (requiredTally[name] = { offMap: 0, terrain: 0, occupied: 0, spacing: 0, landmark: 0, placed: 0 });
+    t2[reason] = (t2[reason] || 0) + 1;
+  }
+
+  /* How big this building actually lands, so a position can be chosen with
+     room for it. Blueprints grow from their origin rightwards and downwards,
+     so sampling an origin uniformly across the map means every spot within a
+     footprint's width of the right or bottom edge is a guaranteed rejection —
+     a dead band that got wider as the buildings did, and quietly ate most of
+     the attempt budget the required pass had to work with. */
+  const sizeCache = {};
+  function placedSize(name) {
+    if (!sizeCache[name]) {
+      const parts = Structures.place(name, 0, 0);
+      sizeCache[name] = parts.length ? boundsOf(parts) : { w: 0, h: 0 };
+    }
+    return sizeCache[name];
+  }
+
+  /* a uniform spot that leaves room for the whole building */
+  function fittingSpot(name) {
+    const sz = placedSize(name);
+    const lo = Terrain.BEACH_INSET;
+    return {
+      x: rand(lo, Math.max(lo + 1, MAP_W - lo - sz.w)),
+      y: rand(lo, Math.max(lo + 1, MAP_H - lo - sz.h)),
+    };
+  }
 
   /* Somewhere inside the band this building belongs in. The angle is free —
      only the distance from the middle is constrained — so a ring reads as a
@@ -1005,16 +1329,20 @@ const Game = (() => {
     const maxR = Math.min(cx, cy) - Terrain.BEACH_INSET;
     const r = (band[0] + Math.random() * (band[1] - band[0])) * maxR;
     const a2 = Math.random() * Math.PI * 2;
+    const sz = placedSize(name);
     return {
-      x: clamp(cx + Math.cos(a2) * r, Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET),
-      y: clamp(cy + Math.sin(a2) * r, Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET),
+      x: clamp(cx + Math.cos(a2) * r, Terrain.BEACH_INSET, Math.max(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET - sz.w)),
+      y: clamp(cy + Math.sin(a2) * r, Terrain.BEACH_INSET, Math.max(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET - sz.h)),
     };
   }
 
   function placeBuildingsProcedural(count) {
     const placed = [];
     const seen = {};
-    let guard = count * 60;
+    /* Bigger buildings mean more candidate positions are rejected, so the
+       same budget of attempts finished short of `count` and the map lost the
+       kinds that hadn't come up yet. */
+    let guard = count * 95;
     while (placed.length < count && guard-- > 0) {
       // Early on, favour a type that hasn't appeared yet. Pure weighted rolling
       // leaves a small map with only three or four kinds on it; this guarantees
@@ -1033,16 +1361,24 @@ const Game = (() => {
         : categoryName || rollMix(BUILDING_MIX);
       // most of the time in its own band; occasionally anywhere, so a crowded
       // ring doesn't starve the map of that kind of building entirely
-      const spot = Math.random() < 0.82 ? ringSpot(name) : {
-        x: rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET),
-        y: rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET),
-      };
-      const parts = placeBuilding(name, spot.x, spot.y);
+      /* Breathing room, in px of empty ground between two footprints — and it
+         relaxes as the budget runs down, exactly as the required pass does.
+         Held at a flat 112 this pass was placing about three buildings a map:
+         the required buildings, the team bases and the landmarks take their
+         ground first, and what is left of a map is gaps rather than fields.
+         Three placements is too few rolls for the mix to mean anything, and
+         the rarer entries in it — the garage, the workshop, the filling
+         station — went whole runs of maps without ever being built. */
+      const easing = guard < count * 20 ? (guard < count * 8 ? 2 : 1) : 0;
+      const pad = [120, 78, 48][easing];
+      const gap = [112, 74, 46][easing];
+      const spot = (Math.random() < 0.82 && !easing) ? ringSpot(name) : fittingSpot(name);
+      const parts = placeBuilding(name, spot.x, spot.y, pad);
       if (!parts.length) continue;
       const bb = boundsOf(parts);
-      if (placed.some(b => padOverlap(bb, b, 130))) continue;          // breathing room
-      if (requiredPlacements.some(b => padOverlap(bb, b, 130))) continue;
-      if (landmarks.some(l => padOverlap(bb, l, 200))) continue;       // don't crowd a landmark
+      if (placed.some(b => padOverlap(bb, b, gap))) continue;
+      if (requiredPlacements.some(b => padOverlap(bb, b, gap))) continue;
+      if (landmarks.some(l => padOverlap(bb, l, easing ? 120 : 200))) continue;
       placed.push(bb);
       seen[name] = (seen[name] || 0) + 1;
       const pid = 'p' + placed.length;
@@ -1065,6 +1401,7 @@ const Game = (() => {
       const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
       const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
       if (!Terrain.isSpawnable(terrain, x, y)) continue;
+      if (insideAnyBuilding(x, y, 12)) continue;      // cover belongs outside, not in a corridor
       const len = 3 + Math.random() * 6;
       const axis = Math.random() < 0.5 ? 'h' : 'v';
       const th = type === 'metal' ? 0.6 : type === 'wire' ? 0.4 : type === 'sandbag' ? 0.5 : 0.3;
@@ -1107,6 +1444,7 @@ const Game = (() => {
       const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
       if (!Terrain.isSpawnable(terrain, x, y)) continue;
       if (Terrain.onRoad(terrain, x, y)) continue;
+      if (insideAnyBuilding(x, y, 10)) continue;      // not in somebody's hallway
       const scale = 0.8 + Math.random() * 0.45;
       const size = type === 'tree' ? 64 : type === 'container' ? 76 : type === 'bush' ? 56 : 46;
       const pr = Structures.prop(type, x, y, size, scale);
@@ -2053,7 +2391,10 @@ const Game = (() => {
      walking up to the same gold crate both used to get a legendary out of it,
      because each of them opened their own private copy. Position in the list
      is the name both ends use, exactly as with the walls. */
-  const netCrates = () => crates.map(c => ({ x: c.x, y: c.y, tier: c.tier, needs: c.needs || null }));
+  const netCrates = () => crates.map(c => ({
+    x: c.x, y: c.y, tier: c.tier, needs: c.needs || null,
+    look: c.look || null, rot: c.rot || 0,
+  }));
   /* The hulls parked on the map — garage jeeps, a camp's car park. They belong
      to nobody until somebody climbs in, which is what makes crossing the map
      for a parking lot worth doing, and online that was worth nothing at all:
@@ -2601,7 +2942,11 @@ const Game = (() => {
     // is final rather than trusting where they were put.
     for (const c of pendingIndoorCrates) {
       if (pointInObstacle(c.x, c.y)) continue;
-      crates.push({ x: c.x, y: c.y, tier: c.tier, opened: false, indoors: true, room: c.room, needs: c.needs });
+      crates.push({
+        x: c.x, y: c.y, tier: c.tier, opened: false, indoors: true, room: c.room, needs: c.needs,
+        // searchable furniture draws as itself rather than as a box
+        look: c.look || null, rot: c.rot || 0,
+      });
     }
     /* Garages and car parks come with hulls in them. They belong to nobody
        until someone climbs in, which is what makes a camp's parking lot worth
@@ -2635,9 +2980,13 @@ const Game = (() => {
       return;
     }
     c.opened = true;
-    grantLoot(Items.rollLoot(c.tier));
+    /* A chest pays out several times over; a locker you have rifled through
+       pays out once and quietly. */
+    const pay = Items.payoutFor(c.tier);
+    for (let i = 0; i < pay.rolls; i++) grantLoot(Items.rollLoot(c.tier));
     // a Scavenger finds the thing at the bottom of the box
     if (Perks.has(player, 'scavenger')) grantLoot(Items.rollLoot(c.tier));
+    if (c.tier === 'chest') hudMsg('Chest opened');
     SFX.reward();
   }
   function grantLoot(entry) {
@@ -4119,14 +4468,18 @@ const Game = (() => {
     }
 
     drawBasements();   // cellar floors, below everything
-    drawFloors();      // building interiors, under everything inside them
-    drawInteriorLight();   // and how well lit they are
+    perfMark('floors', drawFloors);        // building interiors, under everything in them
+    perfMark('light', drawInteriorLight);  // and how well lit they are
     drawBasementLight();
     // decor sits on the ground, under the walls and everyone
-    drawDecor();
+    perfMark('decor', drawDecor);
     // every shadow in one pass, then the things that cast them
-    drawStructureShadows();
-    for (const o of obstacles) if (rectOnScreen(o)) drawStructure(o);
+    perfMark('structShadows', drawStructureShadows);
+    perfMark('structures', () => {
+      let n = 0;
+      for (const o of obstacles) if (rectOnScreen(o)) { drawStructure(o); n++; }
+      perfCount('structuresDrawn', n);
+    });
 
     drawCratesAndDeployables();
     drawDrops();
@@ -4252,7 +4605,7 @@ const Game = (() => {
     ctx.globalAlpha = 1;
 
     drawBuildingShadows();   // the roofs' own shadows, under them
-    drawRoofs();    // roofs hide interiors until you step inside
+    perfMark('roofs', drawRoofs);   // roofs hide interiors until you step inside
     drawSmokes();   // smoke sits above units to obscure them
 
     ctx.restore();
@@ -4275,7 +4628,7 @@ const Game = (() => {
     }
 
     drawTacticalHud();
-    drawSightShadows();   // hide what the walls are standing in front of
+    perfMark('sight', drawSightShadows);   // hide what the walls stand in front of
     drawSoundPings();
     drawMinimap();
     drawKillFeed();
@@ -4665,6 +5018,53 @@ const Game = (() => {
   }
   let basements = [];
 
+  /* A lamp's glow is the same gradient wherever it stands, so build one per
+     radius and move it into place rather than constructing two gradients per
+     lamp per frame. A canvas gradient is fixed in the space it was made in, so
+     these are made about the origin and the context is translated to the lamp.
+
+     Interiors got busier — more rooms means more lamps — and this pass was
+     rebuilding a couple of hundred gradient objects every frame, which cost
+     about ten frames a second on a map full of lit buildings. */
+  const lampGrads = new Map();
+  function lampGradient(r, warm) {
+    const key = (warm ? 'w' : 'c') + Math.round(r);
+    let g = lampGrads.get(key);
+    if (!g) {
+      g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+      if (warm) {
+        g.addColorStop(0, 'rgba(255,206,120,0.20)');
+        g.addColorStop(1, 'rgba(255,206,120,0)');
+      } else {
+        g.addColorStop(0, 'rgba(0,0,0,1)');
+        g.addColorStop(0.55, 'rgba(0,0,0,0.72)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+      }
+      lampGrads.set(key, g);
+    }
+    return g;
+  }
+  /* Is any of this lamp's glow on screen? A big building can be half off the
+     edge with most of its lamps out of view, and those were all being drawn. */
+  function lightOnScreen(o) {
+    const r = o.lightR;
+    return o.x + o.w + r > camX && o.x - r < camX + W / zoom
+      && o.y + o.h + r > camY && o.y - r < camY + H / zoom;
+  }
+
+  /* Per-pass frame timing, off unless someone asks for it. Frame rate on its
+     own tells you the map got heavier; it does not tell you which pass to
+     look at, and the two answers are rarely the same. */
+  let perfOn = false;
+  const perfAcc = {};
+  function perfMark(name, fn) {
+    if (!perfOn) { fn(); return; }
+    const t = performance.now();
+    fn();
+    perfAcc[name] = (perfAcc[name] || 0) + (performance.now() - t);
+  }
+  function perfCount(name, n) { if (perfOn) perfAcc[name] = (perfAcc[name] || 0) + n; }
+
   function drawInteriorLight() {
     for (const b of buildings) {
       if (!b.floor || !rectOnScreen(b)) continue;
@@ -4678,23 +5078,22 @@ const Game = (() => {
          instead of a wash. */
       ctx.globalCompositeOperation = 'destination-out';
       for (const o of lightsIn(b)) {
-        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
-        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, o.lightR);
-        g.addColorStop(0, 'rgba(0,0,0,1)');
-        g.addColorStop(0.55, 'rgba(0,0,0,0.72)');
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(cx, cy, o.lightR, 0, Math.PI * 2); ctx.fill();
+        if (!lightOnScreen(o)) continue;
+        ctx.save();
+        ctx.translate(o.x + o.w / 2, o.y + o.h / 2);
+        ctx.fillStyle = lampGradient(o.lightR, false);
+        ctx.beginPath(); ctx.arc(0, 0, o.lightR, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
       }
       ctx.globalCompositeOperation = 'source-over';
       // and a warm tint where they are, so a lamp reads as a lamp
       for (const o of lightsIn(b)) {
-        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
-        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, o.lightR);
-        g.addColorStop(0, 'rgba(255,206,120,0.20)');
-        g.addColorStop(1, 'rgba(255,206,120,0)');
-        ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(cx, cy, o.lightR, 0, Math.PI * 2); ctx.fill();
+        if (!lightOnScreen(o)) continue;
+        ctx.save();
+        ctx.translate(o.x + o.w / 2, o.y + o.h / 2);
+        ctx.fillStyle = lampGradient(o.lightR, true);
+        ctx.beginPath(); ctx.arc(0, 0, o.lightR, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
       }
       ctx.restore();
     }
@@ -4958,14 +5357,37 @@ const Game = (() => {
       if (!onScreen(c.x, c.y, 40)) continue;
       const st = Items.CRATE_STYLE[c.tier];
       ctx.globalAlpha = c.opened ? 0.3 : 1;
-      roundRect(c.x - 15, c.y - 15, 30, 30, 6);
+      /* Searchable furniture is a crate wearing a locker's clothes. It draws
+         as the thing it is rather than as a box, because a room full of boxes
+         labelled "locker" is not a furnished room — but it rides the same
+         synced pipeline as every other crate, so the room decides who got
+         there first exactly as it does for a gold crate. */
+      if (c.look) {
+        const m = Sprites.META[c.look] || { r: 20 };
+        Sprites.draw(ctx, c.look, c.x, c.y, 1, c.rot || 0);
+        if (!c.opened) {
+          // a searched-through look: a glint, so you can tell it from scenery
+          ctx.beginPath(); ctx.arc(c.x + m.r * 0.55, c.y - m.r * 0.55, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255,224,150,0.9)'; ctx.fill();
+          if (near2(player, c, 95)) {
+            ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('[E] Search', c.x, c.y - m.r - 14);
+          }
+        }
+        ctx.globalAlpha = 1;
+        continue;
+      }
+      const half = c.tier === 'chest' ? 20 : 15;
+      roundRect(c.x - half, c.y - half, half * 2, half * 2, 6);
       ctx.fillStyle = c.opened ? '#37456b' : hexA(st.color, 0.95); ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = st.color; ctx.stroke();
+      ctx.lineWidth = c.tier === 'chest' ? 3 : 2; ctx.strokeStyle = st.color; ctx.stroke();
       if (!c.opened) {
-        ctx.font = '18px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.font = (c.tier === 'chest' ? '23px' : '18px') + ' Segoe UI';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(st.icon, c.x, c.y + 1);
         // interact prompt when player is close
-        if (near2(player, c, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI'; ctx.fillText('[E] ' + st.name, c.x, c.y - 26); }
+        if (near2(player, c, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI'; ctx.fillText('[E] ' + st.name, c.x, c.y - half - 11); }
       }
       ctx.globalAlpha = 1;
     }
@@ -6602,6 +7024,174 @@ const Game = (() => {
         if (a2.flankBias !== undefined && Math.abs(a2.flankBias) > 0.3) flanking = true;
       }
       return { remembering, takingCover, flanking, inContact, exposed };
+    },
+    vehicleDoors: () => obstacles.filter(o => o.type === 'garage-door').length,
+    /* Where the loot ended up, and whether the new routes exist. */
+    lootLayout() {
+      const byTier = crates.reduce((m, c) => { m[c.tier] = (m[c.tier] || 0) + 1; return m; }, {});
+      const furn = decor.filter(d => d.indoors);
+      const searchable = crates.filter(c => c.look);
+      let near = 0, indoor = 0;
+      for (const c of crates) {
+        if (!c.indoors || c.look) continue;
+        indoor++;
+        // "with the decor" means within a body's width of a piece of furniture,
+        // whether that is a shelf or another searchable piece
+        const close = (q) => dist2(q.x, q.y, c.x, c.y) < 78 * 78;
+        if (furn.some(close) || searchable.some(close)) near++;
+      }
+      const rooms = [].concat(...buildings.map(b => b.rooms || []));
+      return {
+        byTier,
+        chests: byTier.chest || 0,
+        searchable: searchable.length,
+        searchableLooks: [...new Set(searchable.map(c => c.look))],
+        nearFurniture: near, indoor,
+        tunnels: rooms.filter(r => r.kind === 'tunnel').length,
+        passages: rooms.filter(r => r.kind === 'passage').length,
+        hatches: obstacles.filter(o => o.hatch).length,
+      };
+    },
+    /* How much one crate is worth against one chest, counted in items granted
+       rather than inferred from the tables. */
+    payoutTest() {
+      const real = grantLoot;
+      let n = 0;
+      grantLoot = () => { n++; };
+      try {
+        n = 0; openCrate({ tier: 'regular', opened: false }); const crate = n;
+        n = 0; openCrate({ tier: 'chest', opened: false }); const chest = n;
+        return { crate, chest };
+      } finally { grantLoot = real; }
+    },
+    /* Walk to the nearest searchable piece of furniture and search it. */
+    searchNearestFurniture() {
+      let best = null, bd = Infinity;
+      for (const c of crates) {
+        if (!c.look || c.opened) continue;
+        const d = dist2(player.x, player.y, c.x, c.y);
+        if (d < bd) { bd = d; best = c; }
+      }
+      if (!best) return null;
+      const real = grantLoot;
+      let got = null;
+      grantLoot = (entry) => { got = entry.label; };
+      try { openCrate(best); } finally { grantLoot = real; }
+      return got;
+    },
+    /* Time each render pass over `frames` frames, in ms per frame. */
+    perf(frames) {
+      return new Promise((resolve) => {
+        for (const k in perfAcc) delete perfAcc[k];
+        perfOn = true;
+        let n = 0;
+        const step = () => {
+          if (++n >= (frames || 120)) {
+            perfOn = false;
+            const out = {};
+            for (const k in perfAcc) out[k] = +(perfAcc[k] / n).toFixed(2);
+            out.obstacles = obstacles.length;
+            resolve(out);
+            return;
+          }
+          requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      });
+    },
+    /* Every rect that can stop a body, for comparing one tab's world against
+       another's. */
+    solidWorld: () => obstacles.filter(o => !o.dead && Structures.blocksMove(o))
+      .map(o => ({ x: o.x, y: o.y, w: o.w, h: o.h })),
+    /* Is this point inside something solid? Used to check that a test's
+       hard-coded coordinate is still standing on clear ground. */
+    blockedAt: (x, y) => pointInObstacle(x, y),
+    /* Did the furniture end up where furniture goes? */
+    decorPlacement() {
+      const inside = (d) => buildings.find(b => d.x >= b.x && d.x <= b.x + b.w && d.y >= b.y && d.y <= b.y + b.h);
+      const roomOf = (d) => {
+        const b = inside(d);
+        if (!b) return null;
+        return (b.rooms || []).find(r => d.x >= r.x && d.x <= r.x + r.w && d.y >= r.y && d.y <= r.y + r.h);
+      };
+      const res = { total: 0, wallOk: 0, wallTotal: 0, cornerOk: 0, cornerTotal: 0, chairOk: 0, chairTotal: 0, square: 0 };
+      const tables = decor.filter(d => d.indoors && (d.kind === 'table' || d.kind === 'desk'));
+      for (const d of decor) {
+        if (!d.indoors) continue;
+        res.total++;
+        // square to the room: a right-angle multiple, within a degree
+        const q = Math.abs(((d.rot || 0) % (Math.PI / 2) + Math.PI / 2) % (Math.PI / 2));
+        if (q < 0.02 || Math.PI / 2 - q < 0.02) res.square++;
+        const r = roomOf(d);
+        if (!r) continue;
+        const m = Sprites.META[d.kind] || { r: 16 };
+        const near = m.r + 14;
+        const dW = d.x - r.x, dE = r.x + r.w - d.x, dN = d.y - r.y, dS = r.y + r.h - d.y;
+        const touchesWall = Math.min(dW, dE, dN, dS) <= near;
+        const inCorner = Math.min(dW, dE) <= near && Math.min(dN, dS) <= near;
+        const how = PLACEMENT[d.kind];
+        if (how === 'wall') { res.wallTotal++; if (touchesWall) res.wallOk++; }
+        if (how === 'corner') { res.cornerTotal++; if (inCorner) res.cornerOk++; }
+        /* A chair is placed if it is pulled up to a table or stood against a
+           wall. A bedroom has a chair and no table, and that chair belongs by
+           the wall — counting it as misplaced would be measuring the wrong
+           thing. */
+        if (how === 'byTable') {
+          res.chairTotal++;
+          if (tables.some(t => dist2(t.x, t.y, d.x, d.y) < 90 * 90) || touchesWall) res.chairOk++;
+        }
+      }
+      return res;
+    },
+    /* Why did a required building come up short? Every candidate spot the
+       generator turned down, bucketed by the reason it said no — "the map is
+       full" told apart from "the terrain won't have it". */
+    requiredReport: () => requiredTally,
+    tidy() {
+      const halls = [];
+      let postsInCentre = 0;
+      for (const b of buildings) {
+        for (const r of b.rooms || []) {
+          if (r.kind !== 'hall') continue;
+          // walk the corridor and find the narrowest gap a body could pass
+          let clear = Math.min(r.w, r.h);
+          const along = r.w >= r.h;
+          const steps = 24;
+          for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const cx = along ? r.x + r.w * t : r.x + r.w / 2;
+            const cy = along ? r.y + r.h / 2 : r.y + r.h * t;
+            // widest free span across the corridor at this point
+            let span = 0, best = 0;
+            const across = along ? r.h : r.w;
+            for (let k = 0; k <= 20; k++) {
+              const u = k / 20;
+              const px = along ? cx : r.x + r.w * u;
+              const py = along ? r.y + r.h * u : cy;
+              if (pointInObstacle(px, py)) { span = 0; } else { span += across / 20; best = Math.max(best, span); }
+            }
+            clear = Math.min(clear, best);
+          }
+          halls.push({ building: b.name, w: Math.round(r.w), h: Math.round(r.h), clear: Math.round(clear) });
+          // a post within a fifth of the corridor's centreline is in the way
+          for (const o of obstacles) {
+            if (o.type !== 'post' && o.type !== 'pillar') continue;
+            const ox2 = o.x + o.w / 2, oy2 = o.y + o.h / 2;
+            if (ox2 < r.x || ox2 > r.x + r.w || oy2 < r.y || oy2 > r.y + r.h) continue;
+            const off = along ? Math.abs(oy2 - (r.y + r.h / 2)) / (r.h / 2)
+              : Math.abs(ox2 - (r.x + r.w / 2)) / (r.w / 2);
+            if (off < 0.35) postsInCentre++;
+          }
+        }
+      }
+      const yardProps = obstacles.filter(o => o.isProp && o.building).length;
+      const looseOutdoor = obstacles.filter(o => o.isProp && !o.building).length;
+      const mean = (f) => Math.round(buildings.reduce((t2, b) => t2 + f(b), 0) / Math.max(1, buildings.length));
+      return {
+        count: buildings.length, meanW: mean(b => b.w), meanH: mean(b => b.h),
+        halls, postsInCentre, yardProps, looseOutdoor,
+        prevLooseEstimate: Math.round(looseOutdoor * 120 / 78),
+      };
     },
     secrets: () => obstacles.filter(o => o.secret)
       .map(o => ({ x: o.x + o.w / 2, y: o.y + o.h / 2, hides: o.hides, found: !!o.found })),

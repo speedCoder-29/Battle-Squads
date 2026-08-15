@@ -94,6 +94,16 @@ const Structures = (() => {
       fill: '#3d5070', stroke: 'rgba(220,235,255,0.95)',
       effect: 'Opens and closes · bullets ricochet for 50%',
     },
+    /* A vehicle-width roller door. Wide enough to drive a jeep through, which
+       is what makes a garage a garage rather than a room with a car in it —
+       and wide enough that it is a real opening in a wall, so a garage reads
+       as a way into the building and not just a place to loot. */
+    'garage-door': {
+      name: 'Garage Door', height: 'high', tableHp: 60, toughness: 2, door: true,
+      bullets: 'pen', lossPerM: 1.6, defThickness: 0.4, defLength: 5,
+      fill: '#8a939c', stroke: 'rgba(225,238,250,0.9)',
+      effect: 'Opens and closes · wide enough for a vehicle',
+    },
     rwall: {
       name: 'Reinforced Wall', height: 'high', tableHp: 10, toughness: 5,
       bullets: 'reflect',
@@ -411,7 +421,9 @@ const Structures = (() => {
     bathroom:       { name: 'Bathroom',        crates: [['regular', 1]] },
     bedroom:        { name: 'Bedroom',         crates: [['regular', 1]] },
     kitchen:        { name: 'Kitchen',         crates: [['regular', 3]] },
-    safe:           { name: 'Safe',            crates: [['gold', 1]] },
+    safe:           { name: 'Safe',            crates: [['chest', 1]] },
+    tunnel:         { name: 'Tunnel',          crates: [['regular', 2], ['silver', 1]] },
+    passage:        { name: 'Service Passage', crates: [['regular', 1]] },
     dining:         { name: 'Dining Room',     crates: [] },
     pool:           { name: 'Swimming Pool',   crates: [['silver', 1]], needs: 'diver' },
     garage:         { name: 'Garage',          crates: [['regular', 2]], vehicles: [['jeep', 1]] },
@@ -464,13 +476,13 @@ const Structures = (() => {
     staffRoom:      { name: 'Staff Room',      crates: [['silver', 1]] },
     gym:            { name: 'Gymnasium',       crates: [['regular', 2]] },
     bunkroom:       { name: 'Bunk Room',       crates: [['regular', 2]] },
-    armoury:        { name: 'Armoury',         crates: [['gold', 1]] },
+    armoury:        { name: 'Armoury',         crates: [['chest', 1], ['regular', 1]] },
     cell:           { name: 'Cell',            crates: [['regular', 1]] },
     guardRoom:      { name: 'Guard Room',      crates: [['silver', 1]] },
     apartment:      { name: 'Apartment',       crates: [['regular', 2]] },
     stall:          { name: 'Market Stall',    crates: [['regular', 2]] },
     office:         { name: 'Office',          crates: [['regular', 1]] },
-    strongroom:     { name: 'Strongroom',      crates: [['gold', 1]] },
+    strongroom:     { name: 'Strongroom',      crates: [['chest', 1]] },
     storeroom:      { name: 'Storeroom',       crates: [['regular', 3]] },
     workbay:        { name: 'Work Bay',        crates: [['regular', 2]] },
     controlRoom:    { name: 'Control Room',    crates: [['silver', 1]] },
@@ -512,14 +524,21 @@ const Structures = (() => {
 
   /* `doors` are offsets in px along the run where a gap goes. `doorType` fills
      the gap with something openable; leave it out for an open archway. */
+  /* A door may be given as a bare offset, or as { at, type } when that one
+     opening wants to be something other than the run's default — a strongroom
+     off an ordinary corridor should be behind a reinforced door, not the same
+     plywood one as the broom cupboard. */
   function partition(type, x, y, lengthPx, axis, thickness, doors, doorType) {
     const out = [];
-    const stops = (doors || []).slice().sort((a, b) => a - b);
+    const stops = (doors || [])
+      .map(d => (typeof d === 'number' ? { at: d, type: doorType }
+        : { at: d.at, type: d.type === undefined ? doorType : d.type }))
+      .sort((a, b) => a.at - b.at);
     let cursor = 0;
     for (const d of stops) {
-      const start = Math.max(0, Math.min(lengthPx - DOORWAY, d - DOORWAY / 2));
+      const start = Math.max(0, Math.min(lengthPx - DOORWAY, d.at - DOORWAY / 2));
       if (start - cursor > 6) out.push(runAt(type, x, y, axis, cursor, start - cursor, thickness));
-      if (doorType) out.push(runAt(doorType, x, y, axis, start, DOORWAY, 0.3));
+      if (d.type) out.push(runAt(d.type, x, y, axis, start, DOORWAY, 0.3));
       cursor = start + DOORWAY;
     }
     if (lengthPx - cursor > 6) out.push(runAt(type, x, y, axis, cursor, lengthPx - cursor, thickness));
@@ -558,6 +577,209 @@ const Structures = (() => {
     }
     return { parts, cells };
   }
+  /* ---------- how big a room ought to be ----------
+     Real floor plans size a room by what happens in it, and the numbers are
+     well established: a bedroom is about 3.0 x 3.6m, a living room 5.4 x 7.2m,
+     a bathroom can be as little as 1.5 x 2.0m, a two-car garage is 6 x 6m, and
+     a corridor only has to be wide enough to walk down. Dividing a footprint
+     into equal cells — which is what roomGrid does — gives a bathroom the same
+     floor as a ballroom, and the result reads as a spreadsheet rather than a
+     building.
+
+     Sizes are in metres, [short, long]. PX_PER_M converts. They are treated as
+     proportions rather than absolutes: a plan scales them to fill the space it
+     actually has, so the relative sense of a room — that a pantry is small and
+     a hall is big — survives whatever footprint it ends up in. */
+  const ROOM_SIZE = {
+    bathroom: [1.5, 2.0], washroom: [2.4, 4.0], pantry: [1.6, 2.4],
+    bedroom: [3.0, 3.6], bunkroom: [3.4, 5.0], apartment: [3.6, 5.4],
+    kitchen: [3.0, 4.0], backKitchen: [3.6, 5.0], dining: [3.6, 4.8],
+    living: [5.4, 7.2], lounge: [4.5, 6.0], foyer: [2.4, 3.6],
+    lobby: [4.8, 7.2], diningLobby: [5.4, 8.0], hall: [1.6, 12.0],
+    study: [3.0, 3.6], office: [3.0, 3.6], staffRoom: [3.6, 4.5],
+    classroom: [5.4, 7.2], ward: [3.6, 6.0], surgery: [4.0, 5.0],
+    dispensary: [2.4, 3.6], cell: [2.0, 2.6], guardRoom: [3.0, 4.0],
+    armoury: [3.6, 5.0], opsRoom: [4.5, 6.0], briefing: [5.0, 7.0],
+    mess: [5.4, 8.0], radioRoom: [3.0, 3.6], motorPool: [6.0, 9.0],
+    watchPost: [2.4, 3.0], controlRoom: [3.6, 4.5], storeroom: [3.0, 4.5],
+    workbay: [4.5, 6.0], garage: [6.0, 6.0], gym: [5.4, 8.0],
+    safe: [2.4, 2.4], strongroom: [3.0, 3.6], stall: [2.4, 3.0],
+    displayHall: [5.4, 9.0], gunExhibit: [4.0, 6.0], mainExhibit: [6.0, 10.0],
+    lodge: [4.0, 5.4], barn: [6.0, 9.0], tent: [2.4, 2.4], plane: [4.0, 12.0],
+  };
+  const DEFAULT_ROOM = [3.6, 4.5];
+  /* A room narrower than this is a cupboard. It is also the floor under every
+     room's size, so it has to stay below the smallest room that legitimately
+     exists: at 74 a 1.5m bathroom was being clamped up to the size of a
+     kitchen, which inverted the one size relationship anybody would notice. */
+  const MIN_ROOM = 62;
+
+  /* Rooms whose door is part of what the room is. A strongroom behind a
+     plywood door isn't a strongroom, and a cell you can kick open isn't a
+     cell — so these get a reinforced one wherever they are laid out. */
+  const SECURE_DOOR = {
+    safe: 'rdoor', strongroom: 'rdoor', armoury: 'rdoor', cell: 'rdoor',
+    controlRoom: 'rdoor', radioRoom: 'rdoor',
+  };
+
+  /* the extent this room wants along a strip `depth` px deep */
+  function roomExtent(kind, depth) {
+    const s = ROOM_SIZE[kind] || DEFAULT_ROOM;
+    const short = Math.min(s[0], s[1]) * PX_PER_M, long = Math.max(s[0], s[1]) * PX_PER_M;
+    // lay the room down the way it fits: if the strip is deep enough to take
+    // its long side across, it only needs its short side along
+    return Math.max(MIN_ROOM, depth >= long * 0.85 ? short : long);
+  }
+
+  /* ---------- floor plans ----------
+     A building described as the rooms it contains rather than as the walls
+     that happen to be in it.
+
+     Blueprints used to hand-place a wall run, then separately declare a `room`
+     rect for the loot pass to fill — and nothing checked that the two agreed.
+     They frequently didn't: the house declared its living room and one of its
+     bedrooms at exactly the same rectangle, and its foyer overlapped its
+     bathroom, because the rects were eyeballed against walls placed earlier.
+     A room that doesn't match its walls is a room you can't tell you're in.
+
+     `floorPlan` takes one description and derives all three from it — the
+     dividing walls, the rects the loot and lighting passes use, and a door
+     from every room onto the corridor. They agree by construction. Rooms are
+     sized against ROOM_SIZE, so a plan of "bathroom, bedroom, living room"
+     produces a small one, a middling one and a big one rather than three
+     identical thirds.
+
+     opts:
+       corridor  { axis:'h'|'v', width } — the spine, centred by `at` (0..1)
+       a, b      the room kinds either side of it (a = north/west)
+       type      wall type, thickness, doorType as elsewhere */
+  function floorPlan(type, ox, oy, w, h, opts = {}) {
+    const th = opts.thickness || 0.22;
+    const doorType = opts.doorType === null ? null : (opts.doorType || 'door');
+    const co = opts.corridor || { axis: 'h', width: 88 };
+    const horiz = co.axis === 'h';
+    const at = co.at === undefined ? 0.5 : co.at;
+    const inset = opts.inset === undefined ? 10 : opts.inset;
+    const parts = [], rooms = [], garages = [];
+
+    // `along` runs down the corridor, `across` is perpendicular to it
+    const run = horiz ? w : h;
+    const across = horiz ? h : w;
+    /* A corridor has to stay walkable once it has been lit and furnished: a
+       body is 30px and the walls eat some of the nominal width, so anything
+       under this is a passage you get stuck in rather than one you move
+       through. */
+    const cw = Math.max(88, Math.min(co.width, across - MIN_ROOM * 2));
+    const mid = across * at;
+    const aDepth = Math.max(0, mid - cw / 2);
+    const bStart = mid + cw / 2;
+    const bDepth = Math.max(0, across - bStart);
+    // (along, across) -> world
+    const P = (a, b) => (horiz ? { x: ox + a, y: oy + b } : { x: ox + b, y: oy + a });
+
+    /* Lay one band out along the run, each room sized by what it is for.
+       Returns the offsets its doors want in the corridor wall. */
+    const layBand = (kinds, bandAt, depth, outerSide, filler) => {
+      const doors = [];
+      if (!kinds || !kinds.length || depth < MIN_ROOM) return doors;
+      kinds = kinds.slice();
+      const usable = run - inset * 2;
+      const sum = () => kinds.reduce((t, k) => t + roomExtent(k, depth), 0);
+      /* A band with a lot of run and few rooms in it has to stretch them, and
+         past a point that stops looking like a bigger house and starts looking
+         like a bathroom the size of a ballroom — it also makes the two sides of
+         the corridor disagree, so a kitchen on the crowded side ends up smaller
+         than a bathroom on the empty one. A real building solves a long side by
+         putting another room on it, so that is what this does. */
+      const fill = filler || 'storeroom';
+      while (usable / sum() > 1.6 && kinds.length < 9) kinds.push(fill);
+      const want = kinds.map(k => roomExtent(k, depth));
+      const total = want.reduce((t, v) => t + v, 0);
+      const k2 = usable / total;                 // fill the run, keep the ratios
+      let cursor = inset;
+      kinds.forEach((kind, i) => {
+        const ext = want[i] * k2;
+        // the wall that closes this room off from the one before it
+        if (i > 0) {
+          const p = P(cursor, bandAt);
+          parts.push(...partition(type, p.x, p.y, depth, horiz ? 'v' : 'h', th, [], null));
+        }
+        const p0 = P(cursor, bandAt);
+        rooms.push(horiz
+          ? room(kind, p0.x + 8, p0.y + 8, ext - 16, depth - 16)
+          : room(kind, p0.x + 8, p0.y + 8, depth - 16, ext - 16));
+        doors.push({ at: cursor + ext / 2, type: SECURE_DOOR[kind] || doorType });
+        /* A garage opens to the outside as well as to the house: a roller door
+           through the shell wall in front of it, wide enough to drive through.
+           The caller punches it, because the shell is the caller's to build. */
+        if (kind === 'garage') {
+          const len = Math.min(ext - 30, 200);
+          if (len > 90) garages.push({ side: outerSide, at: cursor + ext / 2 - len / 2, len: len / PX_PER_M, type: 'garage-door' });
+        }
+        cursor += ext;
+      });
+      return doors;
+    };
+
+    /* ---------- the service passage ----------
+       A narrow way along the back of one band, behind the rooms, joining the
+       two ends of the building without going down the main corridor.
+
+       A building with a single spine is a building with a single approach:
+       whoever holds the middle of it holds all of it, and the only way to the
+       far end is to walk the length of their sightline. A back passage gives
+       the place a second route, which is what turns holding a building into a
+       decision rather than a formality — the flanking path that room-and-
+       corridor layouts in real level design always have.
+
+       It is taken out of the depth of a band rather than added to the
+       footprint, so the building does not grow to get one — which means it
+       has to be measured out before the rooms are, or the rooms are laid at
+       the full depth and the passage is cut straight through them. */
+    const sideA = horiz ? 'n' : 'w', sideB = horiz ? 's' : 'e';
+    let passage = null, aAt = 0, aD = aDepth, bAt = bStart, bD = bDepth;
+    const pw = opts.passageWidth || 72;
+    const onA = opts.passage === 'a';
+    if (opts.passage && (onA ? aDepth : bDepth) > MIN_ROOM + pw) {
+      if (onA) { aAt = pw; aD = aDepth - pw; } else { bD = bDepth - pw; }
+      const at = onA ? 0 : across - pw;
+      const inner = onA ? pw : across - pw;
+      const c0 = P(0, inner);
+      /* Doors at the ends only. A passage you can step into from every room it
+         runs behind is just a wider room; two ways in, at the far corners, is
+         a route you have to commit to. */
+      parts.push(...partition(type, c0.x, c0.y, run, horiz ? 'h' : 'v', th,
+        [inset + 60, run - inset - 60], doorType));
+      const p0 = P(inset, at);
+      passage = horiz
+        ? { x: p0.x, y: p0.y + 8, w: run - inset * 2, h: pw - 16 }
+        : { x: p0.x + 8, y: p0.y, w: pw - 16, h: run - inset * 2 };
+    }
+
+    const doorsA = layBand(opts.a, aAt, aD, sideA, opts.fillA);
+    const doorsB = layBand(opts.b, bAt, bD, sideB, opts.fillB);
+    if (passage) rooms.push(room('passage', passage.x, passage.y, passage.w, passage.h));
+
+    /* The corridor itself: a wall each side with a doorway opposite the middle
+       of every room, so every room the plan lays out has a way in. */
+    const cA = P(0, aDepth), cB = P(0, bStart);
+    if (aDepth >= MIN_ROOM) parts.push(...partition(type, cA.x, cA.y, run, horiz ? 'h' : 'v', th, doorsA, doorType));
+    if (bDepth >= MIN_ROOM) parts.push(...partition(type, cB.x, cB.y, run, horiz ? 'h' : 'v', th, doorsB, doorType));
+
+    /* The corridor rect stops short of both ends. The corridor wall runs the
+       full width of the building, but the floor you can walk on does not — the
+       shell walls close it off at each end. A rect that included them reported
+       a hallway blocked at both ends, because it was: by its own end walls. */
+    const cap = inset + 12;
+    const corner = P(0, aDepth);
+    const corridor = horiz
+      ? { x: corner.x + cap, y: corner.y + 8, w: run - cap * 2, h: cw - 16 }
+      : { x: corner.x + 8, y: corner.y + cap, w: cw - 16, h: run - cap * 2 };
+    if (opts.corridorKind !== null) rooms.push(room(opts.corridorKind || 'hall', corridor.x, corridor.y, corridor.w, corridor.h));
+
+    return { parts, rooms, doorsA, doorsB, corridor, garages };
+  }
+
   /* ---------- hallways ----------
      A corridor is two parallel walls with doorways in them and a strip of
      floor between — the thing that turns a block of rooms into a building you
@@ -594,6 +816,49 @@ const Structures = (() => {
 
      `hatchType` is what covers the stairs: a plain door for a cellar you can
      see, or a secret one for a vault nobody knows about. */
+  /* ---------- tunnels ----------
+     A basement you can walk down rather than stand in: a sealed passage with
+     a way in at each end. That makes it the one piece of the map that is a
+     route rather than a room — you go under the ground at one place and come
+     up somewhere else, and while you are down there nobody above can see you
+     and you cannot see them.
+
+     Built from the same pieces as a basement, because it plays as the same
+     thing: an enclosed space cut off from every sightline around it. What
+     makes it a tunnel rather than a cellar is the second hatch.
+
+     `axis` is the direction it runs; `width` is the passage, not the
+     footprint. */
+  function tunnel(kind, x, y, lengthPx, axis, opts = {}) {
+    const wallType = opts.wall || 'rwall';
+    const th = opts.thickness || 0.4;
+    const wd = opts.width || 96;
+    const horiz = axis === 'h';
+    const w = horiz ? lengthPx : wd;
+    const h = horiz ? wd : lengthPx;
+    const parts = [];
+    parts.push(...partition(wallType, x, y, w, 'h', th, [], null));
+    parts.push(...partition(wallType, x, y + h, w, 'h', th, [], null));
+    parts.push(...partition(wallType, x, y, h, 'v', th, [], null));
+    parts.push(...partition(wallType, x + w, y, h, 'v', th, [], null));
+    /* A hatch at each end, on the side wall, so the passage is entered from
+       the surface rather than from the room it happens to run past. */
+    const ends = opts.ends === undefined ? [0.12, 0.88] : opts.ends;
+    for (const t of ends) {
+      const hatch = horiz
+        ? seg('door', x + lengthPx * t - 31, y, 1.6, 'h', 0.3)
+        : seg('door', x, y + lengthPx * t - 31, 1.6, 'v', 0.3);
+      hatch.underground = true;
+      hatch.hatch = true;
+      parts.push(hatch);
+    }
+    for (const p of parts) p.underground = true;
+    const rect = room(kind || 'tunnel', x + 16, y + 16, w - 32, h - 32);
+    rect.dark = true;
+    rect.basement = true;
+    return { parts, room: rect };
+  }
+
   function basement(kind, x, y, w, h, opts = {}) {
     const wallType = opts.wall || 'rwall';
     const th = opts.thickness || 0.4;
@@ -640,39 +905,97 @@ const Structures = (() => {
   const cellRooms = (cells, kinds) =>
     cells.map((c, i) => room(typeof kinds === 'string' ? kinds : kinds[i % kinds.length], c.x, c.y, c.w, c.h));
 
+  /* ---------- one dial for how big a building is ----------
+     Every blueprint lays its interior out in absolute pixels from its own
+     origin — partitions, doorways and room rects all carry hardcoded offsets.
+     Editing `w` and `h` in thirty-three of them would leave every one of those
+     offsets pointing at the wrong place, which is a long afternoon and a lot
+     of walls in doorways.
+
+     So the blueprint is drawn at its authored size and then scaled as a whole,
+     about its own origin. Walls, doors, props and room rects all move
+     together, so a building gets roomier without a single interior offset
+     needing to change. Thickness scales too, which is right: a bigger building
+     has heavier walls.
+
+     A doorway is 62px authored, so at this factor it is 74 — comfortably wide
+     for a 30px body, and wider than it was.
+
+     The factor tapers with size. Growing everything by the same 1.2 multiplies
+     floor area by 1.44, and the map has a fixed amount of ground: the giants
+     (harbor, factory, the 900px-plus blueprints) ate the space the rest needed,
+     and the generator ran out of room before it had placed a museum or a bank.
+     A shanty at 380px gets the full 1.2 because it has the least to lose from
+     being cramped; a harbor already sprawls and takes 1.06. Everything is
+     bigger, nothing is bigger at the map's expense. */
+  const BUILDING_SCALE = 1.2;      // the factor for the smallest blueprints
+  const BIG_SCALE = 1.06;          // ...and for the ones already at SCALE_BIG
+  const SCALE_SMALL = 380, SCALE_BIG = 900;   // authored long side, px
+
+  function scaleFor(parts) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s2 of parts) {
+      x0 = Math.min(x0, s2.x); y0 = Math.min(y0, s2.y);
+      x1 = Math.max(x1, s2.x + s2.w); y1 = Math.max(y1, s2.y + s2.h);
+    }
+    const long = Math.max(x1 - x0, y1 - y0);
+    const t = Math.min(1, Math.max(0, (long - SCALE_SMALL) / (SCALE_BIG - SCALE_SMALL)));
+    return BUILDING_SCALE + (BIG_SCALE - BUILDING_SCALE) * t;
+  }
+
+  function scalePlacement(parts, ox, oy, k) {
+    if (k === 1) return parts;
+    for (const s2 of parts) {
+      s2.x = ox + (s2.x - ox) * k;
+      s2.y = oy + (s2.y - oy) * k;
+      s2.w *= k; s2.h *= k;
+      if (s2.thickness) s2.thickness *= k;
+    }
+    for (const r of parts.rooms || []) {
+      r.x = ox + (r.x - ox) * k;
+      r.y = oy + (r.y - oy) * k;
+      r.w *= k; r.h *= k;
+    }
+    return parts;
+  }
+
   const BUILDINGS = {
     /* a plain wooden house: one front door, one back door, a divided interior */
+    /* A family house, laid out the way a floor plan actually is: a central
+       hallway front to back, the living space and garage on one side, the
+       bedrooms and bathroom on the other. Room sizes come from ROOM_SIZE, so
+       the bathroom is the small one and the living room the big one — they are
+       no longer equal thirds of a rectangle.
+
+       The plan derives the dividing walls, the room rects and a door from
+       every room onto the hallway from one description, so the walls and the
+       rooms cannot disagree. They used to: the living room and one bedroom
+       were declared at the same rectangle, and the foyer overlapped the
+       bathroom. */
     house(ox, oy) {
-      const w = 420, h = 340;
+      const w = 530, h = 360;
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.52, width: 78 },
+        a: ['bedroom', 'bedroom', 'bathroom'],
+        b: ['living', 'kitchen', 'garage'],
+        fillA: 'study', fillB: 'pantry',
+        thickness: 0.2,
+      });
       const out = shell(ox, oy, w, h, 'wood', 0.3, [
-        { side: 'n', at: 170 }, { side: 's', at: 200 },
+        { side: 'w', at: h * 0.52 - 30 },              // front door, onto the hall
+        { side: 'e', at: h * 0.52 - 30 },              // back door, same hall
+        ...plan.garages,                                // the roller door
       ]);
-      // interior divider with a doorway
-      out.push(seg('wood', ox + 240, oy + 12, 3.1, 'v', 0.2));
-      out.push(seg('door', ox + 240, oy + 136, 1.5, 'v'));
-      out.push(seg('wood', ox + 240, oy + 196, 3.5, 'v', 0.2));
-      // windows for light and alternate sightlines
-      out.push(seg('window', ox + 60, oy + 20, 1.2, 'h', 0.15));
-      out.push(seg('window', ox + 360, oy + 20, 1.2, 'h', 0.15));
-      // small pantry/closet off the rear room
-      out.push(seg('wood', ox + 320, oy + 220, 1.6, 'v', 0.18));
-      // 1 bathroom, 2 bedrooms, 1 kitchen — the divider at +240 splits them
-      // a cellar under the back room, reached by a hatch you can see
-      const cellar = basement('storeroom', ox + 60, oy + h + 40, 300, 180,
+      out.push(...plan.parts);
+      // windows down the bedroom side, and one over the kitchen
+      out.push(seg('window', ox + 90, oy, 1.2, 'h', 0.15));
+      out.push(seg('window', ox + 300, oy, 1.2, 'h', 0.15));
+      out.push(seg('window', ox + 250, oy + h, 1.2, 'h', 0.15));
+      // a cellar under the back of the house, reached by a hatch you can see
+      const cellar = basement('storeroom', ox + 80, oy + h + 46, 300, 180,
         { wall: 'wood', thickness: 0.35, hatchAt: 150 });
       out.push(...cellar.parts);
-      // a post holding the ridge up, in the middle of the front room
-      out.push(prop('pillar', ox + 120, oy + 250, 32));
-      out.rooms = [
-        cellar.room,
-        room('foyer',    ox + 258, oy + 205, 142, 110),
-        room('living',   ox + 20,  oy + 175, 200, 145),
-        room('pantry',   ox + 330, oy + 232, 62, 78),
-        room('bedroom',  ox + 20,  oy + 20,  200, 140),
-        room('bedroom',  ox + 20,  oy + 175, 200, 145),
-        room('kitchen',  ox + 258, oy + 20,  142, 180),
-        room('bathroom', ox + 258, oy + 215, 142, 105),
-      ];
+      out.rooms = [cellar.room, ...plan.rooms];
       return out;
     },
 
@@ -680,54 +1003,48 @@ const Structures = (() => {
     /* mansion: four bedrooms off a hallway upstairs-side, kitchen and dining
        east, pool and garage across the back, the safe behind a reinforced
        door — and a study whose back wall isn't quite what it looks like. */
+    /* A country house on the standard plan: bedrooms and a bathroom along the
+       front, the reception rooms and the garage along the back, one hallway
+       running the length of it. The strongroom is off the study behind a
+       reinforced door, and the study's back wall is not quite what it looks
+       like.
+
+       The rooms used to be hand-placed rects that didn't match the walls —
+       both bathrooms were declared inside the hallway. */
     mansion(ox, oy) {
-      const w = 760, h = 560;
-      const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'n', at: 220, type: 'door', len: 2 }, { side: 'n', at: 520 },
-        { side: 's', at: 340, type: 'door' }, { side: 'w', at: 240 },
-      ]);
-      // the hallway across the middle, rooms opening off both sides
-      const hall = hallway('wood', ox + 14, oy + 250, w - 28, 76, 'h', {
-        doorsA: [110, 300, 500, 680], doorsB: [160, 400, 620],
+      const w = 800, h = 570;
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.45, width: 84 },
+        a: ['bedroom', 'bedroom', 'bathroom', 'bedroom', 'bedroom'],
+        b: ['living', 'dining', 'kitchen', 'study', 'safe', 'garage'],
+        fillA: 'study', fillB: 'pantry', thickness: 0.3,
+        passage: 'a',       // servants' corridor behind the bedrooms
       });
-      out.push(...hall.parts);
-      // bedrooms north of the hall
-      const beds = roomGrid('wood', ox + 14, oy + 14, w - 28, 236, 4, 1, { access: 's' });
-      out.push(...beds.parts);
-      // kitchen, dining and study south of it
-      out.push(...partition('wood', ox + 300, oy + 340, h - 354, 'v', 0.3, [90], 'door'));
-      out.push(...partition('wood', ox + 540, oy + 340, h - 354, 'v', 0.3, [90], 'door'));
-      // the strongroom, and the study's false wall behind it
-      out.push(...partition('rwall', ox + 540, oy + 340, w - 554, 'h', 0.4, [], null));
-      out.push(seg('rdoor', ox + 640, oy + 340, 1.5, 'h'));
-      out.push(secretDoor('wood', ox + 300, oy + 460, 1.6, 'v', 0.3));
-      // windows on every face
-      for (const dx of [90, 300, 520, 690]) out.push(seg('window', ox + dx, oy + 12, 1.6, 'h', 0.15));
-      out.push(seg('window', ox + 12, oy + 400, 1.8, 'v', 0.15));
-      out.push(seg('window', ox + w - 12, oy + 430, 1.8, 'v', 0.15));
-      /* The pool and the garage the design table calls for. They are grounds
-         rather than rooms — a mansion's garage is a block beside the house and
-         its pool is outside it — which also keeps the interior a house rather
-         than a warehouse of unrelated spaces. */
-      out.push(...shell(ox + w + 60, oy + 40, 240, 200, 'wood', 0.35, [
-        { side: 'w', at: 100, type: 'door', len: 3 },
-      ]));
-      // pool surround: low walls you can shoot over, open at one corner
+      const out = shell(ox, oy, w, h, 'wood', 0.4, [
+        { side: 'w', at: h * 0.45 - 30, type: 'door', len: 2 },
+        { side: 'e', at: h * 0.45 - 30, type: 'door', len: 2 },
+        { side: 'n', at: 300, type: 'door' },
+        ...plan.garages,
+      ]);
+      out.push(...plan.parts);
+      // the strongroom is reinforced on every side, not just its door
+      const safe = plan.rooms.find(r => r.kind === 'safe');
+      if (safe) {
+        out.push(...partition('rwall', safe.x - 8, safe.y - 8, safe.h + 16, 'v', 0.45, [], null));
+        out.push(...partition('rwall', safe.x + safe.w + 8, safe.y - 8, safe.h + 16, 'v', 0.45, [], null));
+        // and the study next door has a shelf that swings
+        out.push(secretDoor('wood', safe.x - 8, safe.y + safe.h * 0.55, 1.6, 'v', 0.3));
+      }
+      for (const dx of [90, 320, 560, 790]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      /* The pool the design table calls for: grounds rather than a room, walled
+         low enough to shoot over and open at one corner. */
       out.push(seg('barricade', ox + w + 60, oy + 300, 6, 'h', 0.3));
       out.push(seg('barricade', ox + w + 60, oy + 480, 6, 'h', 0.3));
       out.push(seg('barricade', ox + w + 60, oy + 300, 4.5, 'v', 0.3));
-      out.rooms = [
-        ...cellRooms(beds.cells, 'bedroom'),
-        room('kitchen',  ox + 30,  oy + 350, 250, 190),
-        room('dining',   ox + 320, oy + 350, 200, 190),
-        room('study',    ox + 560, oy + 350, 180, 100),
-        room('safe',     ox + 560, oy + 462, 180, 80),
-        room('bathroom', ox + 30,  oy + 262, 120, 60),
-        room('bathroom', ox + 620, oy + 262, 120, 60),
-        room('hall',     hall.rect.x, hall.rect.y, hall.rect.w, hall.rect.h),
-        room('garage',   ox + w + 80,  oy + 60,  200, 160),
-        room('pool',     ox + w + 80,  oy + 320, 200, 140),
-      ];
+      const cellar = basement('strongroom', ox + 120, oy + h + 50, 300, 190,
+        { wall: 'rwall', thickness: 0.4, hatchAt: 150 });
+      out.push(...cellar.parts);
+      out.rooms = [...plan.rooms, cellar.room, room('pool', ox + w + 80, oy + 320, 200, 140)];
       return out;
     },
 
@@ -736,32 +1053,31 @@ const Structures = (() => {
        count: ten rooms off one long corridor, so it fights like a hotel —
        doorway after doorway, nowhere to shoot from range. The lounge and the
        dock are what make crossing it worth the risk. */
+    /* ---------- resort ----------
+       The densest bedroom count on the map: rooms off one long corridor, so it
+       fights like a hotel — doorway after doorway, nowhere to shoot from
+       range. The public rooms are along the back with the dining lobby in the
+       middle of them. */
     resort(ox, oy) {
-      const w = 1040, h = 620;
+      const w = 1050, h = 620;
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.44, width: 84 },
+        a: ['bedroom', 'bedroom', 'bedroom', 'bedroom', 'bedroom'],
+        b: ['washroom', 'diningLobby', 'lounge', 'backKitchen', 'bedroom'],
+        fillA: 'bedroom', fillB: 'washroom', thickness: 0.25,
+        passage: 'b',       // service corridor behind the public rooms
+      });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'w', at: 260, type: 'door', len: 2 },
+        { side: 'w', at: h * 0.44 - 30, type: 'door', len: 2 },
+        { side: 'e', at: h * 0.44 - 30, type: 'door', len: 2 },
         { side: 's', at: 420, type: 'door', len: 2 },
-        { side: 'n', at: 700, type: 'door' },
       ]);
-      // spine corridor: bedrooms north of it, public rooms south
-      out.push(seg('wood', ox + 16, oy + 250, 25.2, 'h', 0.3));
-      for (let i = 0; i < 5; i++) out.push(seg('door', ox + 120 + i * 190, oy + 250, 1.6, 'h'));
-      // bedroom partitions, five each side of the corridor
-      for (let i = 1; i < 5; i++) out.push(seg('wood', ox + i * 200, oy + 16, 5.85, 'v', 0.22));
-      for (let i = 1; i < 5; i++) out.push(seg('wood', ox + i * 200, oy + 400, 3.5, 'v', 0.22));
-      // back kitchen behind the dining lobby
-      out.push(seg('wood', ox + 760, oy + 400, 3.5, 'v', 0.3));
-      out.push(seg('door', ox + 760, oy + 330, 1.6, 'v'));
+      out.push(...plan.parts);
+      for (const dx of [120, 400, 700, 980]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
       out.rooms = [
-        ...roomRow('bedroom', ox + 20, oy + 20, 990, 215, 5, 'h'),
-        ...roomRow('bedroom', ox + 20, oy + 405, 720, 195, 5, 'h'),
-        room('lounge',      ox + 780, oy + 270, 235, 120),
-        room('backKitchen', ox + 780, oy + 405, 235, 195),
-        room('diningLobby', ox + 300, oy + 270, 460, 120),
-        room('washroom',    ox + 20,  oy + 270, 130, 120),
-        room('washroom',    ox + 160, oy + 270, 130, 120),
-        room('pool',        ox + w + 60, oy + 120, 260, 200),
-        room('dock',        ox + w + 60, oy + 360, 300, 150),
+        ...plan.rooms,
+        room('pool', ox + w + 60, oy + 120, 260, 200),
+        room('dock', ox + w + 60, oy + 360, 300, 150),
       ];
       return out;
     },
@@ -910,53 +1226,57 @@ const Structures = (() => {
     /* library: long parallel stacks, reading rooms off a hall at the back,
        and an archive nobody has the key to */
     library(ox, oy) {
-      const w = 660, h = 480;
-      const out = shell(ox, oy, w, h, 'wood', 0.35, [
-        { side: 'n', at: 320, type: 'door', len: 2 }, { side: 'e', at: 240 },
-      ]);
-      // the stacks: six runs, alternating which end is open
-      for (let i = 0; i < 6; i++) {
-        const x = ox + 80 + i * 80;
-        const top = i % 2 === 0;
-        out.push(seg('wood', x, oy + (top ? 60 : 150), top ? 5.5 : 6.2, 'v', 0.25));
-      }
-      const hall = hallway('wood', ox + 14, oy + 336, w - 28, 64, 'h', {
-        doorsA: [140, 420], doorsB: [110, 320, 540],
+      const w = 660, h = 490;
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.66, width: 74 },
+        a: ['classroom', 'classroom'],
+        b: ['study', 'staffRoom', 'strongroom'],
+        fillA: 'study', fillB: 'office', thickness: 0.25,
       });
-      out.push(...hall.parts);
-      const back = roomGrid('wood', ox + 14, oy + 400, w - 28, h - 414, 3, 1, { access: 'n' });
-      out.push(...back.parts);
-      // the archive: a false shelf at the end of the last stack
-      out.push(secretDoor('wood', ox + 560, oy + 150, 1.6, 'v', 0.25));
-      for (const dx of [60, 300, 540]) out.push(seg('window', ox + dx, oy + 12, 1.6, 'h', 0.15));
-      out.rooms = [
-        room('classroom', ox + 90, oy + 70, 440, 250),
-        room('study',     back.cells[0].x, back.cells[0].y, back.cells[0].w, back.cells[0].h),
-        room('staffRoom', back.cells[1].x, back.cells[1].y, back.cells[1].w, back.cells[1].h),
-        room('strongroom', back.cells[2].x, back.cells[2].y, back.cells[2].w, back.cells[2].h),
-        room('hall', hall.rect.x, hall.rect.y, hall.rect.w, hall.rect.h),
-      ];
+      const out = shell(ox, oy, w, h, 'wood', 0.35, [
+        { side: 'n', at: 320, type: 'door', len: 2 },
+        { side: 'e', at: h * 0.66 - 28 },
+      ]);
+      out.push(...plan.parts);
+      /* The stacks: runs of shelving inside the reading rooms, alternating
+         which end is open so the room is a set of aisles rather than a hall. */
+      const reading = plan.rooms.filter(r => r.kind === 'classroom');
+      reading.forEach((r, ri) => {
+        const runs = Math.max(2, Math.floor(r.w / 90));
+        for (let i = 1; i < runs; i++) {
+          const x = r.x + (r.w / runs) * i;
+          const top = (i + ri) % 2 === 0;
+          out.push(seg('wood', x, top ? r.y : r.y + r.h * 0.38, (r.h * 0.62) / PX_PER_M, 'v', 0.25));
+        }
+      });
+      // the archive: a false shelf at the end of a stack
+      const arch = plan.rooms.find(r => r.kind === 'strongroom');
+      if (arch) out.push(secretDoor('wood', arch.x - 8, arch.y + arch.h * 0.5, 1.6, 'v', 0.25));
+      for (const dx of [60, 320, 600]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      out.rooms = plan.rooms;
       return out;
     },
 
     /* ---------- garage ----------
        Four work bays, a jeep in one of them, and a wall of tools. */
+    /* A working garage: bays you can drive into, a store and an office off the
+       back. Every bay gets its own roller door, which is what makes the front
+       of the building read as a garage from outside. */
     garage(ox, oy) {
-      const w = 560, h = 380;
+      const w = 580, h = 400;
+      const plan = floorPlan('metal', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.74, width: 72 },
+        a: ['garage', 'garage', 'workbay'],
+        b: ['storeroom', 'office'],
+        fillA: 'workbay', fillB: 'storeroom', thickness: 0.3,
+      });
       const out = shell(ox, oy, w, h, 'metal', 0.45, [
-        { side: 's', at: 140, type: 'rdoor', len: 3 },
-        { side: 's', at: 420, type: 'rdoor', len: 3 },
+        { side: 'e', at: h * 0.74 - 26, type: 'door' },
+        ...plan.garages,
       ]);
-      const bays = roomGrid('metal', ox + 14, oy + 14, w - 28, h - 120, 4, 1, { access: 's', doorType: null });
-      out.push(...bays.parts);
-      out.push(...partition('metal', ox + 14, oy + h - 106, w - 28, 'h', 0.3, [140, 420], null));
-      out.push(seg('barricade', ox + 40, oy + h - 60, 4, 'h', 0.3));
-      out.rooms = [
-        room('workbay', bays.cells[0].x, bays.cells[0].y, bays.cells[0].w, bays.cells[0].h),
-        room('garage',  bays.cells[1].x, bays.cells[1].y, bays.cells[1].w, bays.cells[1].h),
-        room('workbay', bays.cells[2].x, bays.cells[2].y, bays.cells[2].w, bays.cells[2].h),
-        room('storeroom', bays.cells[3].x, bays.cells[3].y, bays.cells[3].w, bays.cells[3].h),
-      ];
+      out.push(...plan.parts);
+      out.push(seg('barricade', ox + 40, oy + h + 40, 4, 'h', 0.3));
+      out.rooms = plan.rooms;
       return out;
     },
 
@@ -987,31 +1307,42 @@ const Structures = (() => {
     /* military base: a working post rather than a shed with a wall round it.
        Ops room and radio down one side, briefing and mess the other, the
        motor pool at the back, and a watch post on the wire. */
+    /* military base: a working post. One long spine corridor runs the whole
+       width with the rooms opening off it, so the building has a spine you
+       walk rather than a lobby you cross.
+
+       The roof posts sit tight against the corridor walls — a column in the
+       middle of a hallway is something you bump into on every trip through,
+       which is not what cover is for. */
     base(ox, oy) {
-      const w = 760, h = 560;
+      const w = 980, h = 660;
       const out = shell(ox, oy, w, h, 'metal', 0.6, [
-        { side: 'w', at: 240, type: 'rdoor' }, { side: 'e', at: 300, type: 'rdoor' },
-        { side: 'n', at: 400, type: 'rdoor' },
+        { side: 'w', at: 300, type: 'rdoor' }, { side: 'e', at: 360, type: 'rdoor' },
+        { side: 'n', at: 520, type: 'rdoor' },
       ]);
-      // spine corridor, rooms opening off both sides
-      const hall = hallway('metal', ox + 14, oy + 230, w - 28, 80, 'h', {
-        doorsA: [130, 350, 570], doorsB: [180, 420, 640],
+      // the spine: full width, 96px clear, doors onto it from both sides
+      const HALL_Y = 282, HALL_H = 96;
+      const hall = hallway('metal', ox + 14, oy + HALL_Y, w - 28, HALL_H, 'h', {
+        doorsA: [150, 420, 700], doorsB: [220, 500, 800],
       });
       out.push(...hall.parts);
-      const north = roomGrid('metal', ox + 14, oy + 14, w - 28, 216, 3, 1, { access: 's' });
-      const south = roomGrid('metal', ox + 14, oy + 324, w - 28, h - 338, 3, 1, { access: 'n' });
+      const north = roomGrid('metal', ox + 14, oy + 14, w - 28, HALL_Y - 14, 3, 1, { access: 's' });
+      const south = roomGrid('metal', ox + 14, oy + HALL_Y + HALL_H + 14, w - 28, h - HALL_Y - HALL_H - 28, 3, 1, { access: 'n' });
       out.push(...north.parts, ...south.parts);
-      // posts holding the roof up, and cover in the corridor
-      for (const dx of [190, 380, 570]) out.push(prop('post', ox + dx, oy + 270, 30));
+      // posts hard against the corridor walls, clear of the walking line
+      for (const dx of [250, 620]) {
+        out.push(prop('post', ox + dx, oy + HALL_Y + 20, 28));
+        out.push(prop('post', ox + dx + 120, oy + HALL_Y + HALL_H - 20, 28));
+      }
       // emplacements + perimeter wire
-      out.push(seg('sandbag', ox - 90, oy + 80, 3.2, 'h', 0.5));
-      out.push(seg('sandbag', ox - 90, oy + 430, 3.2, 'h', 0.5));
-      out.push(seg('sandbag', ox + w + 20, oy + 260, 3.2, 'h', 0.5));
-      out.push(seg('wire', ox - 120, oy - 60, 23, 'h', 0.4));
-      out.push(seg('wire', ox - 120, oy - 60, 17, 'v', 0.4));
+      out.push(seg('sandbag', ox - 90, oy + 100, 3.2, 'h', 0.5));
+      out.push(seg('sandbag', ox - 90, oy + 520, 3.2, 'h', 0.5));
+      out.push(seg('sandbag', ox + w + 20, oy + 320, 3.2, 'h', 0.5));
+      out.push(seg('wire', ox - 120, oy - 60, 29, 'h', 0.4));
+      out.push(seg('wire', ox - 120, oy - 60, 20, 'v', 0.4));
       // watch post out on the wire
-      out.push(...partition('sandbag', ox - 130, oy + 620, 150, 'h', 0.5, [], null));
-      out.push(...partition('sandbag', ox - 130, oy + 620, 110, 'v', 0.5, [], null));
+      out.push(...partition('sandbag', ox - 130, oy + h + 90, 160, 'h', 0.5, [], null));
+      out.push(...partition('sandbag', ox - 130, oy + h + 90, 120, 'v', 0.5, [], null));
       out.rooms = [
         room('opsRoom',   north.cells[0].x, north.cells[0].y, north.cells[0].w, north.cells[0].h),
         room('radioRoom', north.cells[1].x, north.cells[1].y, north.cells[1].w, north.cells[1].h),
@@ -1020,7 +1351,7 @@ const Structures = (() => {
         room('mess',      south.cells[1].x, south.cells[1].y, south.cells[1].w, south.cells[1].h),
         room('bunkroom',  south.cells[2].x, south.cells[2].y, south.cells[2].w, south.cells[2].h),
         room('hall',      hall.rect.x, hall.rect.y, hall.rect.w, hall.rect.h),
-        room('watchPost', ox - 115, oy + 635, 120, 85),
+        room('watchPost', ox - 115, oy + h + 105, 130, 95),
       ];
       return out;
     },
@@ -1064,6 +1395,50 @@ const Structures = (() => {
         { wall: 'rwall', thickness: 0.5, hatchAt: 130 });
       out.push(...mag.parts);
       out.rooms = [mag.room, room('guardRoom', ox + 25, oy + 25, w - 50, h - 50)];
+      return out;
+    },
+
+    /* ---------- bunker complex ----------
+       Two concrete heads on the surface a long way apart, and a tunnel joining
+       them underneath with the magazine off the middle of it. It is the only
+       structure on the map that is a route: drop in at one end, come up at the
+       other, and for the length of the walk nothing above ground can see you
+       or shoot you. That makes it both the safest way across an open field and
+       the worst place to be met coming the other way.
+
+       The chest is at the bottom, off the passage, behind a reinforced door —
+       the payoff for committing to the walk. */
+    'bunker-complex'(ox, oy) {
+      const out = [];
+      const RUN = 900;
+      // the two surface heads: squat, reinforced, one door each
+      out.push(...shell(ox, oy, 200, 190, 'rwall', 0.5, [{ side: 'n', at: 70, type: 'rdoor' }]));
+      out.push(...shell(ox + RUN - 40, oy, 200, 190, 'rwall', 0.5, [{ side: 'n', at: 70, type: 'rdoor' }]));
+      // sandbagged approaches, so each head reads as something worth holding
+      out.push(seg('sandbag', ox - 70, oy + 60, 3.5, 'v', 0.5));
+      out.push(seg('sandbag', ox + RUN + 170, oy + 60, 3.5, 'v', 0.5));
+      out.push(seg('wire', ox - 90, oy - 60, 6, 'h', 0.4));
+      out.push(seg('wire', ox + RUN + 40, oy - 60, 6, 'h', 0.4));
+      // the passage, joining the two heads underneath
+      /* Close behind the blockhouses, so the way down is at the back of each
+         one rather than out in the open field — the engine draws a single
+         plane, so the passage sits beside what it serves rather than under it,
+         the same compromise every cellar on the map makes. */
+      const pass = tunnel('tunnel', ox + 60, oy + 232, RUN, 'h', { width: 104, ends: [0.04, 0.96] });
+      out.push(...pass.parts);
+      // the magazine, off the middle of it, behind a reinforced door
+      const mag = basement('armoury', ox + 380, oy + 376, 280, 180,
+        { wall: 'rwall', thickness: 0.5, hatchAt: 140 });
+      out.push(...mag.parts);
+      // and a store at the far end, for the people who walk the whole length
+      const store = basement('storeroom', ox + RUN - 240, oy + 376, 230, 170,
+        { wall: 'rwall', thickness: 0.5, hatchAt: 115 });
+      out.push(...store.parts);
+      out.rooms = [
+        room('guardRoom', ox + 22, oy + 22, 156, 146),
+        room('guardRoom', ox + RUN - 18, oy + 22, 156, 146),
+        pass.room, mag.room, store.room,
+      ];
       return out;
     },
 
@@ -1138,7 +1513,7 @@ const Structures = (() => {
     hangar(ox, oy) {
       const w = 860, h = 520;
       const out = shell(ox, oy, w, h, 'metal', 0.65, [
-        { side: 's', at: 380, type: 'rdoor', len: 4 },
+        { side: 's', at: 360, type: 'garage-door', len: 6 },
         { side: 'w', at: 220, type: 'rdoor' },
       ]);
       // maintenance bays along the back
@@ -1159,29 +1534,31 @@ const Structures = (() => {
 
     /* farm: a big barn plus a fenced yard. Wood everywhere — a Breacher's map. */
     farm(ox, oy) {
-      const out = shell(ox, oy, 420, 300, 'wood', 0.35, [
-        { side: 's', at: 170, len: 3 }, { side: 'n', at: 60 },
+      const plan = floorPlan('wood', ox, oy, 480, 340, {
+        corridor: { axis: 'h', at: 0.5, width: 70 },
+        a: ['bedroom', 'bedroom'],
+        b: ['kitchen', 'bathroom'],
+        fillA: 'bedroom', fillB: 'pantry', thickness: 0.25,
+      });
+      const out = shell(ox, oy, 480, 340, 'wood', 0.35, [
+        { side: 'w', at: 340 * 0.5 - 28, len: 2 },
+        { side: 'e', at: 340 * 0.5 - 28 },
       ]);
-      out.push(seg('wood', ox + 200, oy + 14, 2.4, 'v', 0.25));
+      out.push(...plan.parts);
       // yard fence, deliberately flimsy
-      out.push(seg('barricade', ox + 470, oy + 40, 8, 'v', 0.25));
-      out.push(seg('barricade', ox + 470, oy + 40, 7, 'h', 0.25));
-      out.push(seg('barricade', ox + 470, oy + 360, 7, 'h', 0.25));
-      out.push(seg('wire', ox - 60, oy + 340, 8, 'h', 0.4));
+      out.push(seg('barricade', ox + 530, oy + 40, 8, 'v', 0.25));
+      out.push(seg('barricade', ox + 530, oy + 40, 7, 'h', 0.25));
+      out.push(seg('barricade', ox + 530, oy + 360, 7, 'h', 0.25));
+      out.push(seg('wire', ox - 60, oy + 380, 8, 'h', 0.4));
       // barn behind the yard fence, and the coop nobody thinks to check
-      out.push(...shell(ox + 500, oy + 60, 320, 260, 'wood', 0.35, [{ side: 'w', at: 120, type: 'door', len: 2 }]));
-      out.push(...shell(ox + 520, oy + 380, 130, 110, 'wood', 0.2, [{ side: 'n', at: 60 }]));
+      out.push(...shell(ox + 560, oy + 60, 320, 260, 'wood', 0.35, [{ side: 'w', at: 120, type: 'door', len: 2 }]));
+      out.push(...shell(ox + 580, oy + 400, 150, 120, 'wood', 0.2, [{ side: 'n', at: 60, len: 1.5 }]));
       out.rooms = [
-        // the farmhouse is a House, so it is furnished as one rather than as
-        // a single room called "house"
-        room('bedroom',     ox + 20,  oy + 20,  170, 125),
-        room('bedroom',     ox + 20,  oy + 155, 170, 125),
-        room('kitchen',     ox + 215, oy + 20,  185, 125),
-        room('bathroom',    ox + 215, oy + 155, 185, 125),
-        room('wheatField',  ox - 40,  oy + 360, 360, 220),
-        room('wheatField',  ox + 340, oy + 360, 340, 220),
-        room('barn',        ox + 520, oy + 80,  280, 220),
-        room('chickenCoop', ox + 535, oy + 395, 100, 80),
+        ...plan.rooms,
+        room('wheatField',  ox - 40,  oy + 400, 360, 220),
+        room('wheatField',  ox + 340, oy + 660, 340, 200),
+        room('barn',        ox + 580, oy + 80,  280, 220),
+        room('chickenCoop', ox + 596, oy + 418, 118, 86),
       ];
       return out;
     },
@@ -1193,7 +1570,8 @@ const Structures = (() => {
       out.push(seg('sandbag', ox, oy, 5, 'h', 0.5));
       out.push(seg('sandbag', ox + 120, oy + 110, 5, 'h', 0.5));
       out.push(seg('sandbag', ox, oy + 220, 5, 'h', 0.5));
-      out.push(...shell(ox + 250, oy + 60, 130, 110, 'rwall', 0.4, [{ side: 'w', at: 40, type: 'rdoor' }]));
+      out.push(...shell(ox + 250, oy + 60, 130, 110, 'rwall', 0.4, [{ side: 'w', at: 30, type: 'rdoor' }]));
+      out.rooms = [room('guardRoom', ox + 262, oy + 72, 106, 86)];
       out.push(seg('wire', ox - 40, oy - 40, 5, 'v', 0.4));
       return out;
     },
@@ -1369,24 +1747,22 @@ const Structures = (() => {
        other. Bandages and adrenaline live here, and so does the reason to
        stay — see BUILDING_EFFECTS. */
     hospital(ox, oy) {
-      const w = 720, h = 500;
+      const w = 760, h = 510;
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.47, width: 86 },
+        a: ['ward', 'ward', 'ward', 'ward'],
+        b: ['lobby', 'surgery', 'dispensary', 'office'],
+        fillA: 'ward', fillB: 'staffRoom', thickness: 0.28,
+        passage: 'a',       // the way the trolleys go
+      });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'n', at: 300, type: 'door', len: 3 },
-        { side: 's', at: 300 }, { side: 'e', at: 300, type: 'door' },
+        { side: 'n', at: 340, type: 'door', len: 3 },
+        { side: 'w', at: h * 0.47 - 30, type: 'door' },
+        { side: 'e', at: h * 0.47 - 30, type: 'door' },
       ]);
-      // spine corridor running east-west across the middle
-      out.push(...partition('wood', ox + 14, oy + 250, w - 28, 'h', 0.28,
-        [140, 340, 560], 'door'));
-      // four wards north of it, theatre and dispensary south
-      const north = roomGrid('wood', ox + 14, oy + 14, w - 28, 236, 4, 1, { access: 's' });
-      const south = roomGrid('wood', ox + 14, oy + 262, w - 28, h - 276, 3, 1, { access: 'n' });
-      out.push(...north.parts, ...south.parts);
-      out.rooms = [
-        ...cellRooms(north.cells, 'ward'),
-        room('surgery',    south.cells[0].x, south.cells[0].y, south.cells[0].w, south.cells[0].h),
-        room('dispensary', south.cells[1].x, south.cells[1].y, south.cells[1].w, south.cells[1].h),
-        room('lobby',      south.cells[2].x, south.cells[2].y, south.cells[2].w, south.cells[2].h),
-      ];
+      out.push(...plan.parts);
+      for (const dx of [80, 300, 520, 740]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      out.rooms = plan.rooms;
       return out;
     },
 
@@ -1396,7 +1772,7 @@ const Structures = (() => {
     workshop(ox, oy) {
       const w = 780, h = 540;
       const out = shell(ox, oy, w, h, 'metal', 0.5, [
-        { side: 'n', at: 320, type: 'rdoor', len: 3 },
+        { side: 'n', at: 300, type: 'garage-door', len: 5 },
         { side: 's', at: 220, type: 'rdoor', len: 2 },
         { side: 'w', at: 260, type: 'door' },
       ]);
@@ -1408,7 +1784,9 @@ const Structures = (() => {
       // control room, reinforced, down the east end
       out.push(...partition('rwall', ox + w - 186, oy + 14, h - 28, 'v', 0.4, [h / 2], 'rdoor'));
       out.rooms = [
-        ...cellRooms(bays.cells, 'workbay'),
+        // the bay behind the roller door is where the vehicle goes
+        room('garage', bays.cells[0].x, bays.cells[0].y, bays.cells[0].w, bays.cells[0].h),
+        ...cellRooms(bays.cells.slice(1), 'workbay'),
         room('storeroom', store.cells[0].x, store.cells[0].y, store.cells[0].w, store.cells[0].h),
         room('storeroom', store.cells[1].x, store.cells[1].y, store.cells[1].w, store.cells[1].h),
         room('controlRoom', ox + w - 170, oy + 30, 150, h - 60),
@@ -1420,31 +1798,27 @@ const Structures = (() => {
     /* dock: a transit shed of three bays, the harbourmaster's office behind
        it, and a container stack out on the quay */
     dock(ox, oy) {
-      const out = [];
-      out.push(...shell(ox, oy, 560, 400, 'metal', 0.45, [
-        { side: 's', at: 200, type: 'door', len: 2 },
-        { side: 'w', at: 120, type: 'door' },
-      ]));
-      const bays = roomGrid('metal', ox + 14, oy + 14, 532, 250, 3, 1,
-        { access: 's', doorType: null, thickness: 0.3 });
-      out.push(...bays.parts);
-      out.push(...partition('metal', ox + 14, oy + 278, 532, 'h', 0.3, [140, 400], 'door'));
-      const office = roomGrid('metal', ox + 14, oy + 292, 532, 94, 2, 1, { access: 'n' });
-      out.push(...office.parts);
+      const w = 570, h = 410;
+      const plan = floorPlan('metal', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.62, width: 78 },
+        a: ['storeroom', 'storeroom', 'storeroom'],
+        b: ['office', 'lobby'],
+        fillA: 'storeroom', fillB: 'office', thickness: 0.3,
+      });
+      const out = shell(ox, oy, w, h, 'metal', 0.45, [
+        { side: 's', at: 220, type: 'door', len: 2 },
+        { side: 'w', at: h * 0.62 - 28, type: 'door' },
+      ]);
+      out.push(...plan.parts);
       // container stack out on the quay
       for (let i = 0; i < 3; i++) {
         const x = ox + 20 + i * 200;
-        out.push(seg('metal', x, oy + 470, 4, 'h', 0.45));
-        out.push(seg('metal', x, oy + 560, 4, 'h', 0.45));
-        out.push(seg('metal', x, oy + 470, 2.25, 'v', 0.45));
+        out.push(seg('metal', x, oy + 510, 4, 'h', 0.45));
+        out.push(seg('metal', x, oy + 600, 4, 'h', 0.45));
+        out.push(seg('metal', x, oy + 510, 2.25, 'v', 0.45));
       }
-      out.push(seg('sandbag', ox + 620, oy + 260, 4, 'h', 0.5));
-      out.rooms = [
-        ...cellRooms(bays.cells, 'storeroom'),
-        room('office', office.cells[0].x, office.cells[0].y, office.cells[0].w, office.cells[0].h),
-        room('lobby',  office.cells[1].x, office.cells[1].y, office.cells[1].w, office.cells[1].h),
-        room('dock',   ox + 40, oy + 490, 540, 60),
-      ];
+      out.push(seg('sandbag', ox + 660, oy + 280, 4, 'h', 0.5));
+      out.rooms = [...plan.rooms, room('dock', ox + 40, oy + 530, 540, 60)];
       return out;
     },
 
@@ -1490,25 +1864,24 @@ const Structures = (() => {
     /* prison: two blocks of cells facing a guarded corridor. Everything is
        reinforced, so getting in wants C4 or the right tool. */
     prison(ox, oy) {
-      const w = 840, h = 620;
+      const w = 850, h = 620;
+      const plan = floorPlan('rwall', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.5, width: 96 },
+        a: ['cell', 'cell', 'cell', 'cell', 'cell', 'guardRoom'],
+        b: ['cell', 'cell', 'cell', 'cell', 'cell', 'controlRoom'],
+        fillA: 'cell', fillB: 'cell', thickness: 0.4, doorType: 'rdoor',
+        passage: 'b',       // the guards' run behind the cells
+      });
       const out = shell(ox, oy, w, h, 'rwall', 0.5, [
-        { side: 'n', at: 360, type: 'rdoor', len: 2 },
-        { side: 's', at: 240, type: 'rdoor' },
+        { side: 'w', at: h * 0.5 - 30, type: 'rdoor', len: 2 },
+        { side: 'e', at: h * 0.5 - 30, type: 'rdoor', len: 2 },
       ]);
-      // corridor down the middle, cells either side
-      out.push(...partition('rwall', ox + 14, oy + 250, w - 28, 'h', 0.4, [180, 480, 700], 'rdoor'));
-      out.push(...partition('rwall', ox + 14, oy + 370, w - 28, 'h', 0.4, [180, 480, 700], 'rdoor'));
-      const top = roomGrid('rwall', ox + 14, oy + 14, w - 28, 236, 5, 1, { access: 's', thickness: 0.35, doorType: 'rdoor' });
-      const bot = roomGrid('rwall', ox + 14, oy + 384, w - 28, h - 398, 5, 1, { access: 'n', thickness: 0.35, doorType: 'rdoor' });
-      out.push(...top.parts, ...bot.parts);
-      // guard post in the corridor, and sandbags at the yard end
-      out.push(seg('sandbag', ox + 380, oy + 300, 3, 'h', 0.5));
-      out.push(seg('sandbag', ox + 380, oy + 300, 1.5, 'v', 0.5));
-      out.rooms = [
-        ...cellRooms(top.cells, 'cell'),
-        ...cellRooms(bot.cells, 'cell'),
-        room('guardRoom', ox + 360, oy + 268, 200, 90),
-      ];
+      out.push(...plan.parts);
+      // guard post in the corridor, covering its length
+      out.push(seg('sandbag', ox + 400, oy + h * 0.5 - 14, 3, 'h', 0.5));
+      out.push(seg('wire', ox - 70, oy - 60, 24, 'h', 0.4));
+      out.push(seg('wire', ox - 70, oy - 60, 19, 'v', 0.4));
+      out.rooms = plan.rooms;
       return out;
     },
 
@@ -1516,34 +1889,33 @@ const Structures = (() => {
     /* bank: a public hall behind a counter, offices along one side, and a
        vault you can either blow open or reach the quiet way if you find it */
     bank(ox, oy) {
-      const w = 600, h = 460;
+      const w = 640, h = 470;
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.46, width: 80 },
+        a: ['lobby', 'washroom', 'office'],
+        b: ['office', 'office', 'strongroom', 'safe'],
+        fillA: 'lobby', fillB: 'office', thickness: 0.35,
+        passage: 'b',       // behind the counter, past the vault
+      });
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
-        { side: 'n', at: 280, type: 'door', len: 2.5 }, { side: 'w', at: 320 },
+        { side: 'n', at: 280, type: 'door', len: 2.5 },
+        { side: 'w', at: h * 0.46 - 28 },
       ]);
-      // the counter across the hall
-      out.push(...partition('wood', ox + 14, oy + 200, w - 250, 'h', 0.35, [180], 'door'));
-      // offices down the east side
-      out.push(...partition('wood', ox + w - 226, oy + 14, h - 28, 'v', 0.35, [120, 340], 'door'));
-      const offices = roomGrid('wood', ox + w - 212, oy + 14, 198, h - 28, 1, 3, { access: 'w' });
-      out.push(...offices.parts);
-      // the vault, reinforced, bottom left — and a service passage behind it
-      out.push(...partition('rwall', ox + 14, oy + 320, w - 250, 'h', 0.45, [], null));
-      out.push(seg('rdoor', ox + 200, oy + 320, 1.8, 'h'));
-      out.push(...partition('rwall', ox + 240, oy + 320, h - 334, 'v', 0.45, [], null));
-      out.push(secretDoor('rwall', ox + 240, oy + 400, 1.5, 'v', 0.4));
-      for (const dx of [80, 420]) out.push(seg('window', ox + dx, oy + 12, 1.8, 'h', 0.15));
+      out.push(...plan.parts);
+      /* The vault is reinforced all round, and there is a service passage
+         behind it that the floor plan on the wall does not show. */
+      const vault = plan.rooms.find(r => r.kind === 'safe');
+      if (vault) {
+        out.push(...partition('rwall', vault.x - 8, vault.y - 8, vault.h + 16, 'v', 0.45, [], null));
+        out.push(...partition('rwall', vault.x - 8, vault.y + vault.h + 8, vault.w + 16, 'h', 0.45, [], null));
+        out.push(secretDoor('rwall', vault.x - 8, vault.y + vault.h * 0.6, 1.5, 'v', 0.4));
+      }
+      for (const dx of [90, 480]) out.push(seg('window', ox + dx, oy, 1.8, 'h', 0.15));
       // the bullion cellar: reinforced, and the hatch is hidden
-      const cellar = basement('strongroom', ox + 40, oy + h + 40, 320, 200,
+      const cellar = basement('strongroom', ox + 60, oy + h + 44, 320, 200,
         { wall: 'rwall', thickness: 0.45, hatchType: 'secret', hatchAt: 160 });
       out.push(...cellar.parts);
-      out.rooms = [
-        cellar.room,
-        room('lobby',      ox + 30,  oy + 30,  w - 290, 155),
-        room('office',     ox + 30,  oy + 215, w - 290, 90),
-        ...cellRooms(offices.cells, 'office'),
-        room('strongroom', ox + 30,  oy + 336, 195, h - 366),
-        room('safe',       ox + 260, oy + 336, w - 500, h - 366),
-      ];
+      out.rooms = [...plan.rooms, cellar.room];
       return out;
     },
 
@@ -1709,10 +2081,14 @@ const Structures = (() => {
       const w = 700, h = 700;
       const out = [];
       // outer barrier
-      out.push(seg('sandbag', ox - 40, oy - 40, 19.5, 'h', 0.5));
-      out.push(seg('sandbag', ox - 40, oy + h + 40, 19.5, 'h', 0.5));
-      out.push(seg('sandbag', ox - 40, oy - 40, 19.5, 'v', 0.5));
-      out.push(seg('sandbag', ox + w + 40, oy - 40, 19.5, 'v', 0.5));
+      /* The outer barrier, with a gate in each side. It used to be four
+         unbroken runs — a closed box with the whole arena, and four rooms of
+         loot, sealed inside it. */
+      const RUN = w + 80;
+      out.push(...partition('sandbag', ox - 40, oy - 40, RUN, 'h', 0.5, [RUN / 2], null));
+      out.push(...partition('sandbag', ox - 40, oy + h + 40, RUN, 'h', 0.5, [RUN / 2], null));
+      out.push(...partition('sandbag', ox - 40, oy - 40, RUN, 'v', 0.5, [RUN / 2], null));
+      out.push(...partition('sandbag', ox + w + 40, oy - 40, RUN, 'v', 0.5, [RUN / 2], null));
       // two tiers of seating, with gangways cut through them
       for (const inset of [80, 140]) {
         const runH = w - inset * 2, runV = h - inset * 2;
@@ -1721,19 +2097,23 @@ const Structures = (() => {
         out.push(...partition('barricade', ox + inset, oy + inset, runV, 'v', 0.3, [runV / 2], null));
         out.push(...partition('barricade', ox + w - inset, oy + inset, runV, 'v', 0.3, [runV / 2], null));
       }
-      // rooms under the stands, one in each corner
-      const corner = (cx, cy) => {
-        out.push(...partition('wood', cx, cy, 130, 'h', 0.3, [65], 'door'));
-        out.push(...partition('wood', cx, cy, 110, 'v', 0.3, [], null));
+      /* Rooms under the stands, one in each corner: three walls and a door
+         onto the concourse. They used to be drawn with two walls and no way
+         in, which made four rooms of loot nobody could reach. */
+      const rooms = [];
+      const corner = (cx, cy, kind, doorSide) => {
+        const rw = 150, rh = 120;
+        out.push(...partition('wood', cx, cy, rw, 'h', 0.3, doorSide === 'n' ? [rw / 2] : [], doorSide === 'n' ? 'door' : null));
+        out.push(...partition('wood', cx, cy + rh, rw, 'h', 0.3, doorSide === 's' ? [rw / 2] : [], doorSide === 's' ? 'door' : null));
+        out.push(...partition('wood', cx, cy, rh, 'v', 0.3, doorSide === 'w' ? [rh / 2] : [], doorSide === 'w' ? 'door' : null));
+        out.push(...partition('wood', cx + rw, cy, rh, 'v', 0.3, doorSide === 'e' ? [rh / 2] : [], doorSide === 'e' ? 'door' : null));
+        rooms.push(room(kind, cx + 10, cy + 10, rw - 20, rh - 20));
       };
-      corner(ox + 10, oy + 130); corner(ox + w - 140, oy + 130);
-      corner(ox + 10, oy + h - 130); corner(ox + w - 140, oy + h - 130);
-      out.rooms = [
-        room('bunkroom',   ox + 20, oy + 20, 110, 100),
-        room('storeroom',  ox + w - 130, oy + 20, 110, 100),
-        room('strongroom', ox + 20, oy + h - 120, 110, 100),
-        room('gym',        ox + w - 130, oy + h - 120, 110, 100),
-      ];
+      corner(ox + 8, oy + 8, 'bunkroom', 'e');
+      corner(ox + w - 158, oy + 8, 'storeroom', 'w');
+      corner(ox + 8, oy + h - 128, 'strongroom', 'e');
+      corner(ox + w - 158, oy + h - 128, 'gym', 'w');
+      out.rooms = rooms;
       return out;
     },
 
@@ -1814,6 +2194,15 @@ const Structures = (() => {
       // storage tanks (hazard)
       out.push(seg('metal', ox + 480, oy + 160, 2.2, 'h', 0.4));
       out.push(seg('metal', ox + 480, oy + 160, 2.2, 'v', 0.4));
+      // the service bay: a filling station with no garage is just two pumps
+      out.push(...shell(ox + 280, oy + 220, 240, 210, 'metal', 0.4, [
+        { side: 's', at: 20, type: 'garage-door', len: 5 },
+        { side: 'n', at: 100, type: 'door', len: 1.5 },
+      ]));
+      out.rooms = [
+        room('stall',  ox + 300, oy + 0,   200, 160),
+        room('garage', ox + 300, oy + 240, 200, 170),
+      ];
       return out;
     },
 
@@ -1822,25 +2211,23 @@ const Structures = (() => {
        the assay office cut into the rock at the back */
     mine(ox, oy) {
       const w = 700, h = 660;
+      const plan = floorPlan('rock', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.72, width: 80 },
+        a: ['workbay', 'workbay', 'workbay'],
+        b: ['storeroom', 'safe'],
+        fillA: 'workbay', fillB: 'storeroom', thickness: 0.35, doorType: null,
+      });
       const out = shell(ox, oy, w, h, 'rock', 0.4, [
-        { side: 'n', at: 260, type: 'door' }, { side: 's', at: 300, type: 'door' },
+        { side: 'n', at: 260, type: 'door' },
+        { side: 's', at: 300, type: 'door' },
+        { side: 'w', at: h * 0.72 - 28, type: 'door' },
       ]);
-      const gal = roomGrid('rock', ox + 14, oy + 14, w - 28, h - 200, 3, 1,
-        { access: 's', doorType: null, thickness: 0.35 });
-      out.push(...gal.parts);
+      out.push(...plan.parts);
       // timbering across the galleries
-      for (const y of [180, 320]) {
-        out.push(seg('wood', ox + 40, oy + y, 3.4, 'h', 0.25));
-        out.push(seg('wood', ox + 400, oy + y, 3.4, 'h', 0.25));
+      for (const r of plan.rooms.filter(x => x.kind === 'workbay')) {
+        out.push(seg('wood', r.x + 20, r.y + r.h * 0.35, (r.w - 40) / PX_PER_M, 'h', 0.25));
       }
-      out.push(...partition('metal', ox + 14, oy + h - 172, w - 28, 'h', 0.35, [160, 480], 'door'));
-      const back = roomGrid('metal', ox + 14, oy + h - 158, w - 28, 144, 2, 1, { access: 'n' });
-      out.push(...back.parts);
-      out.rooms = [
-        ...cellRooms(gal.cells, 'workbay'),
-        room('storeroom', back.cells[0].x, back.cells[0].y, back.cells[0].w, back.cells[0].h),
-        room('safe',      back.cells[1].x, back.cells[1].y, back.cells[1].w, back.cells[1].h),
-      ];
+      out.rooms = plan.rooms;
       return out;
     },
   };
@@ -1920,6 +2307,7 @@ const Structures = (() => {
     clinic:      { ...S_INSTITUTIONAL, floor: '#c4d0cd', roof: ['#dfeae7', '#b0c0bd'], trim: '#d1443f' },
     library:     { ...S_INSTITUTIONAL, floor: '#9c8a6d', roof: ['#6a5a8a', '#463a5f'], trim: '#c9a54e' },
     garage:      { ...S_INDUSTRIAL, floor: '#4f545c', roof: ['#6a7078', '#474c53'], trim: '#c07a2a' },
+    'bunker-complex': { ...S_INDUSTRIAL, floor: '#3e4147', roof: ['#575e63', '#3b4145'], trim: '#7d8a72' },
     watermill:   { ...S_RESIDENTIAL, floor: '#6f6350', roof: ['#5a7a6a', '#3c5548'], trim: '#2e4238' },
 
     /* ---- commercial and one-offs ---- */
@@ -2017,6 +2405,8 @@ const Structures = (() => {
     track:       { floor: '#4a4f56', pattern: 'concrete' },
     warehouse:   { floor: '#565e6a', pattern: 'concrete' },
     garage:      { floor: '#4f545c', pattern: 'concrete' },
+    tunnel:      { floor: '#3e4147', pattern: 'concrete' },
+    passage:     { floor: '#5c5951', pattern: 'concrete' },
     dock:        { floor: '#6a6152', pattern: 'planks' },
     pool:        { floor: '#3f7d96', pattern: 'tile' },
     gate:        { floor: '#5a5f66', pattern: 'concrete' },
@@ -2177,6 +2567,8 @@ const Structures = (() => {
     tower:        { grade: 'poor', ring: 'edge' },
     checkpoint:   { grade: 'poor', ring: 'edge' },
     bunker:       { grade: 'poor', ring: 'edge' },
+    /* Worth the walk down: the magazine at the bottom holds a chest. */
+    'bunker-complex': { grade: 'rich', ring: 'mid' },
 
     /* ---- one per team, at their spawn ---- */
     base:         { grade: 'medium', ring: 'spawn' },
@@ -2220,6 +2612,7 @@ const Structures = (() => {
      and the rest are texture.
      ============================================================ */
   const DECOR = {
+    'bunker-complex': ['sandpile', 'sandpile', 'crate', 'ammoBox', 'rubble'],
     /* ---- residential: gardens, washing lines, firewood ---- */
     house:        ['bush', 'bush', 'stump', 'plant', 'crate'],
     mansion:      ['plant', 'plant', 'bush', 'bush', 'cone'],
@@ -2285,13 +2678,29 @@ const Structures = (() => {
      The design table gives exact counts, not weights: a map has five houses
      and exactly one mansion, whatever the dice say. Everything outside this
      list is still rolled procedurally to fill the space around them. */
+  /* The buildings a map must have, and how many of each.
+
+     Everything below the first line was being rolled for rather than
+     required, and on a map this size that meant never built. Measured over
+     six generated maps, the procedural pass placed three or four buildings
+     each — the required buildings, the four team bases and the landmarks take
+     their ground first, and what is left is small gaps rather than open
+     ground, so only small buildings ever fitted into them. Across those six
+     maps the garage, the workshop, the hangar and the filling station were
+     built exactly zero times between them, which makes the vehicle doors they
+     were given decoration nobody would ever see. They are the four buildings
+     you can drive into, so they are worth requiring. */
   const ROOM_BUILDINGS = [
     ['house', 5], ['mansion', 1], ['resort', 1], ['airfield', 1],
     ['harbor', 1], ['museum', 1], ['campground', 2], ['farm', 2],
+    ['garage', 1], ['workshop', 1], ['gas-station', 1], ['hangar', 1],
+    /* The only underground route on the map, so leaving it to a weighted roll
+       meant most maps had no tunnel on them at all. */
+    ['bunker-complex', 1],
   ];
 
   const BUILDING_CATEGORIES = {
-    tactical: ['tower', 'checkpoint', 'bunker', 'bridge-fort', 'keep'],
+    tactical: ['tower', 'checkpoint', 'bunker', 'bunker-complex', 'bridge-fort', 'keep'],
     residential: ['house', 'mansion', 'shanty', 'apartments', 'camp', 'campground', 'farm', 'resort'],
     industrial: ['warehouse', 'factory', 'workshop', 'dock', 'harbor', 'power-plant', 'silos', 'depot', 'hangar', 'airfield', 'garage', 'watermill'],
     institutional: ['hospital', 'clinic', 'library', 'school', 'church', 'museum', 'prison', 'bank', 'vault', 'command-center'],
@@ -2319,7 +2728,7 @@ const Structures = (() => {
 
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
-    STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid,
+    BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, ROOM_SIZE, tunnel,
     PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement, DECOR, decorFor,
     ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
@@ -2328,6 +2737,7 @@ const Structures = (() => {
        have the property, so every older blueprint is untouched. */
     place(name, ox, oy) {
       const parts = BUILDINGS[name](ox, oy);
+      scalePlacement(parts, ox, oy, scaleFor(parts));
       parts.forEach(p => { p.building = name; });
       if (parts.rooms) parts.rooms.forEach(r => { r.building = name; });
       return parts;

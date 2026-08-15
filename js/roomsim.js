@@ -44,7 +44,17 @@
   /* The client renders in these dimensions, so the simulation has to use them
      too. They were 3400x2300 here and 6400x6400 there, which meant an online
      match was simulated in one coordinate space and drawn in another. */
-  const MAP_SIZES = { domination: { w: 6400, h: 6400 }, elimination: { w: 4500, h: 4500 } };
+  /* The board each mode is fought over.
+
+     Grown by a little under a fifth on each side. The buildings got bigger and
+     there are more of them that a map is required to have — the four you can
+     drive into were added to that list — and the ground did not grow with
+     them. Measured over five generated maps, four came up short of the houses
+     the design table asks for, because the required buildings, the four team
+     bases and the three landmarks no longer fit on a 6400px board with room
+     to walk between them. Everything scattered on the map is placed per unit
+     of area, so cover, props and loot scale with this by themselves. */
+  const MAP_SIZES = { domination: { w: 7400, h: 7400 }, elimination: { w: 5200, h: 5200 } };
   /* How many squads each mode is fought between, matching TEAM_SETUP in
      game.js. This used to be the literal 4 in three separate places — the
      team-balancing loop, the score array and the spawn ring — so an
