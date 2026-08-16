@@ -704,11 +704,32 @@ const Game = (() => {
       const pad = m.r + 5;
       if (r.w < pad * 2.4 || r.h < pad * 2.4) return spot();      // too tight to be fussy
       if (how === 'wall') {
+        /* Furniture of a kind lines up together. Lockers come in banks, shelves
+           come in runs, and the second one goes next to the first rather than
+           on the opposite wall — which is what a room full of individually
+           wall-hugging props looked like: tidy, and arranged by nobody.
+
+           So the first of a kind picks the wall, and the rest of that kind
+           continue along it at a regular pitch. */
+        const prev = placed.filter(q => q.kind === kind);
+        const last = prev[prev.length - 1];
+        if (last && last.side) {
+          const pitch = m.r * 2 + 8;
+          const next = { kind, side: last.side, rot: last.rot };
+          if (last.side === 'n' || last.side === 's') {
+            next.x = last.x + pitch; next.y = last.y;
+            if (next.x < r.x + r.w - pad) return next;
+          } else {
+            next.x = last.x; next.y = last.y + pitch;
+            if (next.y < r.y + r.h - pad) return next;
+          }
+          // ran out of wall — start a new bank on another one
+        }
         const side = ['n', 's', 'w', 'e'][Math.floor(Math.random() * 4)];
-        if (side === 'n') return { x: rand(r.x + pad, r.x + r.w - pad), y: r.y + pad, rot: 0 };
-        if (side === 's') return { x: rand(r.x + pad, r.x + r.w - pad), y: r.y + r.h - pad, rot: Math.PI };
-        if (side === 'w') return { x: r.x + pad, y: rand(r.y + pad, r.y + r.h - pad), rot: Math.PI / 2 };
-        return { x: r.x + r.w - pad, y: rand(r.y + pad, r.y + r.h - pad), rot: -Math.PI / 2 };
+        if (side === 'n') return { side, x: rand(r.x + pad, r.x + r.w * 0.6), y: r.y + pad, rot: 0 };
+        if (side === 's') return { side, x: rand(r.x + pad, r.x + r.w * 0.6), y: r.y + r.h - pad, rot: Math.PI };
+        if (side === 'w') return { side, x: r.x + pad, y: rand(r.y + pad, r.y + r.h * 0.6), rot: Math.PI / 2 };
+        return { side, x: r.x + r.w - pad, y: rand(r.y + pad, r.y + r.h * 0.6), rot: -Math.PI / 2 };
       }
       if (how === 'corner') {
         const cx = Math.random() < 0.5 ? r.x + pad : r.x + r.w - pad;
@@ -747,9 +768,25 @@ const Game = (() => {
       p.rot = Math.round(Math.random() * 4) * (Math.PI / 2);   // still square to the room
       return p;
     };
-    /* Tables before chairs, so the chairs have something to be pulled up to. */
-    const order = props.slice().sort((a, b) => rank(a) - rank(b));
-    for (let i = 0; doFurniture && i < conf.n; i++) {
+    /* Tables before chairs, so the chairs have something to be pulled up to —
+       and wall furniture comes in twos, so a room gets a bank of lockers and a
+       run of shelving rather than one of each standing alone. Placing one of
+       every kind in turn is what made the banking code above almost never
+       fire: nothing was ever put down next to another of its own kind. */
+    const order = [];
+    for (const k of props.slice().sort((a, b) => rank(a) - rank(b))) {
+      order.push(k);
+      if (PLACEMENT[k] === 'wall') order.push(k);
+    }
+    /* How much furniture, scaled by how big the room actually is. The counts
+       in ROOM_PROPS were written against the old even-thirds rooms; the floor
+       plans that replaced them size a room by what it is for, so a briefing
+       room is now several times the floor of a bathroom and both were getting
+       the same handful of props. A big room with six things in it reads as
+       empty, which is the opposite of the problem the table was tuned for. */
+    const REF_AREA = 34000;               // px², about a modest bedroom
+    const nProps = Math.round(conf.n * clamp((r.w * r.h) / REF_AREA, 0.7, 2.1));
+    for (let i = 0; doFurniture && i < nProps; i++) {
       const kind = order[i % order.length];
       const m = Sprites.META[kind];
       if (!m) continue;
@@ -758,7 +795,8 @@ const Game = (() => {
         if (p.x < r.x || p.y < r.y || p.x > r.x + r.w || p.y > r.y + r.h) continue;
         const box = { x: p.x - m.r * 0.7, y: p.y - m.r * 0.7, w: m.r * 1.4, h: m.r * 1.4 };
         if (genHits(box, 6)) continue;
-        const item = { kind, x: p.x, y: p.y, rot: p.rot || 0, scale: 1, indoors: true };
+        // `side` rides along so the next of this kind can continue the bank
+        const item = { kind, x: p.x, y: p.y, rot: p.rot || 0, scale: 1, indoors: true, side: p.side };
         /* Some of it is worth going through. A searchable piece becomes a
            crate that draws as this furniture, so it is one object rather than
            a box parked on top of a locker. */
@@ -782,6 +820,8 @@ const Game = (() => {
       for (let tries = 0; tries < 16; tries++) {
         const p = put(lampKind, Sprites.META[lampKind]);
         const s2 = Structures.prop(lampKind, p.x, p.y, Sprites.META[lampKind].r * 2, 1);
+        // a strip light runs along the wall it is fixed to, not across it
+        s2.rot = p.rot || 0;
         if (genHits(s2, 6)) continue;
         s2.building = r.building;
         genAdd(s2); obstacles.push(s2);
@@ -918,12 +958,22 @@ const Game = (() => {
      Everything still respects the body-width clearance, so none of these can
      build a pocket you get stuck in. */
   const CLUTTER_GAP = BODY_R * 2 + 8;
+  /* Things that grew where they are, rather than being put there. These keep a
+     random angle; everything man-made gets squared to the wall it is against. */
+  const NATURAL_PROPS = new Set(['tree', 'palm', 'bush', 'rock', 'stump', 'rubble', 'sandpile']);
 
-  function placeProp(kind, x, y, name, jitter) {
+  /* `jitter` moves a prop along the line it belongs to, never across it.
+     Scattering it on both axes was enough to stop a row of six looking like a
+     row at all: the eye reads the straight edge, and fourteen pixels of wobble
+     perpendicular to the wall is what turns a stack of crates against a shed
+     into a handful of crates near a shed. Clusters, which are meant to look
+     piled, pass `spread` instead. */
+  function placeProp(kind, x, y, name, jitter, axis, spread) {
     const m = Sprites.META[kind];
     if (!m) return false;
-    const px = x + (jitter ? rand(-jitter, jitter) : 0);
-    const py = y + (jitter ? rand(-jitter, jitter) : 0);
+    const along = jitter ? rand(-jitter, jitter) : 0;
+    const px = x + (axis === 'v' ? (spread ? rand(-spread, spread) : 0) : along);
+    const py = y + (axis === 'v' ? along : (spread ? rand(-spread, spread) : 0));
     if (!Terrain.isSpawnable(terrain, px, py)) return false;
     /* Never inside a building — anyone's. A yard prop only has to miss the
        *walls* to be legal, and the inside of a neighbour is empty space, so a
@@ -931,6 +981,14 @@ const Game = (() => {
        width. Measured: one base corridor narrowed to 29px that way. */
     if (insideAnyBuilding(px, py, 8)) return false;
     const s2 = Structures.prop(kind, px, py, m.r * 2, 0.85 + Math.random() * 0.35);
+    /* Square it to the wall it is stacked against. Crates, pallets, containers
+       and tyres were being drawn at a fully random angle, so even a row placed
+       on a dead straight line read as a heap — the positions were aligned and
+       nothing else was. Trees, bushes and rubble keep their random angle,
+       because a bush lined up with a wall looks stranger than one that isn't. */
+    if (!NATURAL_PROPS.has(kind)) {
+      s2.rot = (axis === 'v' ? Math.PI / 2 : 0) + (Math.random() < 0.5 ? 0 : Math.PI);
+    }
     if (genHits(s2, CLUTTER_GAP)) return false;
     s2.building = name;
     genAdd(s2); obstacles.push(s2);
@@ -973,23 +1031,34 @@ const Game = (() => {
         ? { x: side.x0 + span * t, y: side.y }
         : { x: side.x, y: side.y0 + span * t });
 
+      // which way this row runs, so jitter can be kept along it
+      const axis = side.horiz ? 'h' : 'v';
       if (layout < 0.45) {
-        // a row stacked along the wall, evenly spaced
+        // a row stacked along the wall, evenly spaced and on one line
         const n = Math.max(2, Math.min(6, Math.floor(span / 150)));
         for (let i = 0; i < n; i++) {
           const p2 = at((i + 0.5) / n);
-          placeProp(i === 0 ? lead : pick(), p2.x, p2.y, name, 14);
+          placeProp(i === 0 ? lead : pick(), p2.x, p2.y, name, 12, axis, 0);
         }
       } else if (layout < 0.75) {
-        // a cluster piled into one end
+        /* A stack piled into one end. Tight rather than spread, but still on
+           the wall's line: things stacked in a yard are stacked *against*
+           something, and letting them wander off the line perpendicular to
+           the wall was the last thing out here that read as scattered. */
         const end = Math.random() < 0.5 ? 0.12 : 0.88;
         const p2 = at(end);
-        for (let i = 0; i < 3; i++) placeProp(i === 0 ? lead : pick(), p2.x, p2.y, name, 46);
+        const pitch = 34;
+        for (let i = 0; i < 3; i++) {
+          const off = (i - 1) * pitch;
+          placeProp(i === 0 ? lead : pick(),
+            p2.x + (axis === 'h' ? off : 0), p2.y + (axis === 'v' ? off : 0),
+            name, 10, axis, 0);
+        }
       } else {
         // a matched pair either side of the middle, like a gateway
         const a2 = at(0.36), b2 = at(0.64);
-        placeProp(lead, a2.x, a2.y, name, 10);
-        placeProp(lead, b2.x, b2.y, name, 10);
+        placeProp(lead, a2.x, a2.y, name, 8, axis, 0);
+        placeProp(lead, b2.x, b2.y, name, 8, axis, 0);
       }
     }
   }
@@ -1392,29 +1461,85 @@ const Game = (() => {
     }
   }
 
-  /* loose walls, sandbag lines and wire in the gaps between buildings */
+  /* ---------------- cover, laid out rather than dropped ----------------
+     Loose cover used to be one run put down at a random point, on a random
+     axis, at a random length. Barbed wire came off worst: wire is a fence —
+     a continuous line strung along an approach, doing a job — and what the
+     map actually had was a field of disconnected stubs pointing every way,
+     none of them lining up with each other or with anything they were
+     supposedly protecting.
+
+     Cover now goes down as runs of segments laid end to end, and every run
+     starts on a shared grid, so two parallel lines are actually parallel
+     rather than eleven pixels out. Wire is strung along a building's frontage
+     at a fixed standoff, which is where wire belongs and also what makes it
+     read as a perimeter instead of as scenery. */
+  const COVER_GRID = 20;          // px; runs start on it, so parallel lines line up
+  const WIRE_STANDOFF = 104;      // px of open ground between a wall and its wire
+  const snapTo = (v) => Math.round(v / COVER_GRID) * COVER_GRID;
+
+  /* Lay `segs` segments end to end from (x, y). Stops at the first one that
+     will not fit, so a run is always continuous — a fence with a hole in the
+     middle of it is not a fence. */
+  function coverRun(type, x, y, axis, segs, lenM, th) {
+    const out = [];
+    let cx = snapTo(x), cy = snapTo(y);
+    for (let i = 0; i < segs; i++) {
+      const s = Structures.seg(type, cx, cy, lenM, axis, th);
+      if (s.x < 20 || s.y < 20 || s.x + s.w > MAP_W - 20 || s.y + s.h > MAP_H - 20) break;
+      if (!Terrain.isSpawnable(terrain, s.x + s.w / 2, s.y + s.h / 2)) break;
+      if (insideAnyBuilding(s.x + s.w / 2, s.y + s.h / 2, 12)) break;
+      if (genHits(s, 22)) break;
+      out.push(s);
+      if (axis === 'h') cx += s.w; else cy += s.h;
+    }
+    return out;
+  }
+  const commitRun = (run) => { for (const s of run) { obstacles.push(s); genAdd(s); } };
+
+  /* A wire fence along one face of a building, parallel to the wall and the
+     length of it. */
+  function wireAlong(b) {
+    const LEN_M = 4;                                   // 160px per segment
+    const per = LEN_M * Structures.PX_PER_M;
+    const side = ['n', 's', 'w', 'e'][Math.floor(Math.random() * 4)];
+    if (side === 'n' || side === 's') {
+      const y = snapTo(side === 'n' ? b.y - WIRE_STANDOFF : b.y + b.h + WIRE_STANDOFF);
+      return coverRun('wire', b.x - 30, y, 'h', Math.max(2, Math.round(b.w / per)), LEN_M, 0.4);
+    }
+    const x = snapTo(side === 'w' ? b.x - WIRE_STANDOFF : b.x + b.w + WIRE_STANDOFF);
+    return coverRun('wire', x, b.y - 30, 'v', Math.max(2, Math.round(b.h / per)), LEN_M, 0.4);
+  }
+
   function placeCover(count) {
-    let guard = count * 40;
+    let guard = count * 30;
     let made = 0;
+    /* Wire goes up first and against the buildings, because that is the only
+       placement for it that means anything. The rest of the budget is spent
+       on runs out in the open. */
+    const fences = Math.round(count * 0.3);
+    for (let i = 0; i < fences && buildings.length; i++) {
+      const b = buildings[Math.floor(Math.random() * buildings.length)];
+      const run = wireAlong(b);
+      if (run.length < 2) continue;
+      commitRun(run);
+      made += run.length;
+    }
     while (made < count && guard-- > 0) {
       const type = rollMix(COVER_MIX);
       const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
       const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
       if (!Terrain.isSpawnable(terrain, x, y)) continue;
       if (insideAnyBuilding(x, y, 12)) continue;      // cover belongs outside, not in a corridor
-      const len = 3 + Math.random() * 6;
       const axis = Math.random() < 0.5 ? 'h' : 'v';
       const th = type === 'metal' ? 0.6 : type === 'wire' ? 0.4 : type === 'sandbag' ? 0.5 : 0.3;
-      const seg = Structures.seg(type, x, y, len, axis, th);
-      // A run is up to 9m long, so test the whole rect, not the origin: it can
-      // otherwise reach off the map edge or into an objective from a valid start.
-      if (seg.x < 20 || seg.y < 20 || seg.x + seg.w > MAP_W - 20 || seg.y + seg.h > MAP_H - 20) continue;
-      if (!Terrain.isSpawnable(terrain, seg.x + seg.w / 2, seg.y + seg.h / 2)) continue;
-      // don't drop a wall on top of a building
-      if (genHits(seg, 24)) continue;
-      obstacles.push(seg);
-      genAdd(seg);
-      made++;
+      /* Two to four lengths in a line. A single stub is litter; a line is a
+         thing to fight from one side of. */
+      const segs = type === 'wire' ? 3 + Math.floor(Math.random() * 3) : 2 + Math.floor(Math.random() * 3);
+      const run = coverRun(type, x, y, axis, segs, 3 + Math.random() * 2, th);
+      if (!run.length) continue;
+      commitRun(run);
+      made += run.length;
     }
   }
 
@@ -6930,7 +7055,10 @@ const Game = (() => {
         const g = Structures.purposeOf(b.name).grade;
         out[g] = out[g] || { good: 0, total: 0 };
         out[g].total++;
-        if (c.tier !== 'regular') out[g].good++;
+        /* Only the tiers that are actually better. Searchable furniture is a
+           crate with a locker's face on it, not a prize — counting it as one
+           put a shed full of shelving on a par with a vault. */
+        if (c.tier === 'silver' || c.tier === 'gold' || c.tier === 'chest') out[g].good++;
       }
       return out;
     },
@@ -7026,6 +7154,75 @@ const Game = (() => {
       return { remembering, takingCover, flanking, inContact, exposed };
     },
     vehicleDoors: () => obstacles.filter(o => o.type === 'garage-door').length,
+    /* Is the outdoor dressing actually lined up? Three questions: does a run
+       of wire join end to end, does it run parallel to the building it is
+       protecting, and do the props in a yard row share a line. */
+    alignment() {
+      const wire = obstacles.filter(o => o.type === 'wire' && !o.underground);
+      const joins = (a, b) => (Math.abs(a.y - b.y) < 3 && (Math.abs((a.x + a.w) - b.x) < 6 || Math.abs((b.x + b.w) - a.x) < 6))
+        || (Math.abs(a.x - b.x) < 3 && (Math.abs((a.y + a.h) - b.y) < 6 || Math.abs((b.y + b.h) - a.y) < 6));
+      const inRun = wire.filter(a => wire.some(b => b !== a && joins(a, b))).length;
+
+      // wire whose line is parallel to, and a consistent distance from, a wall
+      let alongBuilding = 0;
+      for (const s of wire) {
+        const horiz = s.w >= s.h;
+        const hit = buildings.some((b) => {
+          if (horiz) {
+            const overlap = Math.min(s.x + s.w, b.x + b.w) - Math.max(s.x, b.x);
+            if (overlap < s.w * 0.5) return false;
+            return Math.abs(s.y - (b.y - WIRE_STANDOFF)) < 26 || Math.abs(s.y - (b.y + b.h + WIRE_STANDOFF)) < 26;
+          }
+          const overlap = Math.min(s.y + s.h, b.y + b.h) - Math.max(s.y, b.y);
+          if (overlap < s.h * 0.5) return false;
+          return Math.abs(s.x - (b.x - WIRE_STANDOFF)) < 26 || Math.abs(s.x - (b.x + b.w + WIRE_STANDOFF)) < 26;
+        });
+        if (hit) alongBuilding++;
+      }
+
+      /* Yard props that share a line with another prop of the same building:
+         same x or same y to within a few pixels, which is what a row is. */
+      const yard = obstacles.filter(o => o.isProp && o.building);
+      let lined = 0;
+      for (const a of yard) {
+        const ax = a.x + a.w / 2, ay = a.y + a.h / 2;
+        if (yard.some((b) => {
+          if (b === a || b.building !== a.building) return false;
+          const bx = b.x + b.w / 2, by = b.y + b.h / 2;
+          const d = Math.hypot(bx - ax, by - ay);
+          /* 240px was too tight a window: a row of six spread along a
+             1500px harbor frontage sits 250px apart, so props that were
+             perfectly in line were being counted as scattered. */
+          return d < 420 && (Math.abs(bx - ax) < 8 || Math.abs(by - ay) < 8);
+        })) lined++;
+      }
+
+      // furniture of a kind standing together in a bank along one wall
+      /* Searchable pieces are furniture too — they left `decor` for `crates`
+         when they were made lootable, and counting only what stayed behind
+         measured about half the furniture in the building. */
+      const inside = decor.filter(d => d.indoors && PLACEMENT[d.kind] === 'wall')
+        .concat(crates.filter(c => c.look && PLACEMENT[c.look] === 'wall')
+          .map(c => ({ kind: c.look, x: c.x, y: c.y })));
+      let banked = 0;
+      for (const a of inside) {
+        if (inside.some((b) => b !== a && b.kind === a.kind
+          && Math.hypot(b.x - a.x, b.y - a.y) < 90
+          && (Math.abs(b.x - a.x) < 6 || Math.abs(b.y - a.y) < 6))) banked++;
+      }
+      // man-made yard props should be square to the wall they are stacked on
+      const manMade = yard.filter(o => !NATURAL_PROPS.has(o.type));
+      const square = manMade.filter((o) => {
+        const q = Math.abs(((o.rot || 0) % (Math.PI / 2) + Math.PI / 2) % (Math.PI / 2));
+        return q < 0.02 || Math.PI / 2 - q < 0.02;
+      }).length;
+      return {
+        wire: wire.length, wireInRun: inRun, wireAlongBuilding: alongBuilding,
+        yard: yard.length, yardLined: lined,
+        manMade: manMade.length, manMadeSquare: square,
+        wallFurniture: inside.length, inBanks: banked,
+      };
+    },
     /* Where the loot ended up, and whether the new routes exist. */
     lootLayout() {
       const byTier = crates.reduce((m, c) => { m[c.tier] = (m[c.tier] || 0) + 1; return m; }, {});

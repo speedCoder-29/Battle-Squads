@@ -516,6 +516,27 @@ const Structures = (() => {
      rather than as twenty hand-placed rectangles. */
   const DOORWAY = 62;          // px of gap a doorway leaves (1.55m)
 
+  /* ---------- how thick a wall is ----------
+     Real construction has a clear hierarchy and the blueprints did not: they
+     picked a thickness per wall by eye, so an internal partition in one
+     building was heavier than another building's external wall and nothing
+     you could see told you which walls held the place up.
+
+     The standards are: a stud partition finishes about 120mm, a load-bearing
+     internal wall about 170mm, and an external masonry wall 300mm or more.
+     Those ratios are what is reproduced here, not the absolute numbers — a
+     120mm partition is 4.8px at this scale, and the movement code resolves a
+     collision by pushing you back out of the wall you stepped into, which
+     needs the wall to be thicker than one step. Eight pixels is the floor, so
+     partitions sit on it and everything else scales up from there in the same
+     proportion as the real thing. */
+  const WALL_T = {
+    partition: 0.20,      // 8px — the thinnest wall the physics can hold
+    interior: 0.26,       // load-bearing internal
+    exterior: 0.36,       // external envelope
+    fortified: 0.5,       // concrete: bunkers, vaults, cell blocks
+  };
+
   function runAt(type, x, y, axis, offsetPx, lenPx, thickness) {
     return axis === 'h'
       ? seg(type, x + offsetPx, y, lenPx / PX_PER_M, 'h', thickness)
@@ -614,6 +635,28 @@ const Structures = (() => {
      kitchen, which inverted the one size relationship anybody would notice. */
   const MIN_ROOM = 62;
 
+  /* ---------- public, service, private ----------
+     Buildings are zoned before they are dimensioned: the public rooms sit by
+     the way in, the private ones are kept away from it, and the service
+     spaces fill in between. It is the first thing a plan decides and it was
+     the one thing these plans did not do — a bank's vault was as likely to be
+     inside the front door as the lobby was, and a resort's bedrooms were laid
+     out in whatever order the list happened to be written in.
+
+     Lower number = closer to the entrance. */
+  const ZONE = {
+    lobby: 0, foyer: 0, diningLobby: 0, hall: 0, stall: 0, market: 0,
+    reception: 0, washroom: 1, lounge: 1, living: 1, dining: 1, classroom: 1,
+    mainExhibit: 1, displayHall: 1, gunExhibit: 1, gym: 1, mess: 1, plane: 1,
+    kitchen: 2, backKitchen: 2, pantry: 2, office: 2, staffRoom: 2, workbay: 2,
+    garage: 2, motorPool: 2, storeroom: 2, dispensary: 2, guardRoom: 2,
+    briefing: 2, opsRoom: 2, lodge: 2, barn: 2,
+    bedroom: 3, apartment: 3, bunkroom: 3, ward: 3, study: 3, bathroom: 3,
+    surgery: 3, radioRoom: 3, controlRoom: 3, cell: 3,
+    armoury: 4, strongroom: 4, safe: 4,
+  };
+  const zoneOf = (kind) => (ZONE[kind] === undefined ? 2 : ZONE[kind]);
+
   /* Rooms whose door is part of what the room is. A strongroom behind a
      plywood door isn't a strongroom, and a cell you can kick open isn't a
      cell — so these get a reinforced one wherever they are laid out. */
@@ -654,7 +697,12 @@ const Structures = (() => {
        a, b      the room kinds either side of it (a = north/west)
        type      wall type, thickness, doorType as elsewhere */
   function floorPlan(type, ox, oy, w, h, opts = {}) {
-    const th = opts.thickness || 0.22;
+    /* Two thicknesses, not one. The walls between rooms are partitions; the
+       walls that line the corridor carry the building and are heavier. Using
+       a single figure for both is what made every wall inside a building look
+       the same weight, so nothing about a plan told you what was structural. */
+    const th = opts.thickness || WALL_T.interior;
+    const thP = opts.partition || Math.min(opts.thickness || WALL_T.partition, WALL_T.partition);
     const doorType = opts.doorType === null ? null : (opts.doorType || 'door');
     const co = opts.corridor || { axis: 'h', width: 88 };
     const horiz = co.axis === 'h';
@@ -683,6 +731,28 @@ const Structures = (() => {
       const doors = [];
       if (!kinds || !kinds.length || depth < MIN_ROOM) return doors;
       kinds = kinds.slice();
+      /* Zoned along the run: public by the way in, private at the far end.
+         `entrance` says which end of the run the front door is on. */
+      /* Zoned around the way in. Sorting the public rooms to one end of the
+         run is only right when the front door is at that end — and most of
+         these buildings are entered through the middle of a long wall, so
+         doing it that way actually put the lobby further from the door than
+         the bedrooms were. Instead the rooms are ranked by zone and then laid
+         outward from the entrance in both directions, so the public end up
+         beside the door and the private at the far ends whichever wall you
+         come in through. */
+      if (opts.entrance !== null) {
+        const front = opts.entrance === undefined ? 0.5 : opts.entrance;
+        const ranked = kinds.slice().sort((k1, k2) => zoneOf(k1) - zoneOf(k2));
+        if (front <= 0.02 || front >= 0.98) {
+          kinds = front >= 0.98 ? ranked.reverse() : ranked;
+        } else {
+          // deal outward from the middle: public at the door, private at the ends
+          const left = [], right = [];
+          ranked.forEach((k, i) => (i % 2 ? left : right).push(k));
+          kinds = left.reverse().concat(right);
+        }
+      }
       const usable = run - inset * 2;
       const sum = () => kinds.reduce((t, k) => t + roomExtent(k, depth), 0);
       /* A band with a lot of run and few rooms in it has to stretch them, and
@@ -693,30 +763,54 @@ const Structures = (() => {
          putting another room on it, so that is what this does. */
       const fill = filler || 'storeroom';
       while (usable / sum() > 1.6 && kinds.length < 9) kinds.push(fill);
+      const MAX_ASPECT = 3.0;
       const want = kinds.map(k => roomExtent(k, depth));
       const total = want.reduce((t, v) => t + v, 0);
       const k2 = usable / total;                 // fill the run, keep the ratios
+      /* Then hold every room to a shape. A room's extent along the run comes
+         from what it is for, but its depth is whatever the band happens to
+         be, so a small room in a deep band came out as a slot — the mansion's
+         strongroom was 68px across and 269 deep, which is a corridor with a
+         door on it. Anything under the limit is widened and the space is
+         taken off the largest rooms, which have it to spare. The floor has to
+         be applied after the run is scaled to fit, not before: scaling to fill
+         is what was crushing them in the first place. */
+      const ext = want.map(v => v * k2);
+      // the rect is inset 8px a side, so solve the limit for the *rect*
+      const minE = Math.min((depth - 16) / MAX_ASPECT + 16, usable / kinds.length);
+      for (let i = 0; i < ext.length; i++) {
+        let need = minE - ext[i];
+        if (need <= 0.5) continue;
+        ext[i] = minE;
+        for (let guard = 0; need > 0.5 && guard < 20; guard++) {
+          let j = -1, biggest = minE;
+          for (let q = 0; q < ext.length; q++) if (q !== i && ext[q] > biggest) { biggest = ext[q]; j = q; }
+          if (j < 0) break;
+          const take = Math.min(need, ext[j] - minE);
+          ext[j] -= take; need -= take;
+        }
+      }
       let cursor = inset;
       kinds.forEach((kind, i) => {
-        const ext = want[i] * k2;
+        const e = ext[i];
         // the wall that closes this room off from the one before it
         if (i > 0) {
           const p = P(cursor, bandAt);
-          parts.push(...partition(type, p.x, p.y, depth, horiz ? 'v' : 'h', th, [], null));
+          parts.push(...partition(type, p.x, p.y, depth, horiz ? 'v' : 'h', thP, [], null));
         }
         const p0 = P(cursor, bandAt);
         rooms.push(horiz
-          ? room(kind, p0.x + 8, p0.y + 8, ext - 16, depth - 16)
-          : room(kind, p0.x + 8, p0.y + 8, depth - 16, ext - 16));
-        doors.push({ at: cursor + ext / 2, type: SECURE_DOOR[kind] || doorType });
+          ? room(kind, p0.x + 8, p0.y + 8, e - 16, depth - 16)
+          : room(kind, p0.x + 8, p0.y + 8, depth - 16, e - 16));
+        doors.push({ at: cursor + e / 2, type: SECURE_DOOR[kind] || doorType });
         /* A garage opens to the outside as well as to the house: a roller door
            through the shell wall in front of it, wide enough to drive through.
            The caller punches it, because the shell is the caller's to build. */
         if (kind === 'garage') {
-          const len = Math.min(ext - 30, 200);
-          if (len > 90) garages.push({ side: outerSide, at: cursor + ext / 2 - len / 2, len: len / PX_PER_M, type: 'garage-door' });
+          const len = Math.min(e - 30, 200);
+          if (len > 90) garages.push({ side: outerSide, at: cursor + e / 2 - len / 2, len: len / PX_PER_M, type: 'garage-door' });
         }
-        cursor += ext;
+        cursor += e;
       });
       return doors;
     };
@@ -816,6 +910,91 @@ const Structures = (() => {
 
      `hatchType` is what covers the stairs: a plain door for a cellar you can
      see, or a secret one for a vault nobody knows about. */
+  /* Rooms that are not enclosed spaces: circulation, and the open air. These
+     are meant to be long, and dividing them is how you ruin them. */
+  const OPEN_ROOMS = new Set(['hall', 'passage', 'tunnel', 'track', 'dock', 'plane',
+    'pool', 'wheatField', 'shippingCrate', 'shippedCrate', 'gate', 'courtyard']);
+
+  /* The wall type a building is mostly made of, for pieces added after the
+     fact that should match it. */
+  function commonestWall(parts) {
+    const tally = {};
+    for (const p of parts) {
+      if (p.isProp || isDoor(p) || !p.thickness) continue;
+      tally[p.type] = (tally[p.type] || 0) + 1;
+    }
+    let best = 'wood', n = 0;
+    for (const k in tally) if (tally[k] > n) { n = tally[k]; best = k; }
+    return best;
+  }
+
+  /* One long room, divided into the several rooms it should have been.
+
+     A 780px by 117px store is not a room, it is a corridor somebody put
+     shelves in — and several blueprints declared exactly that, because it is
+     easier to write one big rect than to work out where the walls go. This
+     cuts it down its long axis into rooms of a sensible proportion and builds
+     the partitions between them, with a doorway through each so the run is
+     still walkable end to end. */
+  function splitLong(type, r, opts = {}) {
+    const target = opts.aspect || 1.7;
+    const horiz = r.w >= r.h;
+    const long = horiz ? r.w : r.h, short = horiz ? r.h : r.w;
+    const n = Math.max(1, Math.round(long / (short * target)));
+    if (n < 2) return { parts: [], rooms: [room(opts.kind || r.kind, r.x, r.y, r.w, r.h)] };
+    const th = opts.thickness || WALL_T.partition;
+    const doorType = opts.doorType === undefined ? 'door' : opts.doorType;
+    const step = long / n;
+    const parts = [], rooms = [];
+    for (let i = 0; i < n; i++) {
+      const a = i * step;
+      rooms.push(horiz
+        ? room(opts.kind || r.kind, r.x + a + 6, r.y, step - 12, r.h)
+        : room(opts.kind || r.kind, r.x, r.y + a + 6, r.w, step - 12));
+      if (i === 0) continue;
+      parts.push(...(horiz
+        ? partition(type, r.x + a, r.y, r.h, 'v', th, [r.h / 2], doorType)
+        : partition(type, r.x, r.y + a, r.w, 'h', th, [r.w / 2], doorType)));
+    }
+    return { parts, rooms };
+  }
+
+  /* ---------- structural grid ----------
+     A wide-span building stands on a regular grid of columns, and the spacing
+     is not a matter of taste: industrial bays run about 7.5 to 12m, office
+     frames 6 to 7.5m. A warehouse's columns are the most legible thing in it —
+     they tell you the size of the space before you have crossed it, and the
+     aisles are laid out between them.
+
+     The posts in these buildings used to be placed by hand, a few at a time,
+     wherever there was room. This puts them where a frame would actually put
+     them: on a grid, aligned to the building, inset half a bay from the walls
+     so no column lands in a doorway. */
+  /* Real industrial bays run 7.5 to 12m. These sheds are only 15 to 25m
+     across, so at the top of that range a warehouse gets a single column
+     standing on its own, which reads as something dropped rather than as a
+     frame. 6m is the bottom of the office range and the smallest spacing that
+     is still a real one — and it is what actually produces a grid at this
+     size. */
+  const BAY = { industrial: 240, frame: 210 };     // px: 6.0m and 5.25m
+
+  function columnGrid(x, y, w, h, opts = {}) {
+    const bay = opts.bay || BAY.industrial;
+    const kind = opts.kind || 'post';
+    const size = opts.size || 30;
+    const out = [];
+    // column *lines*, not bays: a span of 2.3 bays carries two of them
+    const cols = Math.max(1, Math.ceil(w / bay) - 1);
+    const rows = Math.max(1, Math.ceil(h / bay) - 1);
+    if (cols < 1 || rows < 1) return out;
+    for (let cy = 1; cy <= rows; cy++) {
+      for (let cx = 1; cx <= cols; cx++) {
+        out.push(prop(kind, x + (w / (cols + 1)) * cx, y + (h / (rows + 1)) * cy, size));
+      }
+    }
+    return out;
+  }
+
   /* ---------- tunnels ----------
      A basement you can walk down rather than stand in: a sealed passage with
      a way in at each end. That makes it the one piece of the map that is a
@@ -981,7 +1160,7 @@ const Structures = (() => {
         fillA: 'study', fillB: 'pantry',
         thickness: 0.2,
       });
-      const out = shell(ox, oy, w, h, 'wood', 0.3, [
+      const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
         { side: 'w', at: h * 0.52 - 30 },              // front door, onto the hall
         { side: 'e', at: h * 0.52 - 30 },              // back door, same hall
         ...plan.garages,                                // the roller door
@@ -1184,7 +1363,7 @@ const Structures = (() => {
         tent(ox + col * 175 + (rw % 2) * 40, oy + rw * 165, 110);
       }
       // lodge at the top of the site
-      out.push(...shell(ox + 940, oy + 40, 380, 280, 'wood', 0.35, [
+      out.push(...shell(ox + 940, oy + 40, 380, 280, 'wood', WALL_T.exterior, [
         { side: 'w', at: 140, type: 'door', len: 2 },
       ]));
       out.push(seg('wood', ox + 1130, oy + 56, 6.4, 'v', 0.25));
@@ -1204,7 +1383,7 @@ const Structures = (() => {
        enough to be worth taking on the way past rather than crossing for. */
     clinic(ox, oy) {
       const w = 420, h = 320;
-      const out = shell(ox, oy, w, h, 'wood', 0.3, [
+      const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
         { side: 's', at: 200, type: 'door', len: 2 }, { side: 'w', at: 160 },
       ]);
       out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', 0.25, [120, 300], 'door'));
@@ -1233,7 +1412,7 @@ const Structures = (() => {
         b: ['study', 'staffRoom', 'strongroom'],
         fillA: 'study', fillB: 'office', thickness: 0.25,
       });
-      const out = shell(ox, oy, w, h, 'wood', 0.35, [
+      const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
         { side: 'n', at: 320, type: 'door', len: 2 },
         { side: 'e', at: h * 0.66 - 28 },
       ]);
@@ -1372,6 +1551,8 @@ const Structures = (() => {
       out.push(...top.parts, ...bot.parts);
       out.push(seg('sandbag', ox + 120, oy + h / 2 - 10, 3, 'h', 0.5));
       out.push(seg('barricade', ox + 460, oy + h / 2 - 10, 4, 'h', 0.3));
+      // the frame the shed hangs on, at industrial bay spacing
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
       out.rooms = [...cellRooms(top.cells, 'storeroom'), ...cellRooms(bot.cells, 'storeroom')];
       return out;
     },
@@ -1492,10 +1673,10 @@ const Structures = (() => {
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
         { side: 'w', at: 210 }, { side: 'e', at: 210 }, { side: 'n', at: 400 },
       ]);
-      out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', 0.3, [110, 310, 510, 710], 'door'));
-      out.push(...partition('wood', ox + 14, oy + 280, w - 28, 'h', 0.3, [110, 310, 510, 710], 'door'));
-      const top = roomGrid('wood', ox + 14, oy + 14, w - 28, 166, 4, 1, { access: 's' });
-      const bot = roomGrid('wood', ox + 14, oy + 294, w - 28, h - 308, 4, 1, { access: 'n' });
+      out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', WALL_T.interior, [110, 310, 510, 710], 'door'));
+      out.push(...partition('wood', ox + 14, oy + 280, w - 28, 'h', WALL_T.interior, [110, 310, 510, 710], 'door'));
+      const top = roomGrid('wood', ox + 14, oy + 14, w - 28, 166, 4, 1, { access: 's', thickness: WALL_T.partition });
+      const bot = roomGrid('wood', ox + 14, oy + 294, w - 28, h - 308, 4, 1, { access: 'n', thickness: WALL_T.partition });
       out.push(...top.parts, ...bot.parts);
       // windows down both long faces
       for (const dx of [90, 300, 520, 720]) {
@@ -1525,6 +1706,8 @@ const Structures = (() => {
       out.push(seg('metal', ox + 220, oy + 300, 2.5, 'v', 0.5));
       out.push(seg('metal', ox + 470, oy + 230, 4, 'v', 0.35));
       out.push(seg('sandbag', ox + 700, oy + 380, 4, 'h', 0.5));
+      // a hangar is one clear span: columns only down the sides
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 36, bay: 360 }));
       out.rooms = [
         ...cellRooms(bays.cells, 'workbay'),
         room('plane', ox + 240, oy + 315, 380, 80),
@@ -1540,7 +1723,7 @@ const Structures = (() => {
         b: ['kitchen', 'bathroom'],
         fillA: 'bedroom', fillB: 'pantry', thickness: 0.25,
       });
-      const out = shell(ox, oy, 480, 340, 'wood', 0.35, [
+      const out = shell(ox, oy, 480, 340, 'wood', WALL_T.exterior, [
         { side: 'w', at: 340 * 0.5 - 28, len: 2 },
         { side: 'e', at: 340 * 0.5 - 28 },
       ]);
@@ -1631,6 +1814,8 @@ const Structures = (() => {
         room('office', offices.cells[2].x, offices.cells[2].y, offices.cells[2].w, offices.cells[2].h),
         room('storeroom', ox + 260, oy + h - 130, w - 300, 110),
       ];
+      // the frame the shed hangs on, at industrial bay spacing
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
       return out;
     },
 
@@ -2103,10 +2288,10 @@ const Structures = (() => {
       const rooms = [];
       const corner = (cx, cy, kind, doorSide) => {
         const rw = 150, rh = 120;
-        out.push(...partition('wood', cx, cy, rw, 'h', 0.3, doorSide === 'n' ? [rw / 2] : [], doorSide === 'n' ? 'door' : null));
-        out.push(...partition('wood', cx, cy + rh, rw, 'h', 0.3, doorSide === 's' ? [rw / 2] : [], doorSide === 's' ? 'door' : null));
-        out.push(...partition('wood', cx, cy, rh, 'v', 0.3, doorSide === 'w' ? [rh / 2] : [], doorSide === 'w' ? 'door' : null));
-        out.push(...partition('wood', cx + rw, cy, rh, 'v', 0.3, doorSide === 'e' ? [rh / 2] : [], doorSide === 'e' ? 'door' : null));
+        out.push(...partition('wood', cx, cy, rw, 'h', WALL_T.exterior, doorSide === 'n' ? [rw / 2] : [], doorSide === 'n' ? 'door' : null));
+        out.push(...partition('wood', cx, cy + rh, rw, 'h', WALL_T.exterior, doorSide === 's' ? [rw / 2] : [], doorSide === 's' ? 'door' : null));
+        out.push(...partition('wood', cx, cy, rh, 'v', WALL_T.partition, doorSide === 'w' ? [rh / 2] : [], doorSide === 'w' ? 'door' : null));
+        out.push(...partition('wood', cx + rw, cy, rh, 'v', WALL_T.partition, doorSide === 'e' ? [rh / 2] : [], doorSide === 'e' ? 'door' : null));
         rooms.push(room(kind, cx + 10, cy + 10, rw - 20, rh - 20));
       };
       corner(ox + 8, oy + 8, 'bunkroom', 'e');
@@ -2176,6 +2361,8 @@ const Structures = (() => {
         room('storeroom',   ox + 40, oy + h - 145, w - 300, 120),
         room('controlRoom', ox + w - 220, oy + 30, 195, h - 60),
       ];
+      // the frame the shed hangs on, at industrial bay spacing
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
       return out;
     },
 
@@ -2188,7 +2375,7 @@ const Structures = (() => {
         out.push(seg('metal', ox + 60, oy + 40 + i * 120, 1.4, 'v', 0.35));
       }
       // convenience store (small structure)
-      out.push(...shell(ox + 280, oy - 20, 240, 200, 'wood', 0.3, [
+      out.push(...shell(ox + 280, oy - 20, 240, 200, 'wood', WALL_T.exterior, [
         { side: 's', at: 80, type: 'door', len: 1.2 },
       ]));
       // storage tanks (hazard)
@@ -2728,7 +2915,7 @@ const Structures = (() => {
 
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
-    BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, ROOM_SIZE, tunnel,
+    BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, ROOM_SIZE, tunnel, columnGrid, splitLong, WALL_T, ZONE, zoneOf, BAY,
     PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement, DECOR, decorFor,
     ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
@@ -2737,6 +2924,27 @@ const Structures = (() => {
        have the property, so every older blueprint is untouched. */
     place(name, ox, oy) {
       const parts = BUILDINGS[name](ox, oy);
+      /* A room declared as one long strip is divided into the rooms it should
+         have been, with partitions and doorways between them. Several
+         blueprints wrote a single rect where a building would have three
+         rooms — a 784 by 117 store is a corridor somebody put shelves in —
+         because one rect is easier to write than working out where the walls
+         go. Done here rather than in each blueprint so it holds for all of
+         them, and before the placement is scaled so the new walls scale with
+         everything else. */
+      if (parts.rooms && parts.rooms.length) {
+        const wallType = commonestWall(parts);
+        const kept = [], added = [];
+        for (const r of parts.rooms) {
+          const asp = Math.max(r.w, r.h) / Math.max(1, Math.min(r.w, r.h));
+          if (r.basement || OPEN_ROOMS.has(r.kind) || asp <= 3.0) { kept.push(r); continue; }
+          const sp = splitLong(wallType, r, { aspect: 1.8 });
+          added.push(...sp.parts);
+          for (const nr of sp.rooms) { nr.dark = r.dark; nr.basement = r.basement; kept.push(nr); }
+        }
+        if (added.length) parts.push(...added);
+        parts.rooms = kept;
+      }
       scalePlacement(parts, ox, oy, scaleFor(parts));
       parts.forEach(p => { p.building = name; });
       if (parts.rooms) parts.rooms.forEach(r => { r.building = name; });
