@@ -208,16 +208,94 @@ input, select { font-family: inherit; }
 .icon-btn:hover { background: rgba(255,255,255,0.1); }
 
 /* ---------- HOME LAYOUT ---------- */
+/* Three columns that reach the bottom of the screen. They used to be sized by
+   their contents, so the left panel stopped a third of the way down, the
+   centre column floated its squad box in the middle of a field of nothing, and
+   the three of them read as unrelated boxes rather than as one screen. */
 .home {
   flex: 1; display: grid;
-  grid-template-columns: 300px 1fr 320px;
-  gap: 20px; padding: 22px 26px; overflow: hidden;
+  grid-template-columns: 330px minmax(0, 1fr) 340px;
+  align-items: stretch;
+  gap: 18px; padding: 20px 24px; overflow: hidden;
 }
 .panel {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 18px; overflow-y: auto;
   backdrop-filter: blur(8px);
+  display: flex; flex-direction: column; min-height: 0;
 }
+.panel__lede { font-size: 12px; color: var(--muted); line-height: 1.5; margin: -6px 0 12px; }
+
+/* A column of panels inside one grid cell. Two panels dropped straight into
+   the grid are two cells, and the second wraps onto a new row. */
+.rail { display: flex; flex-direction: column; gap: 18px; min-height: 0; }
+.rail > .panel { flex: 1 1 auto; min-height: 0; }
+.rail > .panel--missions { flex: 0 0 auto; max-height: 46%; }
+
+/* ---------- career block ---------- */
+.career { margin-bottom: 14px; }
+.career__top { display: flex; align-items: center; gap: 12px; }
+.career__avatar {
+  width: 46px; height: 46px; flex: none; border-radius: 12px;
+  display: grid; place-items: center; font-size: 24px;
+  background: linear-gradient(135deg, rgba(61,123,255,0.45), rgba(255,106,43,0.45));
+  border: 1px solid var(--line-strong);
+}
+.career__who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.career__name { font-size: 16px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.career__rank { font-size: 11px; color: var(--gold); letter-spacing: 1px; text-transform: uppercase; }
+.career__level {
+  font-size: 20px; font-weight: 900; color: var(--text);
+  background: rgba(0,0,0,0.3); border: 1px solid var(--line);
+  border-radius: 10px; padding: 4px 10px; flex: none;
+}
+.career__xp { margin-top: 10px; }
+.career__xptext { font-size: 11px; color: var(--muted); display: block; margin-top: 5px; }
+.bar--slim { height: 7px; }
+
+/* ---------- what is out on the map ---------- */
+.intel { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.intel li {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(0,0,0,0.2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 9px 11px;
+}
+.intel__icon { font-size: 17px; width: 24px; text-align: center; flex: none; }
+.intel__body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.intel__name { font-size: 13px; font-weight: 700; }
+.intel__note { font-size: 11px; color: var(--muted); }
+.intel__count { font-size: 15px; font-weight: 900; color: var(--gold); flex: none; }
+.intel__foot { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; flex: none; }
+
+/* ---------- season block + changelog ---------- */
+.season {
+  background: rgba(0,0,0,0.22); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 14px; margin-bottom: 16px;
+  display: flex; flex-direction: column; gap: 7px;
+}
+.season__head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
+.season__head b { color: var(--text); font-size: 13px; }
+.season__xp { font-size: 11px; color: var(--muted); }
+.season .btn { align-self: flex-start; margin-top: 2px; }
+.changelog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.changelog li {
+  border-left: 2px solid var(--accent); padding: 2px 0 2px 10px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.changelog b { font-size: 12.5px; }
+.changelog span { font-size: 11px; color: var(--muted); line-height: 1.45; }
+.intel__tip { font-size: 11px; color: var(--muted); line-height: 1.5; display: block; }
+
+/* ---------- the kit you are deploying with ---------- */
+.kitstrip {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  width: 100%; max-width: 640px;
+  background: rgba(0,0,0,0.22); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 12px;
+}
+.kitstrip__item { display: flex; flex-direction: column; gap: 2px; padding-right: 12px; flex: 1; min-width: 88px; }
+.kitstrip__k { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.kitstrip__item b { font-size: 13px; }
 .panel__title { font-size: 15px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 14px; color: var(--text); display: flex; justify-content: space-between; align-items: baseline; }
 .panel__hint { font-size: 11px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
@@ -254,18 +332,21 @@ input, select { font-family: inherit; }
 .stat span { font-size: 11px; color: var(--muted); }
 
 /* PLAY HUB (center) */
+/* The centre column starts at the top and works down, rather than centring
+   its contents and leaving the squad box adrift in the middle of the screen. */
 .play-hub {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 26px; padding: 10px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  gap: 16px; padding: 4px 10px 10px; overflow-y: auto; min-height: 0;
 }
+.play-hub > * { flex: none; }
 .play-hub__head { text-align: center; }
-.play-hub__title { font-size: 30px; font-weight: 900; letter-spacing: 4px; }
+.play-hub__title { font-size: 25px; font-weight: 900; letter-spacing: 3px; }
 .play-hub__sub { color: var(--muted); margin-top: 6px; }
 .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; width: 100%; max-width: 640px; }
 .mode-card {
   position: relative; text-align: left;
   background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 22px 20px; transition: 0.2s;
+  border-radius: var(--radius); padding: 16px 18px; transition: 0.2s;
   display: flex; flex-direction: column; gap: 10px; overflow: hidden;
 }
 .mode-card::before {
@@ -344,8 +425,9 @@ input, select { font-family: inherit; }
 
 /* ---------- party ---------- */
 .party {
-  margin-top: 18px; border: 1px solid var(--line); border-radius: var(--radius);
+  margin-top: 2px; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--panel); padding: 16px 18px;
+  width: 100%; max-width: 640px;
 }
 .party__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .party__head h3 { font-size: 14px; letter-spacing: 1.5px; text-transform: uppercase; }

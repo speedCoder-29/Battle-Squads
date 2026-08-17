@@ -197,13 +197,15 @@ const Structures = (() => {
     },
     tyre: {
       name: 'Tyre', height: 'low', hp: 35, toughness: 1, prop: 'tyre',
-      bullets: 'through', passable: true,
+      bullets: 'through',        // A stack of tyres is waist high and does not move.
+
       fill: '#2d2d2d', stroke: '#0f0f0f',
       effect: 'Light cover with visibility gaps.',
     },
     rubble: {
       name: 'Rubble', height: 'low', hp: 45, toughness: 1, prop: 'rubble',
-      bullets: 'through', passable: true,
+      bullets: 'through',        // A heap of masonry is something you climb over, not through.
+
       fill: '#8f8f8f', stroke: '#5d5d5d',
       effect: 'Debris that slows movement and blocks little.',
     },
@@ -355,8 +357,16 @@ const Structures = (() => {
      so `seg`'s run-length model doesn't fit them. */
   function prop(type, x, y, size, scale) {
     const d = def(type);
-    const half = (size || 34) * (scale || 1) / 2;
-    const s = { x: x - half, y: y - half, w: half * 2, h: half * 2 };
+    const sc = scale || 1;
+    const half = (size || 34) * sc / 2;
+    /* A container is 2.44m by 6.06m and a bed is 1m by 2m. Boxing everything
+       as a square made the long things square, so a container was a cube you
+       could walk round in one step and a bed took the floor of a wardrobe.
+       Sprites.PROP_BOX carries the footprint for the ones that have a shape. */
+    const box = (typeof Sprites !== 'undefined' && Sprites.PROP_BOX) ? Sprites.PROP_BOX[type] : null;
+    const hw = box ? box.w * sc / 2 : half;
+    const hh = box ? box.h * sc / 2 : half;
+    const s = { x: x - hw, y: y - hh, w: hw * 2, h: hh * 2 };
     s.type = type; s.thickness = 0.4; s.axis = 'h';
     s.maxHp = maxHp(type, 0.4); s.hp = s.maxHp;
     s.toughness = toughness(type, 0.4);

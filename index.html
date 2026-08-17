@@ -103,6 +103,28 @@
     <main class="home">
       <!-- LEFT: news / featured -->
       <aside class="panel panel--news" data-panelgroup="play">
+        <!-- Who you are, before what's new. The left column opened on a news
+             card and closed a third of the way down the screen; the career
+             block gives it something to be about and fills the space. -->
+        <div class="career">
+          <div class="career__top">
+            <span class="career__avatar" id="career-avatar">🎯</span>
+            <div class="career__who">
+              <b class="career__name" id="career-name">Player</b>
+              <span class="career__rank" id="career-rank">Recruit</span>
+            </div>
+            <span class="career__level" id="career-level">1</span>
+          </div>
+          <div class="career__xp">
+            <div class="bar bar--slim"><div class="bar__fill" id="career-xpbar"></div></div>
+            <span class="career__xptext" id="career-xptext">0 / 1000 XP</span>
+          </div>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><b id="stat-wins">0</b><span>Wins</span></div>
+          <div class="stat"><b id="stat-matches">0</b><span>Matches</span></div>
+          <div class="stat"><b id="stat-kills">0</b><span>Eliminations</span></div>
+        </div>
         <h2 class="panel__title">Latest Drop</h2>
         <div class="news-card">
           <div class="news-card__banner news-card__banner--season">
@@ -111,11 +133,27 @@
           </div>
           <p>New objective maps, ranked queues, and the Season 1 Battle Pass are live. Squad up and climb.</p>
         </div>
-        <div class="stat-row">
-          <div class="stat"><b id="stat-wins">0</b><span>Wins</span></div>
-          <div class="stat"><b id="stat-matches">0</b><span>Matches</span></div>
-          <div class="stat"><b id="stat-kills">0</b><span>Eliminations</span></div>
+
+        <!-- Season progress, so the left column has something live in it below
+             the fold rather than half a screen of nothing. -->
+        <div class="season">
+          <div class="season__head">
+            <span>Battle Pass</span>
+            <b>Tier <span id="season-tier">1</span></b>
+          </div>
+          <div class="bar bar--slim"><div class="bar__fill" id="season-bar"></div></div>
+          <span class="season__xp" id="season-xp">0 / 1000 XP</span>
+          <button class="btn btn--ghost btn--tiny" data-nav="battlepass">View rewards</button>
         </div>
+
+        <h2 class="panel__title">What's New</h2>
+        <ul class="changelog">
+          <li><b>Tunnels &amp; bunker complexes</b><span>Drop in one end, come up at the other.</span></li>
+          <li><b>Chests</b><span>Three rolls, behind the reinforced doors.</span></li>
+          <li><b>Searchable furniture</b><span>Lockers, shelves and desks are worth going through.</span></li>
+          <li><b>Garages</b><span>Vehicle doors on six building types.</span></li>
+          <li><b>Rebuilt interiors</b><span>Proper rooms, walls, doors and service passages.</span></li>
+        </ul>
       </aside>
 
       <!-- CENTER: PLAY / queue -->
@@ -163,6 +201,15 @@
           </button>
         </div>
 
+        <!-- What you are deploying with, so the mode screen is not the only
+             thing you can see before a match. -->
+        <div class="kitstrip" id="kitstrip">
+          <div class="kitstrip__item"><span class="kitstrip__k">Class</span><b id="kit-class">—</b></div>
+          <div class="kitstrip__item"><span class="kitstrip__k">Weapon</span><b id="kit-weapon">—</b></div>
+          <div class="kitstrip__item"><span class="kitstrip__k">Perk</span><b id="kit-perk">—</b></div>
+          <button class="btn btn--ghost btn--tiny" data-nav="loadout">Change loadout</button>
+        </div>
+
         <!-- ===== PARTY ===== -->
         <div class="party" id="party">
           <div class="party__head">
@@ -208,12 +255,24 @@
       </div>
 
       <!-- RIGHT: daily missions preview -->
-      <aside class="panel panel--missions" data-panelgroup="play">
+      <div class="rail" data-panelgroup="play">
+      <aside class="panel panel--missions">
         <h2 class="panel__title">Daily Missions <span class="panel__hint">resets in <b id="missions-reset">—</b></span></h2>
         <ul class="mini-mission-list" id="mini-mission-list"></ul>
       </aside>
 
       <!-- ===== MISSIONS FULL PANEL ===== -->
+      <aside class="panel panel--intel">
+        <h2 class="panel__title">On The Map</h2>
+        <p class="panel__lede">Every match generates a fresh island. This is what
+          is out there to find.</p>
+        <ul class="intel" id="intel-list"></ul>
+        <div class="intel__foot">
+          <span class="intel__tip" id="intel-tip"></span>
+        </div>
+      </aside>
+      </div>
+
       <div class="subpage" data-panelgroup="missions">
         <div class="subpage__head">
           <h1>Daily & Weekly Missions</h1>

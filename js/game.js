@@ -290,9 +290,16 @@ const Game = (() => {
      deliberate rather than as more of the same. */
   const DENSITY = {
     buildings: 3.2,
-    cover: 7.5,        // was 11.0
+    cover: 6.5,
     crates: 4.2,
-    props: 78,         // was 120
+    /* Props are counted per million px², and they got a lot bigger when they
+       were sized against the real thing — a tree went from 1.8m across to
+       4.6m, which is nearly four times the ground it covers. Keeping the old
+       count would have put the same number of much larger objects on the map:
+       the same field, four times as full. Fewer, bigger things is the same
+       coverage and a far cheaper map to generate. */
+    props: 34,         // was 78, when a tree was the size of a shrub
+    groves: 2.0,       // stands of trees, per million px²
     grassPatches: 2.4,
   };
   /* the buildings that can be rolled, and how common each is */
@@ -344,6 +351,7 @@ const Game = (() => {
     layOutYards();                                      // now that nothing else needs the ground
     placeCover(Math.round(area * DENSITY.cover));
     placeGrass(Math.round(area * DENSITY.grassPatches));
+    placeGroves(Math.round(area * DENSITY.groves));
     placeProps(Math.round(area * DENSITY.props));
 
     // Loose cover isn't part of a building, so a piece that landed somewhere it
@@ -1026,6 +1034,12 @@ const Game = (() => {
     for (const side of sides) {
       const span = side.horiz ? side.x1 - side.x0 : side.y1 - side.y0;
       if (span < 140) continue;
+      /* A long frontage gets two arrangements rather than one. A single row of
+         six along a 1500px harbor wall left most of it bare, because the
+         number of props was fixed by the arrangement and not by how much wall
+         there was to dress. */
+      const passes = span > 620 ? 2 : 1;
+      for (let pass = 0; pass < passes; pass++) {
       const layout = Math.random();
       const at = (t) => (side.horiz
         ? { x: side.x0 + span * t, y: side.y }
@@ -1060,6 +1074,22 @@ const Game = (() => {
         placeProp(lead, a2.x, a2.y, name, 8, axis, 0);
         placeProp(lead, b2.x, b2.y, name, 8, axis, 0);
       }
+      }
+    }
+    /* And a screen of planting at one corner: somewhere to lie up that is not
+       a wall, so approaching a building is not purely a question of crossing
+       open ground.
+
+       Deliberately not tagged as this building's decor. A yard prop is
+       supposed to say what the building is — barrels at a depot, tyres at a
+       garage — and planting says nothing about any of them, so booking it
+       against the building's own list only made every building look like it
+       had strays in the yard. */
+    const corner = Math.floor(Math.random() * 4);
+    const cx = corner % 2 ? bb.x + bb.w + 86 : bb.x - 86;
+    const cy = corner < 2 ? bb.y - 86 : bb.y + bb.h + 86;
+    for (let i = 0; i < 3; i++) {
+      placeProp('bush', cx + rand(-70, 70), cy + rand(-70, 70), null, 0, 'h', 0);
     }
   }
 
@@ -1554,6 +1584,57 @@ const Game = (() => {
     }
   }
 
+  /* ---------------- woodland ----------------
+     Trees scattered one at a time across the whole island give you a field
+     with the occasional tree in it. Trees grow in stands, and a stand is worth
+     far more than the same trees spread out: it is a piece of the map you can
+     cross without being seen, with an edge that has to be watched.
+
+     A grove is a loose cluster with a fringe of scrub around it, which is also
+     how a real treeline looks from above — dense in the middle, ragged where
+     it meets the grass. */
+  function placeGroves(count) {
+    /* Keep trying for a spot. A grove wants clear ground, and asking for a
+       point 200px from any building on a map with thirty-odd of them rejects
+       almost everywhere — the first version of this planted twenty-three trees
+       across the whole island because nearly every centre it rolled was inside
+       somebody's keep-out. Fewer demands, more attempts. */
+    let guard = count * 12, made = 0;
+    while (made < count && guard-- > 0) {
+      const cx = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+      const cy = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+      if (!Terrain.isSpawnable(terrain, cx, cy)) continue;
+      if (insideAnyBuilding(cx, cy, 90)) continue;    // not in somebody's yard
+      made++;
+      const spread = 190 + Math.random() * 220;
+      const trunks = 6 + Math.floor(Math.random() * 7);
+      for (let t = 0; t < trunks; t++) {
+        // polar, so the stand is round rather than a square patch
+        const a2 = Math.random() * Math.PI * 2;
+        const rr = Math.sqrt(Math.random()) * spread;
+        const x = cx + Math.cos(a2) * rr, y = cy + Math.sin(a2) * rr;
+        if (!Terrain.isSpawnable(terrain, x, y) || Terrain.onRoad(terrain, x, y)) continue;
+        if (insideAnyBuilding(x, y, 20)) continue;
+        const kind = Terrain.isSand && Terrain.isSand(terrain, x, y) ? 'palm' : 'tree';
+        const pr = Structures.prop(kind, x, y, Sprites.META[kind].r * 2, 0.8 + Math.random() * 0.4);
+        if (genHits(pr, 8)) continue;
+        obstacles.push(pr); genAdd(pr);
+      }
+      // scrub around the edge of the stand: cover you can actually lie up in
+      const scrub = 4 + Math.floor(Math.random() * 5);
+      for (let b = 0; b < scrub; b++) {
+        const a2 = Math.random() * Math.PI * 2;
+        const rr = spread * (0.75 + Math.random() * 0.5);
+        const x = cx + Math.cos(a2) * rr, y = cy + Math.sin(a2) * rr;
+        if (!Terrain.isSpawnable(terrain, x, y) || Terrain.onRoad(terrain, x, y)) continue;
+        if (insideAnyBuilding(x, y, 20)) continue;
+        const pr = Structures.prop('bush', x, y, Sprites.META.bush.r * 2, 0.85 + Math.random() * 0.4);
+        if (genHits(pr, 6)) continue;
+        obstacles.push(pr); genAdd(pr);
+      }
+    }
+  }
+
   /* dressing: woodland inland, driftwood and palms along the sand */
   function placeProps(count) {
     // Interactive props (crates, barrels, trees, rocks, containers, bushes) are
@@ -1570,9 +1651,13 @@ const Game = (() => {
       if (!Terrain.isSpawnable(terrain, x, y)) continue;
       if (Terrain.onRoad(terrain, x, y)) continue;
       if (insideAnyBuilding(x, y, 10)) continue;      // not in somebody's hallway
-      const scale = 0.8 + Math.random() * 0.45;
-      const size = type === 'tree' ? 64 : type === 'container' ? 76 : type === 'bush' ? 56 : 46;
-      const pr = Structures.prop(type, x, y, size, scale);
+      /* Sized from the sprite table, not from four numbers written here. This
+         line was quietly overriding it: whatever a tree was declared to be, it
+         was built at 64px — 1.6m — so raising the canopy in Sprites.META did
+         nothing at all out in the field where nearly every tree on the map is.
+         Scale varies the individual, the table decides the species. */
+      const scale = 0.82 + Math.random() * 0.36;
+      const pr = Structures.prop(type, x, y, (Sprites.META[type] || { r: 23 }).r * 2, scale);
       if (genHits(pr, 12)) continue;
       obstacles.push(pr);
       genAdd(pr);
@@ -1584,8 +1669,11 @@ const Game = (() => {
         kind,
         x: rand(Terrain.BEACH_INSET - 40, MAP_W - Terrain.BEACH_INSET + 40),
         y: rand(Terrain.BEACH_INSET - 40, MAP_H - Terrain.BEACH_INSET + 40),
-        rot: Math.random() * Math.PI * 2,
-        scale: 0.75 + Math.random() * 0.5,
+        // man-made scenery sits square; only the natural stuff is random
+        rot: NATURAL_PROPS.has(kind)
+          ? Math.random() * Math.PI * 2
+          : Math.round(Math.random() * 4) * (Math.PI / 2),
+        scale: 0.8 + Math.random() * 0.4,
       });
     }
     decor.push(...beachDecor());
@@ -3111,6 +3199,8 @@ const Game = (() => {
     for (let i = 0; i < pay.rolls; i++) grantLoot(Items.rollLoot(c.tier));
     // a Scavenger finds the thing at the bottom of the box
     if (Perks.has(player, 'scavenger')) grantLoot(Items.rollLoot(c.tier));
+    // ...and a Lockpick finds the false bottom in the furniture
+    if (c.tier === 'furniture' && Perks.has(player, 'lockpick')) grantLoot(Items.rollLoot(c.tier));
     if (c.tier === 'chest') hudMsg('Chest opened');
     SFX.reward();
   }
@@ -3283,6 +3373,10 @@ const Game = (() => {
   function wireAt(a, dt) {
     const hz = hazardAt(a.x, a.y);
     if (!hz) return 1;
+    /* A Trench Runner crosses wire at walking pace. Both ends have to agree,
+       which is why the perk is synced — the room applies the same exemption in
+       its own movement step. */
+    const ignoreSlow = !!Perks.mod(a, 'ignoreHazardSlow');
     /* Online the room is the one that cuts you — it runs this same wire against
        the same map, and its number is the one the snapshot carries. Applying it
        here as well would take the HP off twice on our own screen and then have
@@ -3293,7 +3387,7 @@ const Game = (() => {
       // environmental: no hit-zone roll, no armour — the wire just cuts you
       if (a.wireAcc >= 4) { applyDamage(a, a.wireAcc, null, 'true'); a.wireAcc = 0; }
     }
-    return hz.slow;
+    return ignoreSlow ? 1 : hz.slow;
   }
   function updateSmokes(dt) {
     for (let i = smokes.length - 1; i >= 0; i--) { smokes[i].life -= dt; if (smokes[i].life <= 0) smokes.splice(i, 1); }
@@ -7154,6 +7248,48 @@ const Game = (() => {
       return { remembering, takingCover, flanking, inContact, exposed };
     },
     vehicleDoors: () => obstacles.filter(o => o.type === 'garage-door').length,
+    /* Are the props the size of the things they are, can you hide in the ones
+       you should be able to, and do the solid ones actually stop you? */
+    propAudit() {
+      const M = Structures.PX_PER_M;
+      const props = obstacles.filter(o => o.isProp);
+      const by = {};
+      for (const o of props) {
+        const k = o.type;
+        by[k] = by[k] || { n: 0, w: 0, h: 0, solid: Structures.blocksMove(o), conceals: !!kindOf(o).conceals };
+        by[k].n++; by[k].w += o.w; by[k].h += o.h;
+      }
+      const rows = Object.entries(by).map(([k, v]) => ({
+        kind: k, n: v.n,
+        m: +((v.w / v.n) / M).toFixed(2),          // mean footprint in metres
+        tall: +((v.h / v.n) / M).toFixed(2),
+        solid: v.solid, conceals: v.conceals,
+      })).sort((a2, b2) => b2.m - a2.m);
+      // a bush has to be wider than the body standing in it, or it hides nobody
+      const bush = rows.find(r => r.kind === 'bush');
+      const body = (BODY_R * 2) / M;
+      return {
+        rows, body: +body.toFixed(2),
+        bushCoversBody: bush ? bush.m > body * 1.6 : false,
+        solidKinds: rows.filter(r => r.solid).length,
+        passableKinds: rows.filter(r => !r.solid).length,
+      };
+    },
+    /* Stand in the nearest bush and see whether it hides you. */
+    hideTest() {
+      let best = null, bd = Infinity;
+      for (const o of obstacles) {
+        if (!o.isProp || !kindOf(o).conceals) continue;
+        const d = dist2(player.x, player.y, o.x + o.w / 2, o.y + o.h / 2);
+        if (d < bd) { bd = d; best = o; }
+      }
+      if (!best) return null;
+      const before = inConcealment(player);
+      player.x = best.x + best.w / 2; player.y = best.y + best.h / 2;
+      player.stillT = 5;                          // as if you had stopped in it
+      const after = inConcealment(player);
+      return { kind: best.type, hiddenBefore: before, hiddenInside: after };
+    },
     /* Is the outdoor dressing actually lined up? Three questions: does a run
        of wire join end to end, does it run parallel to the building it is
        protecting, and do the props in a yard row share a line. */

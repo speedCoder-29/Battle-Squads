@@ -102,6 +102,22 @@ const Perks = (() => {
     },
 
     /* ---------- required by the loot table ---------- */
+    /* ---------- beyond the table ----------
+       Marked `extra` so the design-table checks can tell them apart from the
+       eleven the table specifies. */
+    lockpick: {
+      id: 'lockpick', name: 'Lockpick', icon: '🔧', extra: true,
+      blurb: 'Every locker has a false bottom if you know where to look.',
+      effects: ['Searching furniture gives a second item'],
+      mods: { furnitureBonus: 1 },
+    },
+    trenchrunner: {
+      id: 'trenchrunner', name: 'Trench Runner', icon: '🥾', synced: true, extra: true,
+      blurb: 'Wire is something to cross, not something to go round.',
+      effects: ['Barbed wire does not slow you'],
+      mods: { ignoreHazardSlow: true },
+    },
+
     diver: {
       id: 'diver', name: 'Diver', icon: '🤿', synced: true, extra: true,
       blurb: 'Water doesn’t slow you, and you can reach what sank in it.',

@@ -305,23 +305,35 @@ const Sprites = (() => {
   };
 
   /* metadata the world uses: draw radius, shadow throw, and whether it's tall */
+  /* ---------- how big a thing is ----------
+     `r` is the half-width in pixels, and at 40px to the metre it is also a
+     statement about the real object. Most of these were drawn to look right
+     next to each other rather than measured, and the results did not survive
+     contact with a 30px body: a tree was 1.8m across, so it read as a shrub
+     and could not hide anybody, and a bush at 1.2m was narrower than the
+     player standing in it — which made the concealment it grants something
+     you could see straight past.
+
+     Sizes are now taken from the real thing and noted in metres. Trees are
+     the striking change: a mature canopy is four to five metres, which is
+     nearly four times the footprint it had. */
   const META = {
-    tree:      { r: 36, shadow: 12, tall: true },
-    palm:      { r: 36, shadow: 12, tall: true },
-    bush:      { r: 24, shadow: 5 },
-    rock:      { r: 22, shadow: 7 },
-    crate:     { r: 21, shadow: 6 },
-    barrel:    { r: 18, shadow: 6 },
-    pallet:    { r: 21, shadow: 3 },
-    tyre:      { r: 17, shadow: 3 },
-    cone:      { r: 14, shadow: 3 },
-    rubble:    { r: 20, shadow: 4 },
-    antenna:   { r: 24, shadow: 8, tall: true },
-    sign:      { r: 20, shadow: 5 },
-    tent:      { r: 34, shadow: 8, tall: true },
-    sandpile:  { r: 25, shadow: 4 },
-    container: { r: 31, shadow: 9, tall: true },
-    stump:     { r: 18, shadow: 3 },
+    tree:      { r: 92, shadow: 26, tall: true },     // 4.6m canopy
+    palm:      { r: 84, shadow: 24, tall: true },     // 4.2m fronds
+    bush:      { r: 46, shadow: 8 },                  // 2.3m — wide enough to lie up in
+    rock:      { r: 34, shadow: 10 },                 // 1.7m boulder
+    crate:     { r: 21, shadow: 6 },                  // 1.05m
+    barrel:    { r: 13, shadow: 5 },                  // 0.65m drum
+    pallet:    { r: 24, shadow: 3 },                  // 1.2m
+    tyre:      { r: 15, shadow: 3 },                  // 0.75m
+    cone:      { r: 9,  shadow: 2 },                  // 0.45m
+    rubble:    { r: 28, shadow: 5 },                  // 1.4m heap
+    antenna:   { r: 14, shadow: 10, tall: true },     // 0.7m mast base
+    sign:      { r: 17, shadow: 5 },                  // 0.85m board
+    tent:      { r: 58, shadow: 12, tall: true },     // 2.9m — you can get inside it
+    sandpile:  { r: 40, shadow: 7 },                  // 2.0m heap
+    container: { r: 49, shadow: 14, tall: true },     // 2.44m across (see PROP_BOX)
+    stump:     { r: 17, shadow: 3 },                  // 0.85m
     table:     { r: 31, shadow: 4 },
     shelf:     { r: 34, shadow: 4 },
     locker:    { r: 25, shadow: 6, tall: true },
@@ -336,6 +348,21 @@ const Sprites = (() => {
     plant:     { r: 20, shadow: 4 },
     lamp:      { r: 16, shadow: 3, light: 190 },      // light = glow radius in px
     striplight: { r: 22, shadow: 2, light: 150 },
+  };
+
+  /* Things that are not square. A shipping container is 2.44m by 6.06m and a
+     bed is 1m by 2m; drawing them inside a square box made the container a
+     cube and cost the bed its shape. The numbers are the footprint in pixels;
+     the sprite still draws from `r`, this is what the collision box uses. */
+  const PROP_BOX = {
+    container: { w: 98, h: 242 },
+    tent:      { w: 96, h: 116 },
+    bed:       { w: 42, h: 82 },
+    shelf:     { w: 72, h: 26 },
+    desk:      { w: 64, h: 34 },
+    locker:    { w: 38, h: 22 },
+    pallet:    { w: 48, h: 40 },
+    sign:      { w: 34, h: 12 },
   };
 
   const kinds = Object.keys(META);
@@ -353,5 +380,5 @@ const Sprites = (() => {
     ctx.restore();
   }
 
-  return { DRAW, META, P, kinds, has, draw, circle, box };
+  return { DRAW, META, PROP_BOX, P, kinds, has, draw, circle, box };
 })();

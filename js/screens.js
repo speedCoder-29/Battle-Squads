@@ -128,6 +128,20 @@ const Screens = (() => {
         ? `Connecting to ${url} when you deploy. Falls back to bots if it's unreachable.`
         : 'No multiplayer server configured. See server/README.md, or add ?server=wss://your-host to the URL.';
     }
+    renderCareer(p);
+    renderKit(p);
+    renderIntel();
+    // season strip mirrors the battle-pass numbers rather than inventing its own
+    const st = document.getElementById('season-tier');
+    if (st) {
+      st.textContent = p.bpTier || 1;
+      const need = 1000;
+      const have = p.bpXp || 0;
+      const b2 = document.getElementById('season-bar');
+      if (b2) b2.style.width = Math.max(2, Math.min(100, (have / need) * 100)) + '%';
+      const x2 = document.getElementById('season-xp');
+      if (x2) x2.textContent = have + ' / ' + need + ' XP';
+    }
     // reset timer(s)
     document.getElementById('missions-reset').textContent = Progression.timeUntilReset();
     document.querySelectorAll('.missions-reset').forEach(e => e.textContent = Progression.timeUntilReset());
@@ -135,6 +149,78 @@ const Screens = (() => {
   }
 
   const shortHost = (url) => String(url).replace(/^wss?:\/\//, '').split('/')[0];
+
+  /* ---- who you are, and how far along ---- */
+  const RANKS = ['Recruit', 'Trooper', 'Corporal', 'Sergeant', 'Lieutenant', 'Captain', 'Major', 'Colonel', 'Commander'];
+  function renderCareer(p) {
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set('career-name', p.username);
+    set('career-avatar', p.avatar);
+    set('career-level', p.level);
+    set('career-rank', RANKS[Math.min(RANKS.length - 1, Math.floor((p.level - 1) / 3))]);
+    /* The same curve awardXp() levels you up on — 500 xp times your level — so
+       the bar cannot drift from the number beside it. */
+    const need = p.level * 500;
+    const have = p.xp || 0;
+    const bar = document.getElementById('career-xpbar');
+    if (bar) bar.style.width = Math.max(2, Math.min(100, (have / Math.max(1, need)) * 100)) + '%';
+    set('career-xptext', have + ' / ' + need + ' XP');
+  }
+
+  /* ---- what you are deploying with ---- */
+  function renderKit(p) {
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    const lo = p.loadout || {};
+    const cls = lo.klass || lo.class || (typeof Classes !== 'undefined' ? Object.keys(Classes.CLASSES)[0] : '—');
+    set('kit-class', cls);
+    const w = lo.weapon && typeof Weapons !== 'undefined' && Weapons.byId[lo.weapon];
+    set('kit-weapon', w ? w.name : (lo.weapon || 'Class default'));
+    const perk = lo.perk && typeof Perks !== 'undefined' && Perks.byId(lo.perk);
+    set('kit-perk', perk ? perk.name : 'None');
+  }
+
+  /* ---- what is out on the map ----
+     Counted from the tables the generator actually reads, so the panel cannot
+     claim content the game does not have. */
+  function renderIntel() {
+    const ul = document.getElementById('intel-list');
+    if (!ul || typeof Structures === 'undefined') return;
+    const nBuildings = Object.keys(Structures.BUILDINGS).length;
+    const nRooms = Object.keys(Structures.ROOM_LOOT).length;
+    const nPerks = (typeof Perks !== 'undefined' && Perks.list) ? Perks.list.length : 0;
+    const nGuns = (typeof Weapons !== 'undefined' && Weapons.list) ? Weapons.list.length : 0;
+    const rows = [
+      { icon: '🏚️', name: 'Building types', note: 'houses, bases, bunkers, the lot', n: nBuildings },
+      { icon: '🚪', name: 'Room types', note: 'each stocked to its own table', n: nRooms },
+      { icon: '🧰', name: 'Chests', note: 'three rolls, in the rooms worth reaching', n: '★' },
+      { icon: '🕳️', name: 'Tunnels', note: 'go under the field, come up elsewhere', n: '★' },
+      { icon: '🚗', name: 'Garages', note: 'vehicle doors you can drive through', n: '★' },
+      { icon: '🎖️', name: 'Perks', note: 'one pick, whole match', n: nPerks },
+      { icon: '🔫', name: 'Weapons', note: 'across every class', n: nGuns },
+    ];
+    ul.innerHTML = '';
+    for (const r of rows) {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="intel__icon"></span><span class="intel__body">'
+        + '<span class="intel__name"></span><span class="intel__note"></span></span>'
+        + '<span class="intel__count"></span>';
+      li.querySelector('.intel__icon').textContent = r.icon;
+      li.querySelector('.intel__name').textContent = r.name;
+      li.querySelector('.intel__note').textContent = r.note;
+      li.querySelector('.intel__count').textContent = r.n;
+      ul.appendChild(li);
+    }
+    const tips = [
+      'Lockers, shelves and desks can be searched — the glint means there is something in it.',
+      'A chest pays out three times. Opening one in the open is a decision.',
+      'Every building has a hatch or a back way. The front door is rarely the best one.',
+      'Wire slows you and cuts you. Go round it, or blow a gap in it.',
+      'Bunker complexes run a tunnel between two blockhouses. Nothing above ground can see you down there.',
+      'Buildings closer to the middle of the island hold better loot.',
+    ];
+    const tip = document.getElementById('intel-tip');
+    if (tip) tip.textContent = '💡 ' + tips[Math.floor(Math.random() * tips.length)];
+  }
 
   function missionItem(m, mini = false) {
     const li = document.createElement('li');

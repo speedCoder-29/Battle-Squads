@@ -1100,7 +1100,8 @@
         const m = Math.hypot(dx, dy);
         if (m > 0) {
           const spd = moveSpeedFor(p, i.ads)
-            * surfaceSpeedFor(p, this.surfaceAt(p.x, p.y)) * (hz ? hz.slow : 1)
+            * surfaceSpeedFor(p, this.surfaceAt(p.x, p.y))
+            * ((hz && !Perks.mod(p, 'ignoreHazardSlow')) ? hz.slow : 1)
             * (p.channel ? CHANNEL_SLOW : 1);
           /* Move, then get pushed back out of anything solid — the same
              resolution the client runs offline, so a player and the host
