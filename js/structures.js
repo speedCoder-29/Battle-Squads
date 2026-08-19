@@ -727,7 +727,15 @@ const Structures = (() => {
        body is 30px and the walls eat some of the nominal width, so anything
        under this is a passage you get stuck in rather than one you move
        through. */
-    const cw = Math.max(88, Math.min(co.width, across - MIN_ROOM * 2));
+    /* A corridor with baffles in it has to be wider than one without. Two
+       stubs only break a sightline if they overlap across the corridor — one
+       covering the top 40% and the other the bottom 40% leaves a clear lane
+       straight down the middle, which is what the first attempt at this did
+       and why it changed nothing. They need about 58% each to overlap, and
+       what is left over still has to be wider than the 30px body, so the
+       corridor itself has to grow to about 112px to carry them. */
+    const wantCw = opts.chicane ? Math.max(co.width, 116) : co.width;
+    const cw = Math.max(88, Math.min(wantCw, across - MIN_ROOM * 2));
     const mid = across * at;
     const aDepth = Math.max(0, mid - cw / 2);
     const bStart = mid + cw / 2;
@@ -737,7 +745,14 @@ const Structures = (() => {
 
     /* Lay one band out along the run, each room sized by what it is for.
        Returns the offsets its doors want in the corridor wall. */
-    const layBand = (kinds, bandAt, depth, outerSide, filler) => {
+    /* Doors on opposite sides of a corridor were both put at the middle of
+       their room, so every pair lined up: stand in a doorway and you were
+       looking straight into the room facing you, and down the barrel of anyone
+       standing in it. Offsetting them means crossing the corridor to see into
+       anything, which is the whole point of a corridor. */
+    const skew = opts.stagger === false ? 0 : 0.26;
+
+    const layBand = (kinds, bandAt, depth, outerSide, filler, dir) => {
       const doors = [];
       if (!kinds || !kinds.length || depth < MIN_ROOM) return doors;
       kinds = kinds.slice();
@@ -812,7 +827,10 @@ const Structures = (() => {
         rooms.push(horiz
           ? room(kind, p0.x + 8, p0.y + 8, e - 16, depth - 16)
           : room(kind, p0.x + 8, p0.y + 8, depth - 16, e - 16));
-        doors.push({ at: cursor + e / 2, type: SECURE_DOOR[kind] || doorType });
+        /* Kept clear of the dividing walls either side, so a staggered door is
+           still a door in a wall rather than a gap at a corner. */
+        const off = Math.max(-(e / 2 - DOORWAY * 0.8), Math.min(e / 2 - DOORWAY * 0.8, e * skew * dir));
+        doors.push({ at: cursor + e / 2 + off, type: SECURE_DOOR[kind] || doorType });
         /* A garage opens to the outside as well as to the house: a roller door
            through the shell wall in front of it, wide enough to drive through.
            The caller punches it, because the shell is the caller's to build. */
@@ -842,7 +860,7 @@ const Structures = (() => {
        the full depth and the passage is cut straight through them. */
     const sideA = horiz ? 'n' : 'w', sideB = horiz ? 's' : 'e';
     let passage = null, aAt = 0, aD = aDepth, bAt = bStart, bD = bDepth;
-    const pw = opts.passageWidth || 72;
+    const pw = opts.passageWidth || (opts.chicane ? 108 : 72);
     const onA = opts.passage === 'a';
     if (opts.passage && (onA ? aDepth : bDepth) > MIN_ROOM + pw) {
       if (onA) { aAt = pw; aD = aDepth - pw; } else { bD = bDepth - pw; }
@@ -858,10 +876,24 @@ const Structures = (() => {
       passage = horiz
         ? { x: p0.x, y: p0.y + 8, w: run - inset * 2, h: pw - 16 }
         : { x: p0.x + 8, y: p0.y, w: pw - 16, h: run - inset * 2 };
+      /* Baffle the passage too. Putting kinks in the main corridor and leaving
+         a dead straight service run behind the rooms just moves the shooting
+         gallery: measured, the longest clear line in a chicaned hospital was
+         down its passage, not its corridor. */
+      if (opts.chicane) {
+        const ps = pw * 0.56;
+        [0.4, 0.72].forEach((t, i) => {
+          const from = i % 2 === 0 ? at : at + pw - ps;
+          const q = P(inset + (run - inset * 2) * t, from);
+          parts.push(...(horiz
+            ? partition(type, q.x, q.y, ps, 'v', WALL_T.partition, [], null)
+            : partition(type, q.x, q.y, ps, 'h', WALL_T.partition, [], null)));
+        });
+      }
     }
 
-    const doorsA = layBand(opts.a, aAt, aD, sideA, opts.fillA);
-    const doorsB = layBand(opts.b, bAt, bD, sideB, opts.fillB);
+    const doorsA = layBand(opts.a, aAt, aD, sideA, opts.fillA, -1);
+    const doorsB = layBand(opts.b, bAt, bD, sideB, opts.fillB, 1);
     if (passage) rooms.push(room('passage', passage.x, passage.y, passage.w, passage.h));
 
     /* The corridor itself: a wall each side with a doorway opposite the middle
@@ -880,6 +912,24 @@ const Structures = (() => {
       ? { x: corner.x + cap, y: corner.y + 8, w: run - cap * 2, h: cw - 16 }
       : { x: corner.x + 8, y: corner.y + cap, w: cw - 16, h: run - cap * 2 };
     if (opts.corridorKind !== null) rooms.push(room(opts.corridorKind || 'hall', corridor.x, corridor.y, corridor.w, corridor.h));
+
+    /* Baffles part way along, alternating sides. A straight corridor is a
+       shooting gallery: whoever gets to one end first holds the whole
+       building, because they can see every door on it at once. A pair of stubs
+       makes you weave, breaks the sightline into thirds, and gives the person
+       coming the other way somewhere to be. They cover 40% of the width, so
+       the corridor stays walkable — the tidy check measures that. */
+    if (opts.chicane && run > 420) {
+      const stub = cw * 0.58;
+      [0.34, 0.66].forEach((t, i) => {
+        const fromA = i % 2 === 0;
+        const b0 = fromA ? aDepth : bStart - stub;
+        const q = P(inset + (run - inset * 2) * t, b0);
+        parts.push(...(horiz
+          ? partition(type, q.x, q.y, stub, 'v', WALL_T.partition, [], null)
+          : partition(type, q.x, q.y, stub, 'h', WALL_T.partition, [], null)));
+      });
+    }
 
     return { parts, rooms, doorsA, doorsB, corridor, garages };
   }
@@ -969,6 +1019,105 @@ const Structures = (() => {
     return { parts, rooms };
   }
 
+  /* ---------- courtyard plan ----------
+     A different shape of building, not a different dressing of the same one.
+     Every plan so far is a spine with rooms either side: one corridor, two
+     ends, and whoever holds the middle holds the building. This is a ring —
+     rooms around all four sides of a corridor that loops, with a core in the
+     middle you have to go around.
+
+     What that changes is that there is no back of the building. Every room has
+     two ways to reach it, so nobody can be cut off and nobody can hold the
+     place from one spot; you can be flanked from either direction at any
+     point, and the person you are chasing can keep walking away from you round
+     the loop forever. The core is the reason to be there.
+
+     `sides` gives the room kinds for north, east, south and west. */
+  function courtyardPlan(type, ox, oy, w, h, opts = {}) {
+    const th = opts.thickness || WALL_T.interior;
+    const thP = WALL_T.partition;
+    const doorType = opts.doorType === null ? null : (opts.doorType || 'door');
+    const depth = opts.depth || 150;              // how deep the ring of rooms is
+    const cw = Math.max(88, opts.corridor || 96); // the loop itself
+    const parts = [], rooms = [];
+    const coreX = ox + depth + cw, coreY = oy + depth + cw;
+    const coreW = w - (depth + cw) * 2, coreH = h - (depth + cw) * 2;
+    if (coreW < MIN_ROOM || coreH < MIN_ROOM) return { parts, rooms, core: null };
+
+    /* The four walls that separate the ring of rooms from the loop, each with
+       a doorway per room behind it. */
+    const band = (kinds, x, y, len, axis, wallOffset) => {
+      if (!kinds || !kinds.length) return;
+      const each = len / kinds.length;
+      const doors = [];
+      kinds.forEach((kind, i) => {
+        const a0 = i * each;
+        // the wall between this room and the next one along the same side
+        if (i > 0) {
+          parts.push(...(axis === 'h'
+            ? partition(type, x + a0, y, depth, 'v', thP, [], null)
+            : partition(type, x, y + a0, depth, 'h', thP, [], null)));
+        }
+        rooms.push(axis === 'h'
+          ? room(kind, x + a0 + 8, y + 8, each - 16, depth - 16)
+          : room(kind, x + 8, y + a0 + 8, depth - 16, each - 16));
+        // staggered, same reason as the spine plans
+        doors.push({ at: a0 + each * (i % 2 ? 0.36 : 0.64), type: SECURE_DOOR[kind] || doorType });
+      });
+      parts.push(...(axis === 'h'
+        ? partition(type, x, y + wallOffset, len, 'h', th, doors, doorType)
+        : partition(type, x + wallOffset, y, len, 'v', th, doors, doorType)));
+    };
+
+    band(opts.north, ox, oy, w, 'h', depth);
+    band(opts.south, ox, oy + h - depth, w, 'h', 0);
+    band(opts.west, ox, oy + depth, h - depth * 2, 'v', depth);
+    band(opts.east, ox + w - depth, oy + depth, h - depth * 2, 'v', 0);
+
+    /* The core: walled all round, one way in, and worth the walk. */
+    const coreDoor = opts.coreDoor === undefined ? 'rdoor' : opts.coreDoor;
+    parts.push(...partition(type, coreX, coreY, coreW, 'h', WALL_T.fortified, [coreW / 2], coreDoor));
+    parts.push(...partition(type, coreX, coreY + coreH, coreW, 'h', WALL_T.fortified, [], null));
+    parts.push(...partition(type, coreX, coreY, coreH, 'v', WALL_T.fortified, [], null));
+    parts.push(...partition(type, coreX + coreW, coreY, coreH, 'v', WALL_T.fortified, [], null));
+    rooms.push(room(opts.core || 'strongroom', coreX + 10, coreY + 10, coreW - 20, coreH - 20));
+
+    // the loop itself, as four stretches of corridor
+    const ring = [
+      { x: ox + depth, y: oy + depth, w: w - depth * 2, h: cw },
+      { x: ox + depth, y: oy + h - depth - cw, w: w - depth * 2, h: cw },
+      { x: ox + depth, y: oy + depth + cw, w: cw, h: h - (depth + cw) * 2 },
+      { x: ox + w - depth - cw, y: oy + depth + cw, w: cw, h: h - (depth + cw) * 2 },
+    ];
+    /* Inset clear of the walls that bound the loop. At 6px the rect still
+       overlapped the band walls either side of it, and the corridor measured
+       as blocked by the very walls that define it. */
+    for (const r of ring) rooms.push(room('hall', r.x + 16, r.y + 16, r.w - 32, r.h - 32));
+    return { parts, rooms, core: { x: coreX, y: coreY, w: coreW, h: coreH } };
+  }
+
+  /* ---------- objective buildings ----------
+     One per capture point, and each a different problem to solve rather than
+     three copies of a shed with a flag on it.
+
+       A · Relay Station  — a compact tower block: tight ground floor, and the
+           control room upstairs is the point. Whoever holds the stair holds A.
+       B · Refinery       — the big open one, in the middle of the map: a hall
+           you cross under a gantry, offices round the edge, upstairs at one
+           end overlooking the floor.
+       C · Citadel        — the hard one: a walled courtyard with a keep in the
+           middle, reinforced throughout, and its upper floor over the gate.
+
+     Each carries a mast by its door so you can see which point you are looking
+     at from outside, and each declares a flagAt for the generator to put the
+     capture disc on. */
+  function objectiveShell(out, ox, oy, w, h, label, doors, wallType, th) {
+    out.push(...shell(ox, oy, w, h, wallType, th, doors));
+    out.push(flagMast(ox + w / 2, oy - 42, label));
+    out.flagAt = { x: ox + w / 2, y: oy + h / 2 };
+    return out;
+  }
+
   /* ---------- structural grid ----------
      A wide-span building stands on a regular grid of columns, and the spacing
      is not a matter of taste: industrial bays run about 7.5 to 12m, office
@@ -1048,17 +1197,78 @@ const Structures = (() => {
     return { parts, room: rect };
   }
 
+  /* ---------- upper floors ----------
+     The engine draws one plane, so a second storey is modelled the way the
+     cellars already are: a separate enclosed space with exactly one way in.
+     What makes it an upstairs rather than a basement is which way the stair
+     goes and how it is lit — a cellar is dark and a first floor is the
+     brightest part of the building, because it has the windows.
+
+     It plays like a storey too. One stair means one contested way up, whoever
+     is up there can hold it against numbers, and the loot is worth the climb.
+     `landing` is where the stair comes out. */
+  function upper(kind, x, y, w, h, opts = {}) {
+    const wallType = opts.wall || 'wood';
+    const th = opts.thickness || WALL_T.exterior;
+    const parts = [];
+    const sx = opts.stairAt === undefined ? w / 2 : opts.stairAt;
+    parts.push(...partition(wallType, x, y, w, 'h', th, [], null));
+    /* The stair is a gap *in* the wall, not a door laid over the top of one.
+       Building the wall unbroken and then pushing a door onto it leaves the
+       wall there: the flood test walked the whole storey and could not get
+       into a single room of it. */
+    const wall = partition(wallType, x, y + h, w, 'h', th, [sx], 'door');
+    for (const p2 of wall) if (isDoor(p2)) { p2.stair = true; }
+    parts.push(...wall);
+    parts.push(...partition(wallType, x, y, h, 'v', th, [], null));
+    parts.push(...partition(wallType, x + w, y, h, 'v', th, [], null));
+    for (const p2 of parts) p2.upstairs = true;
+    /* Rooms up there, laid out along the storey rather than left as one loft.
+       `rooms` is a list of kinds; they divide the floor between them. */
+    const rooms = [];
+    const kinds = opts.rooms || [kind];
+    const each = (w - 32) / kinds.length;
+    kinds.forEach((k, i) => {
+      if (i > 0) {
+        parts.push(...partition(wallType, x + 16 + each * i, y + 12, h - 24, 'v',
+          WALL_T.partition, [(h - 24) / 2], 'door'));
+      }
+      const r = room(k, x + 16 + each * i + 8, y + 20, each - 16, h - 40);
+      r.upstairs = true;
+      rooms.push(r);
+    });
+    return { parts, rooms, rect: { x, y, w, h } };
+  }
+
+  /* A mast with a board on it, for marking a capture point from a distance.
+     An objective you cannot see from outside the building is an objective you
+     find by looking at the minimap instead of at the world. */
+  function flagMast(x, y, label) {
+    const m = prop('sign', x, y, 40, 1.2);
+    m.flag = true;
+    m.label = label;
+    return m;
+  }
+
   function basement(kind, x, y, w, h, opts = {}) {
     const wallType = opts.wall || 'rwall';
     const th = opts.thickness || 0.4;
     const parts = [];
-    // four walls, sealed
-    parts.push(...partition(wallType, x, y, w, 'h', th, [], null));
+    /* Four walls, and a way in.
+
+       The way in used to be a hatch pushed on top of an unbroken wall, which
+       does not open anything: the wall was still there and still blocking, so
+       every cellar on the map was sealed and everything in it — the house
+       cellars, the bank's bullion, the bunker magazine — was loot nobody could
+       reach. The reachability check never caught it because it skipped
+       basements. The hatch is now a gap punched through the wall, with the
+       hatch itself sitting in the gap. */
+    const hOff = opts.hatchAt === undefined ? w / 2 : opts.hatchAt;
+    parts.push(...partition(wallType, x, y, w, 'h', th, [hOff], null));
     parts.push(...partition(wallType, x, y + h, w, 'h', th, [], null));
     parts.push(...partition(wallType, x, y, h, 'v', th, [], null));
     parts.push(...partition(wallType, x + w, y, h, 'v', th, [], null));
-    // the only way in
-    const hx = x + (opts.hatchAt === undefined ? w / 2 : opts.hatchAt);
+    const hx = x + hOff - 32;
     const hatch = opts.hatchType === 'secret'
       ? secretDoor(wallType, hx, y, 1.6, 'h', th)
       : seg('door', hx, y, 1.6, 'h', 0.3);
@@ -1253,7 +1463,7 @@ const Structures = (() => {
         corridor: { axis: 'h', at: 0.44, width: 84 },
         a: ['bedroom', 'bedroom', 'bedroom', 'bedroom', 'bedroom'],
         b: ['washroom', 'diningLobby', 'lounge', 'backKitchen', 'bedroom'],
-        fillA: 'bedroom', fillB: 'washroom', thickness: 0.25,
+        fillA: 'bedroom', fillB: 'washroom', thickness: 0.25, chicane: true,
         passage: 'b',       // service corridor behind the public rooms
       });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
@@ -1586,6 +1796,96 @@ const Structures = (() => {
         { wall: 'rwall', thickness: 0.5, hatchAt: 130 });
       out.push(...mag.parts);
       out.rooms = [mag.room, room('guardRoom', ox + 25, oy + 25, w - 50, h - 50)];
+      return out;
+    },
+
+    /* A · the relay station. Small footprint, many rooms, and the room that
+       matters is up the stairs. */
+    'obj-relay'(ox, oy) {
+      const w = 640, h = 520;
+      const plan = floorPlan('metal', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.52, width: 92 },
+        a: ['lobby', 'office', 'storeroom'],
+        b: ['radioRoom', 'guardRoom', 'workbay'],
+        fillA: 'office', fillB: 'storeroom', thickness: 0.3, chicane: true,
+      });
+      const out = [];
+      objectiveShell(out, ox, oy, w, h, 'A', [
+        { side: 'w', at: h * 0.52 - 30, type: 'rdoor' },
+        { side: 'e', at: h * 0.52 - 30, type: 'rdoor' },
+        { side: 'n', at: 260 },
+      ], 'metal', WALL_T.exterior);
+      out.push(...plan.parts);
+      for (const dx of [90, 480]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      // the control room over the top, one stair up
+      const up = upper('controlRoom', ox + 60, oy + h + 56, w - 120, 240,
+        { wall: 'metal', rooms: ['controlRoom', 'radioRoom', 'storeroom'], stairAt: 120 });
+      out.push(...up.parts);
+      out.push(seg('wire', ox - 80, oy - 60, 6, 'h', 0.4));
+      out.rooms = [...plan.rooms, ...up.rooms];
+      return out;
+    },
+
+    /* B · the refinery. The middle objective: big, open, and overlooked. */
+    'obj-refinery'(ox, oy) {
+      const w = 1000, h = 700;
+      const out = [];
+      objectiveShell(out, ox, oy, w, h, 'B', [
+        { side: 'n', at: 300, type: 'garage-door', len: 5 },
+        { side: 's', at: 420, type: 'rdoor', len: 3 },
+        { side: 'w', at: 320, type: 'door' },
+        { side: 'e', at: 320, type: 'door' },
+      ], 'metal', WALL_T.exterior);
+      // offices down one side, the plant floor open in the middle
+      const side = floorPlan('metal', ox, oy, w, h, {
+        corridor: { axis: 'v', at: 0.78, width: 96 },
+        a: [], b: ['office', 'controlRoom', 'staffRoom', 'washroom'],
+        fillB: 'office', thickness: 0.35,
+      });
+      out.push(...side.parts);
+      out.push(...columnGrid(ox, oy, w * 0.74, h, { kind: 'pillar', size: 36 }));
+      // tanks on the floor, something to fight around
+      for (const [tx, ty] of [[160, 180], [430, 180], [160, 470], [430, 470]]) {
+        out.push(...partition('metal', ox + tx, oy + ty, 110, 'h', 0.45, [], null));
+        out.push(...partition('metal', ox + tx, oy + ty + 90, 110, 'h', 0.45, [], null));
+        out.push(...partition('metal', ox + tx, oy + ty, 90, 'v', 0.45, [], null));
+        out.push(...partition('metal', ox + tx + 110, oy + ty, 90, 'v', 0.45, [], null));
+      }
+      const up = upper('controlRoom', ox + 120, oy + h + 60, 560, 230,
+        { wall: 'metal', rooms: ['controlRoom', 'office', 'storeroom'], stairAt: 90 });
+      out.push(...up.parts);
+      out.rooms = [
+        room('workbay', ox + 40, oy + 40, w * 0.68, h - 80),
+        ...side.rooms, ...up.rooms,
+      ];
+      return out;
+    },
+
+    /* C · the citadel. Reinforced, walled, and the hardest of the three to
+       take off somebody who is already in it. */
+    'obj-citadel'(ox, oy) {
+      const w = 860, h = 760;
+      const out = [];
+      const plan = courtyardPlan('rwall', ox, oy, w, h, {
+        north: ['guardRoom', 'bunkroom'],
+        south: ['storeroom', 'mess'],
+        west: ['armoury'],
+        east: ['opsRoom', 'washroom'],
+        core: 'strongroom', depth: 150, corridor: 96, thickness: 0.45,
+      });
+      objectiveShell(out, ox, oy, w, h, 'C', [
+        { side: 'n', at: 380, type: 'rdoor', len: 2 },
+        { side: 's', at: 420, type: 'rdoor', len: 2 },
+        { side: 'w', at: 340, type: 'rdoor' },
+      ], 'rwall', WALL_T.fortified);
+      out.push(...plan.parts);
+      // the rampart over the gate
+      const up = upper('opsRoom', ox + 100, oy + h + 62, 620, 220,
+        { wall: 'rwall', thickness: WALL_T.fortified, rooms: ['opsRoom', 'armoury', 'bunkroom'], stairAt: 100 });
+      out.push(...up.parts);
+      out.push(seg('wire', ox - 90, oy - 70, 10, 'h', 0.4));
+      out.push(seg('wire', ox - 90, oy - 70, 8, 'v', 0.4));
+      out.rooms = [...plan.rooms, ...up.rooms];
       return out;
     },
 
@@ -1947,7 +2247,7 @@ const Structures = (() => {
         corridor: { axis: 'h', at: 0.47, width: 86 },
         a: ['ward', 'ward', 'ward', 'ward'],
         b: ['lobby', 'surgery', 'dispensary', 'office'],
-        fillA: 'ward', fillB: 'staffRoom', thickness: 0.28,
+        fillA: 'ward', fillB: 'staffRoom', thickness: 0.28, chicane: true,
         passage: 'a',       // the way the trolleys go
       });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
@@ -2064,7 +2364,7 @@ const Structures = (() => {
         corridor: { axis: 'h', at: 0.5, width: 96 },
         a: ['cell', 'cell', 'cell', 'cell', 'cell', 'guardRoom'],
         b: ['cell', 'cell', 'cell', 'cell', 'cell', 'controlRoom'],
-        fillA: 'cell', fillB: 'cell', thickness: 0.4, doorType: 'rdoor',
+        fillA: 'cell', fillB: 'cell', thickness: 0.4, doorType: 'rdoor', chicane: true,
         passage: 'b',       // the guards' run behind the cells
       });
       const out = shell(ox, oy, w, h, 'rwall', 0.5, [
@@ -2117,50 +2417,50 @@ const Structures = (() => {
     /* market: diverse trading post with many entry points, varied cover */
     /* market: two rows of stalls under one roof, a back office and a lock-up.
        Loud, cluttered and impossible to hold — every stall is a corner. */
+    /* A market hall built round its own yard: stalls on all four sides, a
+       covered walk that loops, and the strongroom in the middle. There is no
+       back of this building — whichever way you come in, someone can come at
+       you from both directions. */
     market(ox, oy) {
-      const w = 740, h = 560;
-      const out = shell(ox, oy, w, h, 'wood', 0.35, [
-        { side: 'n', at: 180 }, { side: 'n', at: 460 },
-        { side: 's', at: 240 }, { side: 'e', at: 300 },
+      const w = 820, h = 700;
+      const plan = courtyardPlan('wood', ox, oy, w, h, {
+        north: ['stall', 'stall', 'stall'],
+        south: ['stall', 'storeroom', 'stall'],
+        west: ['office', 'stall'],
+        east: ['stall', 'backKitchen'],
+        core: 'strongroom', depth: 148, corridor: 96, thickness: 0.35,
+      });
+      const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
+        { side: 'n', at: 200 }, { side: 'n', at: 540 },
+        { side: 's', at: 300 }, { side: 'e', at: 340 }, { side: 'w', at: 300 },
       ]);
-      const top = roomGrid('wood', ox + 14, oy + 14, w - 28, 190, 5, 1, { access: 's', doorType: null, thickness: 0.25 });
-      const bot = roomGrid('wood', ox + 14, oy + 250, w - 28, 190, 5, 1, { access: 'n', doorType: null, thickness: 0.25 });
-      out.push(...top.parts, ...bot.parts);
-      // the counter, and the lock-up behind it
-      out.push(...partition('wood', ox + 14, oy + h - 116, w - 28, 'h', 0.3, [200, 540], 'door'));
-      out.push(...partition('rwall', ox + w - 210, oy + h - 116, 102, 'v', 0.4, [], 'rdoor'));
-      out.rooms = [
-        ...cellRooms(top.cells, 'stall'),
-        ...cellRooms(bot.cells, 'stall'),
-        room('office',     ox + 40,  oy + h - 100, w - 270, 82),
-        room('strongroom', ox + w - 195, oy + h - 100, 175, 82),
-      ];
+      out.push(...plan.parts);
+      for (const dx of [90, 420, 700]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      out.rooms = plan.rooms;
       return out;
     },
 
     /* school: open classrooms, varied heights, educational theme */
     /* school: classrooms off a central corridor, a hall at one end */
+    /* Classrooms round a quad, the way a school actually is. The corridor
+       loops, so a chase round it never ends and the assembly hall in the
+       middle is the only room with one way in. */
     school(ox, oy) {
-      const w = 760, h = 560;
-      const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'n', at: 300, type: 'door', len: 2 },
-        { side: 's', at: 380 }, { side: 'w', at: 280, type: 'door' },
+      const w = 840, h = 700;
+      const plan = courtyardPlan('wood', ox, oy, w, h, {
+        north: ['classroom', 'classroom'],
+        south: ['classroom', 'classroom'],
+        west: ['staffRoom', 'washroom'],
+        east: ['office', 'storeroom'],
+        core: 'gym', coreDoor: 'door', depth: 152, corridor: 94, thickness: 0.3,
+      });
+      const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
+        { side: 'n', at: 340, type: 'door', len: 2 },
+        { side: 's', at: 420 }, { side: 'w', at: 320, type: 'door' },
       ]);
-      // the corridor, with a way through at each end and in the middle
-      out.push(...partition('wood', ox + 14, oy + 230, w - 28, 'h', 0.3, [120, 380, 640], 'door'));
-      out.push(...partition('wood', ox + 14, oy + 330, w - 28, 'h', 0.3, [200, 560], 'door'));
-      const top = roomGrid('wood', ox + 14, oy + 14, w - 28, 216, 4, 1, { access: 's' });
-      const bot = roomGrid('wood', ox + 14, oy + 344, w - 28, h - 358, 3, 1, { access: 'n' });
-      out.push(...top.parts, ...bot.parts);
-      // lockers line the corridor
-      out.push(seg('barricade', ox + 60, oy + 280, 4, 'h', 0.25));
-      out.push(seg('barricade', ox + 480, oy + 280, 4, 'h', 0.25));
-      out.rooms = [
-        ...cellRooms(top.cells, 'classroom'),
-        room('gym',       bot.cells[0].x, bot.cells[0].y, bot.cells[0].w, bot.cells[0].h),
-        room('classroom', bot.cells[1].x, bot.cells[1].y, bot.cells[1].w, bot.cells[1].h),
-        room('staffRoom', bot.cells[2].x, bot.cells[2].y, bot.cells[2].w, bot.cells[2].h),
-      ];
+      out.push(...plan.parts);
+      for (const dx of [110, 430, 720]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      out.rooms = plan.rooms;
       return out;
     },
 
@@ -2230,24 +2530,25 @@ const Structures = (() => {
     /* barracks: military dormitory, many small rooms, high-loot density */
     /* barracks: six bunk rooms off a central corridor, and the armoury at the
        end behind a reinforced door */
+    /* Bunk rooms round a drill yard. Four ways in, a loop inside, and the
+       armoury in the middle behind a reinforced door. */
     barracks(ox, oy) {
-      const w = 760, h = 520;
-      const out = shell(ox, oy, w, h, 'metal', 0.45, [
-        { side: 'w', at: 260, type: 'door' }, { side: 'e', at: 260, type: 'door' },
-        { side: 'n', at: 380 },
+      const w = 800, h = 660;
+      const plan = courtyardPlan('metal', ox, oy, w, h, {
+        north: ['bunkroom', 'bunkroom'],
+        south: ['bunkroom', 'washroom'],
+        west: ['mess'],
+        east: ['guardRoom', 'storeroom'],
+        core: 'armoury', depth: 146, corridor: 92, thickness: 0.4,
+      });
+      const out = shell(ox, oy, w, h, 'metal', WALL_T.exterior, [
+        { side: 'w', at: 300, type: 'door' }, { side: 'e', at: 300, type: 'door' },
+        { side: 'n', at: 380 }, { side: 's', at: 420 },
       ]);
-      out.push(...partition('metal', ox + 14, oy + 210, w - 200, 'h', 0.3, [110, 330, 490], 'door'));
-      out.push(...partition('metal', ox + 14, oy + 310, w - 200, 'h', 0.3, [110, 330, 490], 'door'));
-      const top = roomGrid('metal', ox + 14, oy + 14, w - 200, 196, 3, 1, { access: 's' });
-      const bot = roomGrid('metal', ox + 14, oy + 324, w - 200, h - 338, 3, 1, { access: 'n' });
-      out.push(...top.parts, ...bot.parts);
-      // the armoury, walled off down the east end
-      out.push(...partition('rwall', ox + w - 186, oy + 14, h - 28, 'v', 0.4, [h / 2], 'rdoor'));
-      out.rooms = [
-        ...cellRooms(top.cells, 'bunkroom'),
-        ...cellRooms(bot.cells, 'bunkroom'),
-        room('armoury', ox + w - 170, oy + 30, 150, h - 60),
-      ];
+      out.push(...plan.parts);
+      out.push(seg('sandbag', ox - 70, oy + 100, 4, 'h', 0.5));
+      out.push(seg('wire', ox - 90, oy - 60, 8, 'h', 0.4));
+      out.rooms = plan.rooms;
       return out;
     },
 
@@ -2504,6 +2805,9 @@ const Structures = (() => {
     clinic:      { ...S_INSTITUTIONAL, floor: '#c4d0cd', roof: ['#dfeae7', '#b0c0bd'], trim: '#d1443f' },
     library:     { ...S_INSTITUTIONAL, floor: '#9c8a6d', roof: ['#6a5a8a', '#463a5f'], trim: '#c9a54e' },
     garage:      { ...S_INDUSTRIAL, floor: '#4f545c', roof: ['#6a7078', '#474c53'], trim: '#c07a2a' },
+    'obj-relay':    { ...S_INDUSTRIAL, floor: '#4a5260', roof: ['#5f6b7d', '#3d4652'], trim: '#4bb7d8' },
+    'obj-refinery': { ...S_INDUSTRIAL, floor: '#544e46', roof: ['#7a6a55', '#4e4438'], trim: '#e0913a' },
+    'obj-citadel':  { ...S_INDUSTRIAL, floor: '#4c4a52', roof: ['#63616b', '#403f47'], trim: '#c4536b' },
     'bunker-complex': { ...S_INDUSTRIAL, floor: '#3e4147', roof: ['#575e63', '#3b4145'], trim: '#7d8a72' },
     watermill:   { ...S_RESIDENTIAL, floor: '#6f6350', roof: ['#5a7a6a', '#3c5548'], trim: '#2e4238' },
 
@@ -2766,6 +3070,11 @@ const Structures = (() => {
     bunker:       { grade: 'poor', ring: 'edge' },
     /* Worth the walk down: the magazine at the bottom holds a chest. */
     'bunker-complex': { grade: 'rich', ring: 'mid' },
+    /* The capture points: the best loot on the map, because they are the
+       places everybody already has a reason to be. */
+    'obj-relay':    { grade: 'rich', ring: 'mid' },
+    'obj-refinery': { grade: 'rich', ring: 'inner' },
+    'obj-citadel':  { grade: 'rich', ring: 'mid' },
 
     /* ---- one per team, at their spawn ---- */
     base:         { grade: 'medium', ring: 'spawn' },
@@ -2810,6 +3119,9 @@ const Structures = (() => {
      ============================================================ */
   const DECOR = {
     'bunker-complex': ['sandpile', 'sandpile', 'crate', 'ammoBox', 'rubble'],
+    'obj-relay':    ['antenna', 'crate', 'ammoBox', 'cone', 'barrel'],
+    'obj-refinery': ['barrel', 'barrel', 'pallet', 'container', 'tyre'],
+    'obj-citadel':  ['sandbag' === 'x' ? 'crate' : 'sandpile', 'ammoBox', 'crate', 'rubble', 'barrel'],
     /* ---- residential: gardens, washing lines, firewood ---- */
     house:        ['bush', 'bush', 'stump', 'plant', 'crate'],
     mansion:      ['plant', 'plant', 'bush', 'bush', 'cone'],
@@ -2925,7 +3237,7 @@ const Structures = (() => {
 
   return {
     WALL_TYPES, PROP_TYPES, BUILDINGS, BUILDING_DESCRIPTIONS, BUILDING_CATEGORIES, scatter, prop, PX_PER_M, HP_SCALE,
-    BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, ROOM_SIZE, tunnel, columnGrid, splitLong, WALL_T, ZONE, zoneOf, BAY,
+    BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, courtyardPlan, ROOM_SIZE, tunnel, upper, flagMast, columnGrid, splitLong, WALL_T, ZONE, zoneOf, BAY,
     PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement, DECOR, decorFor,
     ROOM_LOOT, ROOM_BUILDINGS, room,
     def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,

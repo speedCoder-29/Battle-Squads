@@ -125,7 +125,11 @@ const Game = (() => {
      One of each, placed first so they get the room they need, spread across
      the map. In domination these are also where the objectives go: capturing
      means holding a building, not standing in a field. */
-  const LANDMARKS = ['factory', 'keep', 'silos'];
+  /* The three capture points are purpose-built now rather than whichever
+     large building happened to be placed first. Each is a different problem —
+     a tower you fight up, an open floor you fight across, and a walled keep
+     you fight into — so holding A does not feel like holding C. */
+  const LANDMARKS = ['obj-relay', 'obj-refinery', 'obj-citadel'];
 
   function placeLandmarks() {
     const anchors = [
@@ -333,7 +337,7 @@ const Game = (() => {
     obstacles = []; trenches = []; decor = []; grass = [];
     buildings = []; landmarks = []; pendingIndoorCrates = [];
     requiredPlacements = []; pendingRoomVehicles = []; basements = [];
-    requiredTally = {}; pendingYards = []; roomAnchors = new WeakMap();
+    requiredTally = {}; pendingYards = []; roomAnchors = new WeakMap(); upperFloors = [];
     for (const k in sizeCache) delete sizeCache[k];
     genReset();
     invalidateRects();
@@ -525,6 +529,9 @@ const Game = (() => {
     clinic:     { props: ['bed', 'shelf', 'locker', 'chair', 'desk'], n: 16, loot: 0, floor: '#c4d0cd' },
     library:    { props: ['shelf', 'shelf', 'desk', 'chair', 'table', 'plant'], n: 32, loot: 0, floor: '#9c8a6d' },
     garage:     { props: ['tyre', 'tyre', 'barrel', 'ammoBox', 'pallet'], n: 26, loot: 0, floor: '#4f545c' },
+    'obj-relay':    { props: ['desk', 'locker', 'ammoBox', 'crate', 'shelf'], n: 18, loot: 0, floor: '#4a5260' },
+    'obj-refinery': { props: ['barrel', 'pallet', 'crate', 'tyre', 'shelf'], n: 24, loot: 0, floor: '#544e46' },
+    'obj-citadel':  { props: ['ammoBox', 'locker', 'crate', 'shelf', 'barrel'], n: 22, loot: 0, floor: '#4c4a52' },
     'bunker-complex': { props: ['ammoBox', 'crate', 'locker', 'barrel'], n: 14, loot: 0, floor: '#3e4147' },
     watermill:  { props: ['pallet', 'barrel', 'shelf', 'crate', 'rubble'], n: 20, loot: 0, floor: '#6f6350' },
     /* The table's buildings. `loot` is ignored for these — their rooms say
@@ -856,6 +863,9 @@ const Game = (() => {
     for (const r of rooms) {
       // a cellar is its own floor, and always needs its own light
       if (r.basement) basements.push({ x: r.x, y: r.y, w: r.w, h: r.h });
+      // an upper floor is the same idea the other way up: its own enclosed
+      // plane, but the brightest part of the building rather than the darkest
+      if (r.upstairs) upperFloors.push({ x: r.x, y: r.y, w: r.w, h: r.h });
     }
     /* Furniture, then loot against it, then the lights.
 
@@ -4687,6 +4697,7 @@ const Game = (() => {
     }
 
     drawBasements();   // cellar floors, below everything
+    drawUpperFloors();  // ...and the storeys above them
     perfMark('floors', drawFloors);        // building interiors, under everything in them
     perfMark('light', drawInteriorLight);  // and how well lit they are
     drawBasementLight();
@@ -4697,6 +4708,7 @@ const Game = (() => {
     perfMark('structures', () => {
       let n = 0;
       for (const o of obstacles) if (rectOnScreen(o)) { drawStructure(o); n++; }
+      drawObjectiveFlags();
       perfCount('structuresDrawn', n);
     });
 
@@ -5201,6 +5213,44 @@ const Game = (() => {
      they get their own floor and their own, deeper, darkness. Whatever lamps
      are down there are the only light there is. */
   const BASEMENT_DIM = 0.62;
+  /* An upper floor reads as a floor you are looking down on rather than one
+     you are looking into: a lighter deck than the ground around it, and a
+     drawn edge so the drop is legible. */
+  /* The mast beside each capture point, flying the letter and — once somebody
+     has taken it — their colour. You could previously only tell A from C by
+     looking at the minimap; this puts the answer on the building. */
+  function drawObjectiveFlags() {
+    for (const o of obstacles) {
+      if (!o.flag || !rectOnScreen(o)) continue;
+      const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+      const obj = objectives.find(q => q.name === o.label);
+      const col = obj && obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#c9d4e6';
+      // pole
+      ctx.strokeStyle = '#6d6a63'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(cx, cy + 10); ctx.lineTo(cx, cy - 46); ctx.stroke();
+      // banner, in the holder's colour
+      ctx.fillStyle = hexA(col, 0.95);
+      ctx.beginPath();
+      ctx.moveTo(cx + 2, cy - 46); ctx.lineTo(cx + 40, cy - 36); ctx.lineTo(cx + 2, cy - 24);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+      // and the letter, so it reads at a glance
+      ctx.fillStyle = '#12161f'; ctx.font = 'bold 15px Segoe UI';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(o.label, cx + 15, cy - 36);
+    }
+  }
+
+  function drawUpperFloors() {
+    for (const r of upperFloors) {
+      if (!rectOnScreen(r)) continue;
+      ctx.fillStyle = '#6b6357';
+      ctx.fillRect(r.x - 20, r.y - 20, r.w + 40, r.h + 40);
+      ctx.strokeStyle = 'rgba(255,240,210,0.22)'; ctx.lineWidth = 3;
+      ctx.strokeRect(r.x - 20, r.y - 20, r.w + 40, r.h + 40);
+    }
+  }
+
   function drawBasements() {
     for (const r of basements) {
       if (!rectOnScreen(r)) continue;
@@ -5236,6 +5286,7 @@ const Game = (() => {
     }
   }
   let basements = [];
+  let upperFloors = [];
 
   /* A lamp's glow is the same gradient wherever it stands, so build one per
      radius and move it into place rather than constructing two gradients per
