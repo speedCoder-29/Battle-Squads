@@ -207,7 +207,8 @@ disagree about it — so all of it is:
 |---|---|
 | **Movement** | Collision, terrain (ocean, rivers, bridges, roads and sand all change your speed), barbed wire (90% slower, 2 damage/s), trenches and the 50% dodge for anyone dug in |
 | **The map** | Doors, destructible cover with per-wall toughness and ballistics, barrels cooking off and chaining, deployed barricades as real geometry |
-| **Shooting** | Ballistics, penetration and ricochet, falloff, hit zones, armour, adrenaline, sentry fire, mounted vehicle guns |
+| **Shooting** | Ballistics, penetration and ricochet, falloff, hit zones, armour, adrenaline, sentry fire, mounted vehicle guns. Every round carries an id and a shooter, so a tracer is followed between snapshots and drawn in the colour and heft of the gun that fired it — the weapon never goes on the wire, because the shooter is already in the same snapshot |
+| **Guns** | The weapon and skin each player is carrying, a looted Gold included, drawn on them for everybody |
 | **Consumables** | Frags, impacts, C4, smoke and flashbangs (line of sight checked against the room's own geometry); mines, sentries, ammo boxes, flags, barricades; every heal, channelled with a clock the room runs |
 | **Loot** | Crate contents, who opened one first, ground drops, who picked one up first, armour tiers, legendaries, what you scatter when you die |
 | **Vehicles** | Every hull on the map — the ones a call-in token drops *and* the ones parked in garages and car parks — plus who is in the driver's seat, driving, terrain underneath, the gun on top, and what small arms do to a tank (nothing) |

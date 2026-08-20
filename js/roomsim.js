@@ -202,8 +202,12 @@
      is not a bigger health bar, it is the damage-type table in combat.js: a
      rifle round does 0% to a tank. */
   const VEHICLES = {
-    jeep: { vtype: 'jeep', klass: 'jeep', weapon: 'm249', r: 29, speed: 175 },
-    tank: { vtype: 'tank', klass: 'tank', weapon: 'qlz-87', r: 34, speed: 110 },
+    /* These radii must match VEHICLES in game.js exactly. The room resolves
+       collision against them and the client predicts against its own copy, so
+       a hull that is 29px here and 42px there is a hull the two ends disagree
+       about the moment it touches a wall. */
+    jeep: { vtype: 'jeep', klass: 'jeep', weapon: 'm249', r: 42, speed: 175 },
+    tank: { vtype: 'tank', klass: 'tank', weapon: 'qlz-87', r: 56, speed: 110 },
   };
 
   /* ---------- the world the match is fought in ----------
@@ -821,7 +825,7 @@
       const v = {
         id: this.nextEnt++, vtype: conf.vtype, klass: conf.klass,
         x: clamp(x, 60, this.map.w - 60), y: clamp(y, 60, this.map.h - 60),
-        angle: 0, r: conf.r, speed: conf.speed,
+        angle: 0, hullAngle: 0, r: conf.r, speed: conf.speed,
         hp: C.maxHpFor(conf.klass), maxHp: C.maxHpFor(conf.klass),
         team: team === undefined ? -1 : team,
         weapon, ammo: weapon.mag, fireCd: 0, reloadUntil: 0, reloading: false,
@@ -1101,7 +1105,13 @@
         if (m > 0) {
           const spd = moveSpeedFor(p, i.ads)
             * surfaceSpeedFor(p, this.surfaceAt(p.x, p.y))
-            * ((hz && !Perks.mod(p, 'ignoreHazardSlow')) ? hz.slow : 1)
+            /* PERK, not the bare `Perks` global. This file runs in two places
+               and only one of them has globals: in a browser `Perks` resolves
+               and nobody notices, but on the dedicated server it is a
+               ReferenceError thrown from inside step() — so the first time
+               anyone walked into barbed wire the whole room stopped
+               simulating. deps() resolves it either way. */
+            * ((hz && !PERK.mod(p, 'ignoreHazardSlow')) ? hz.slow : 1)
             * (p.channel ? CHANNEL_SLOW : 1);
           /* Move, then get pushed back out of anything solid — the same
              resolution the client runs offline, so a player and the host
@@ -1302,6 +1312,7 @@
       s.cd = 1 / s.item.rof;
       const ang = s.angle + (Math.random() - 0.5) * 0.05;
       this.bullets.push({
+        id: this.nextEnt++, from: 'sentry',
         x: s.x + Math.cos(ang) * 20, y: s.y + Math.sin(ang) * 20,
         vx: Math.cos(ang) * W.TILE * 48, vy: Math.sin(ang) * W.TILE * 48,
         sx: s.x, sy: s.y, dmg: s.item.damage, falloff: 0.04, range: s.item.range,
@@ -1336,6 +1347,11 @@
         v.x = clamp(v.x + (dx / m) * spd, v.r, this.map.w - v.r);
         v.y = clamp(v.y + (dy / m) * spd, v.r, this.map.h - v.r);
         this.resolveWorld(v, v.r);
+        /* The hull points where it is driving; the turret points where the
+           driver is aiming. Two angles, and the room only ever tracked the
+           turret — so on every screen but the driver's, a jeep reversing
+           through a gate was drawn broadside to its own direction of travel. */
+        v.hullAngle = Math.atan2(dy, dx);
       }
       v.angle = i.angle;
       // the driver rides inside the hull, so their position is the hull's
@@ -1346,7 +1362,7 @@
       if (v.reloading) { v.ammo = v.weapon.mag; v.reloading = false; }
       if (v.ammo <= 0) { v.reloadUntil = now() + v.weapon.reloadMs; v.reloading = true; return; }
       if (i.shooting && (v.weapon.action === 'auto' || i.fireEdge) && v.fireCd <= 0) {
-        this.fireFrom(v, v.weapon, v.team, p.id);
+        this.fireFrom(v, v.weapon, v.team, p.id, false, 'gun');
         v.ammo--;
         v.fireCd = v.weapon.fireInterval;
         i.fireEdge = false;
@@ -1420,13 +1436,23 @@
     /* One trigger pull from anything with a barrel — a player, or the gun on a
        jeep. Split out so a mounted weapon behaves exactly like a carried one
        rather than being a second, slightly different implementation. */
-    fireFrom(src, w, team, ownerId, ads) {
+    fireFrom(src, w, team, ownerId, ads, from) {
       const cone = w.spreadBase * (ads ? w.adsMult : 1);
       for (let n = 0; n < (w.pellets || 1); n++) {
         const jitter = (Math.random() - 0.5) * cone * 2 + (Math.random() - 0.5) * (w.pelletSpread || 0) * 2;
         const ang = src.angle + jitter;
         const muzzle = (src.r || BODY_R) + 5;
         this.bullets.push({
+          /* An identity, so a client can match a round between two snapshots
+             and draw it moving instead of appearing in a new place twenty
+             times a second. */
+          id: this.nextEnt++,
+          /* And what fired it. A client hides rounds it fired itself, because
+             it already drew those the instant the trigger went down — but a
+             sentry's rounds are *owned* by the player who put it there without
+             having been fired by them, so that test hid them from the one
+             person guaranteed to be looking at it. */
+          from: from || 'gun',
           x: src.x + Math.cos(ang) * muzzle, y: src.y + Math.sin(ang) * muzzle,
           vx: Math.cos(ang) * w.bulletSpeed, vy: Math.sin(ang) * w.bulletSpeed,
           sx: src.x, sy: src.y, dmg: w.damage, falloff: w.falloff, range: w.range,
@@ -1749,9 +1775,19 @@
            (it drew those the moment it pulled the trigger) and `a` is the
            heading, so the tracer can be drawn pointing the right way rather
            than as a dot. */
+        /* Rounds in flight. `i` names one so a client can follow it between
+           snapshots, `o` is who fired it — the client skips its own, having
+           drawn those already — and `s` says a sentry fired it, which is a
+           round its owner did *not* draw and must be shown. `a` is the heading,
+           so a tracer points the right way rather than being a dot.
+
+           The weapon is deliberately not here: the client looks the shooter up
+           by `o` in the same snapshot and reads the gun off them, so a tracer's
+           colour and heft cost nothing on the wire. */
         bullets: this.bullets.slice(0, 120).map(b => ({
-          x: Math.round(b.x), y: Math.round(b.y), team: b.team, o: b.owner,
+          i: b.id, x: Math.round(b.x), y: Math.round(b.y), team: b.team, o: b.owner,
           a: +Math.atan2(b.vy, b.vx).toFixed(2),
+          s: b.from === 'sentry' ? 1 : 0,
         })),
         // grenades mid-flight, so they are drawn arcing rather than appearing
         // as an explosion out of nowhere
@@ -1775,8 +1811,13 @@
         drops: this.drops.map(d => ({ i: d.id, x: d.x, y: d.y, k: d.kind, n: d.n })),
         smokes: this.smokes.map(s => ({ i: s.id, x: s.x, y: s.y, r: s.r, l: +s.life.toFixed(1) })),
         cars: this.vehicles.map(v => ({
-          i: v.id, x: Math.round(v.x), y: Math.round(v.y), a: +v.angle.toFixed(2),
+          i: v.id, x: Math.round(v.x), y: Math.round(v.y),
+          // turret and hull are two different headings — see driveVehicle
+          a: +v.angle.toFixed(2), ha: +v.hullAngle.toFixed(2),
           v: v.vtype, tm: v.team, hp: Math.round(v.hp), mx: v.maxHp, d: v.driver || 0,
+          // the mounted gun's magazine, so the driver's HUD reads the room's
+          // count rather than one their own client has been keeping separately
+          am: v.ammo, rl: v.reloading ? 1 : 0,
         })),
         // capture points, in the order the client generated them
         objectives: this.objectives.map(o => ({ o: o.owner, p: Math.round(o.progress), c: o.capTeam })),
@@ -1861,7 +1902,12 @@
     sendSnapshot() {
       if (!this.players.size) return;
       const full = this.snapshot();
-      const near = ['nades', 'deploys', 'drops', 'smokes', 'cars'];
+      /* Bullets are in here now that they carry an id and a shooter: a hundred
+         tracers from a firefight two screens away were being sent to everyone
+         in the room, and they are the largest list in a busy snapshot. The
+         radius is far beyond any weapon's range, so nothing that could reach
+         you is ever dropped. */
+      const near = ['bullets', 'nades', 'deploys', 'drops', 'smokes', 'cars'];
       for (const p of this.players.values()) {
         /* A shallow copy per player, sharing the arrays that aren't culled.
            The transports serialise immediately (JSON down a socket, structured

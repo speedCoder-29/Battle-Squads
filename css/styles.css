@@ -301,15 +301,18 @@ input, select { font-family: inherit; }
 
 /* subpage panels take the whole home area */
 .subpage { display: none; grid-column: 1 / -1; overflow-y: auto; padding: 6px 4px; }
-.home[data-view="missions"] [data-panelgroup="play"],
-.home[data-view="battlepass"] [data-panelgroup="play"],
-.home[data-view="loadout"] [data-panelgroup="play"] { display: none; }
-.home[data-view="missions"] { grid-template-columns: 1fr; }
-.home[data-view="battlepass"] { grid-template-columns: 1fr; }
-.home[data-view="loadout"] { grid-template-columns: 1fr; }
+/* Every view that isn't Play takes the whole area. This was written out one
+   view at a time and the shop was never added to any of the three lists — so
+   the Shop button set the view, hid nothing, showed nothing, and appeared to
+   do nothing at all. Written as one rule per behaviour, so adding a view is
+   adding it to the nav and nowhere else. */
+.home:not([data-view="play"]) { grid-template-columns: 1fr; }
+.home:not([data-view="play"]) [data-panelgroup="play"] { display: none; }
 .home[data-view="missions"] [data-panelgroup="missions"],
 .home[data-view="battlepass"] [data-panelgroup="battlepass"],
-.home[data-view="loadout"] [data-panelgroup="loadout"] { display: block; }
+.home[data-view="loadout"] [data-panelgroup="loadout"],
+.home[data-view="ranks"] [data-panelgroup="ranks"],
+.home[data-view="shop"] [data-panelgroup="shop"] { display: block; }
 
 /* news */
 .news-card { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
@@ -824,4 +827,62 @@ input, select { font-family: inherit; }
   .wallet { display: none; }
   .hud__hint { display: none; }
   .play-hub__title { font-size: 22px; }
+}
+
+
+/* ---------- leaderboard ---------- */
+.lb-tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.lb { width: 100%; border-collapse: collapse; font-size: 13px; }
+.lb th {
+  text-align: left; padding: 8px 10px; font-size: 11px; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line);
+}
+.lb td { padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.lb tbody tr { transition: background 0.15s; }
+.lb tbody tr:hover { background: rgba(255,255,255,0.04); }
+.lb tbody tr.is-you { background: rgba(255,106,43,0.12); }
+.lb tbody tr.is-you td:first-child { border-left: 2px solid var(--accent); }
+.lb__rank { font-weight: 900; color: var(--muted); width: 42px; }
+.lb__rank--1 { color: var(--gold); }
+.lb__rank--2 { color: #cfd8ee; }
+.lb__rank--3 { color: #c98b52; }
+.lb__who { display: flex; align-items: center; gap: 9px; }
+.lb__av {
+  width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--line); font-size: 14px;
+}
+
+/* ---------- motion ----------
+   Panels arrive rather than appear. Everything is short and eased out: the
+   point is to make a screen feel put together, not to make you wait for it. */
+@keyframes bs-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes bs-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes bs-pop { from { transform: scale(0.94); opacity: 0; } to { transform: none; opacity: 1; } }
+.screen.is-active .panel,
+.screen.is-active .play-hub,
+.screen.is-active .rail { animation: bs-rise 0.34s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.screen.is-active .rail { animation-delay: 0.06s; }
+.screen.is-active .play-hub { animation-delay: 0.03s; }
+.subpage { animation: bs-fade 0.25s ease both; }
+.mode-card { animation: bs-pop 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.mode-card:nth-child(2) { animation-delay: 0.07s; }
+.intel li { animation: bs-rise 0.3s ease both; }
+.intel li:nth-child(2) { animation-delay: 0.04s; }
+.intel li:nth-child(3) { animation-delay: 0.08s; }
+.intel li:nth-child(4) { animation-delay: 0.12s; }
+.intel li:nth-child(5) { animation-delay: 0.16s; }
+.intel li:nth-child(6) { animation-delay: 0.20s; }
+.intel li:nth-child(7) { animation-delay: 0.24s; }
+.lb tbody tr { animation: bs-fade 0.22s ease both; }
+/* the deploy button breathes, so the eye lands on it */
+@keyframes bs-pulse { 0%, 100% { box-shadow: 0 0 24px rgba(255,106,43,0.35); } 50% { box-shadow: 0 0 38px rgba(255,106,43,0.6); } }
+.btn--play { animation: bs-pulse 2.6s ease-in-out infinite; }
+.btn--play:hover { animation-duration: 1.2s; }
+/* progress bars fill rather than snap */
+.bar__fill { transition: width 0.6s cubic-bezier(0.2, 0.7, 0.3, 1); }
+/* ...and none of it happens if the machine has been asked to keep still */
+@media (prefers-reduced-motion: reduce) {
+  .screen.is-active .panel, .screen.is-active .play-hub, .screen.is-active .rail,
+  .subpage, .mode-card, .intel li, .lb tbody tr, .btn--play { animation: none; }
+  .bar__fill { transition: none; }
 }

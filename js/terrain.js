@@ -50,10 +50,67 @@ const Terrain = (() => {
   }
 
   /* ---------- generate ---------- */
+  /* ---------- biomes ----------
+     One island, several climates. The generator's shape is unchanged — the
+     same coast, rivers and roads — but the palette, the vegetation and the
+     ground underfoot come from the biome the seed rolls, so two maps read as
+     two places rather than as the same place twice.
+
+     `tree` names the vegetation the map generator should plant; `scatter` is
+     what its loose scenery is made of. */
+  const BIOMES = {
+    temperate: {
+      name: 'Temperate', tree: 'tree', scatter: ['stump', 'rubble', 'pallet'],
+      colors: {},                                   // the defaults above
+    },
+    arid: {
+      name: 'Arid Basin', tree: 'palm', scatter: ['rubble', 'sandpile', 'stump'],
+      colors: {
+        grass: '#b9a05e', grassAlt: '#a8904f', grassLight: '#cbb573',
+        beach: '#e8d3a0', beachEdge: '#d8c08a',
+        river: '#3f93b8', riverEdge: '#63b0d0', road: '#b0a храм'.replace(' храм', '18c'),
+      },
+    },
+    tundra: {
+      name: 'Frozen Flats', tree: 'tree', scatter: ['rock', 'stump', 'rubble'],
+      colors: {
+        grass: '#cdd8dc', grassAlt: '#bcc9ce', grassLight: '#e2ebee',
+        beach: '#dfe6ea', beachEdge: '#c8d2d8',
+        ocean: '#2a5f80', oceanDeep: '#17415c',
+        river: '#6fb6d8', riverEdge: '#9ed6ee', road: '#98a4ab',
+      },
+    },
+    tropic: {
+      name: 'Jungle Coast', tree: 'palm', scatter: ['bush', 'stump', 'pallet'],
+      colors: {
+        grass: '#2f8a3a', grassAlt: '#256f2d', grassLight: '#48a851',
+        beach: '#efdcae', beachEdge: '#dcc696',
+        ocean: '#137a9c', oceanDeep: '#0a5570',
+        river: '#1f9fb8', riverEdge: '#48c4d6',
+      },
+    },
+    volcanic: {
+      name: 'Ashfields', tree: 'stump', scatter: ['rock', 'rubble', 'sandpile'],
+      colors: {
+        grass: '#5c5750', grassAlt: '#4c483f', grassLight: '#6e6860',
+        beach: '#7a7068', beachEdge: '#655d55',
+        ocean: '#1b4358', oceanDeep: '#102c3c',
+        river: '#8a5a3a', riverEdge: '#b07a4a', road: '#3f3a35',
+      },
+    },
+  };
+  const BIOME_IDS = Object.keys(BIOMES);
+  const biomeFor = (seed) => BIOMES[BIOME_IDS[Math.abs((seed || 0) >>> 0) % BIOME_IDS.length]];
+
   function generate(w, h, seed) {
     const rand = rng(seed || 1337);
+    /* The climate this island has. Chosen from the seed, so every client
+       generating the same map agrees on it without anything crossing the
+       wire. */
+    const biome = biomeFor(seed || 1337);
     const t = {
       w, h, seed: seed || 1337,
+      biome, colors: Object.assign({}, COLORS, biome.colors),
       oceanInset: OCEAN_INSET,
       beachInset: BEACH_INSET,
       rivers: [], bridges: [], roads: [], patches: [],
@@ -227,7 +284,7 @@ const Terrain = (() => {
   }
 
   return {
-    COLORS, OCEAN_INSET, BEACH_INSET,
+    COLORS, BIOMES, BIOME_IDS, biomeFor, OCEAN_INSET, BEACH_INSET,
     generate, rng, distToPath,
     inOcean, inBeach, inRiver, onBridge, onRoad,
     surfaceAt, isBuildable, isSpawnable,

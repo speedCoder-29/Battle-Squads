@@ -16,7 +16,17 @@
    squeezing past cover, which also makes them look less robotic.
    ============================================================ */
 const Nav = (() => {
-  const CELL = 90;                   // px per cell — ~2 player widths
+  /* Px per cell. This was 90, which is wider than a doorway: a 62px opening
+     and the wall either side of it landed in the same cell, the cell was
+     marked blocked, and the route through the door did not exist. Bots could
+     not find their way through a building at all — they fell back on walking
+     at the target and grinding along the outside of it.
+
+     45 is one and a half body widths, so a doorway now occupies cells of its
+     own and a corridor is two cells across. The grid is four times as many
+     cells, which A* handles fine at this size and the per-frame path budget
+     already caps. */
+  const CELL = 45;
   const DIAG = Math.SQRT2;
   const MAX_STEPS = 6000;            // A* node budget, so a hopeless path bails
 

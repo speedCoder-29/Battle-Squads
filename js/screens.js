@@ -45,6 +45,96 @@ const Screens = (() => {
     if (view === 'battlepass') renderBattlePass();
     if (view === 'loadout') renderLoadout();
     if (view === 'shop') renderShop();
+    if (view === 'ranks') renderLeaderboard();
+  }
+
+  /* ---- leaderboard ----
+     Standings from the profiles this machine actually has, plus the roster the
+     matchmaker fills a game with, so a new player sees a board with names on
+     it rather than one row containing themselves. Anyone generated is marked,
+     because a leaderboard that quietly counts bots as people is lying. */
+  let lbSort = 'wins';
+  const LB_SORTS = [
+    { id: 'wins', label: 'Wins' },
+    { id: 'kills', label: 'Eliminations' },
+    { id: 'level', label: 'Level' },
+    { id: 'ratio', label: 'Elims per match' },
+  ];
+
+  function leaderboardRows() {
+    const me = DB.getProfile();
+    const rows = [];
+    const all = (typeof DB.allProfiles === 'function') ? DB.allProfiles() : [me];
+    for (const p of all) {
+      if (!p) continue;
+      rows.push({
+        name: p.username, avatar: p.avatar, level: p.level || 1,
+        wins: p.wins || 0, matches: p.matches || 0, kills: p.kills || 0,
+        you: me && p.username === me.username, real: true,
+      });
+    }
+    /* Padding, drawn from the same bot roster a match is filled with, so the
+       names match the people you actually played against. */
+    const pool = (typeof Matchmaking !== 'undefined' && Matchmaking.BOT_NAMES)
+      ? Matchmaking.BOT_NAMES : ['Vega', 'Rook', 'Ash', 'Juno', 'Kite', 'Nomad', 'Slate', 'Wren'];
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let i = 0; rows.length < 12 && i < pool.length * 2; i++) {
+      const nm = pool[i % pool.length] + (i >= pool.length ? ' II' : '');
+      if (rows.some(r => r.name === nm)) continue;
+      const matches = 4 + Math.floor(rnd() * 40);
+      rows.push({
+        name: nm, avatar: '🎯', level: 1 + Math.floor(rnd() * 22),
+        wins: Math.floor(matches * (0.2 + rnd() * 0.45)), matches,
+        kills: Math.floor(matches * (1.5 + rnd() * 5)), you: false, real: false,
+      });
+    }
+    for (const r of rows) {
+      r.ratio = r.matches ? r.kills / r.matches : 0;
+      r.winPct = r.matches ? Math.round((r.wins / r.matches) * 100) : 0;
+    }
+    rows.sort((a, b) => (b[lbSort] || 0) - (a[lbSort] || 0));
+    return rows;
+  }
+
+  function renderLeaderboard() {
+    const tabs = document.getElementById('lb-tabs');
+    const body = document.getElementById('lb-body');
+    if (!tabs || !body) return;
+    tabs.innerHTML = '';
+    for (const t of LB_SORTS) {
+      const b = document.createElement('button');
+      b.className = 'btn btn--ghost btn--tiny' + (lbSort === t.id ? ' is-active' : '');
+      b.textContent = t.label;
+      b.addEventListener('click', () => { lbSort = t.id; renderLeaderboard(); SFX.click(); });
+      tabs.appendChild(b);
+    }
+    body.innerHTML = '';
+    leaderboardRows().forEach((r, i) => {
+      const tr = document.createElement('tr');
+      if (r.you) tr.className = 'is-you';
+      tr.style.animationDelay = (i * 0.02) + 's';
+      const cell = (txt, cls) => {
+        const td = document.createElement('td');
+        if (cls) td.className = cls;
+        td.textContent = txt;
+        return td;
+      };
+      tr.appendChild(cell(String(i + 1), 'lb__rank' + (i < 3 ? ' lb__rank--' + (i + 1) : '')));
+      const who = document.createElement('td');
+      who.innerHTML = '<span class="lb__who"><span class="lb__av"></span><span></span></span>';
+      who.querySelector('.lb__av').textContent = r.avatar || '🎯';
+      who.querySelector('.lb__who span:last-child').textContent = r.name + (r.real ? '' : ' ·');
+      who.title = r.real ? 'Played on this machine' : 'Filled from the bot roster';
+      tr.appendChild(who);
+      tr.appendChild(cell(r.level));
+      tr.appendChild(cell(r.wins));
+      tr.appendChild(cell(r.matches));
+      tr.appendChild(cell(r.kills));
+      tr.appendChild(cell(r.ratio.toFixed(1)));
+      tr.appendChild(cell(r.winPct + '%'));
+      body.appendChild(tr);
+    });
   }
 
   /* ---- shop ---- */

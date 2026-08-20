@@ -1625,7 +1625,10 @@ const Game = (() => {
         const x = cx + Math.cos(a2) * rr, y = cy + Math.sin(a2) * rr;
         if (!Terrain.isSpawnable(terrain, x, y) || Terrain.onRoad(terrain, x, y)) continue;
         if (insideAnyBuilding(x, y, 20)) continue;
-        const kind = Terrain.isSand && Terrain.isSand(terrain, x, y) ? 'palm' : 'tree';
+        /* What grows here. The Ashfields have burnt stumps where a temperate
+           map has oak and the Jungle Coast has palm — same generator, three
+           different-looking islands. */
+        const kind = (terrain.biome && terrain.biome.tree) || 'tree';
         const pr = Structures.prop(kind, x, y, Sprites.META[kind].r * 2, 0.8 + Math.random() * 0.4);
         if (genHits(pr, 8)) continue;
         obstacles.push(pr); genAdd(pr);
@@ -1651,7 +1654,8 @@ const Game = (() => {
     // real obstacles you can shoot, break and hide behind. The rest — pallets,
     // tyres, cones, signs, rubble, stumps — stay pure dressing.
     const live = ['tree', 'tree', 'bush', 'bush', 'rock', 'crate', 'crate', 'barrel', 'container'];
-    const dressing = ['stump', 'pallet', 'tyre', 'rubble', 'sign', 'cone', 'antenna', 'tent', 'sandpile'];
+    const biomeScatter = (terrain && terrain.biome && terrain.biome.scatter) || [];
+    const dressing = ['pallet', 'tyre', 'sign', 'cone', 'antenna', 'tent'].concat(biomeScatter);
 
     const liveCount = Math.round(count * 0.45);
     for (let i = 0; i < liveCount; i++) {
@@ -1734,14 +1738,18 @@ const Game = (() => {
     let w = isPlayer && profile
       ? Weapons.configure(base, { attachments: profile.attachments[base.id], ammo: profile.ammo[base.id] })
       : base;
-    const skin = Skins.get(profile ? Skins.equipped(profile, base.id) : 'default');
+    /* The equipped skin's id, kept alongside the resolved skin: the weapon's
+       outline is built from the gun *and* the skin, so the drawing code needs
+       to know which skin rather than only its colours. */
+    const skinId = profile ? Skins.equipped(profile, base.id) : 'default';
+    const skin = Skins.get(skinId);
     // the one passive you deploy with; bots run bare (js/perks.js)
     const perk = isPlayer ? ((profile && profile.perk) || Perks.DEFAULT) : Perks.DEFAULT;
     // Bullet Strap is the one perk that rewrites the gun rather than the body
     w = Perks.applyToWeapon(w, perk);
     const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
-      team, isPlayer, alive: true,
+      team, isPlayer, alive: true, skinId,
       x: 0, y: 0, r: BODY_R, angle: 0,
       klass: 'infantry',                                    // see Combat.TARGETS
       // Beefy is the one perk that moves max HP
@@ -2080,6 +2088,9 @@ const Game = (() => {
     const w = a.weapon;
     a.fireCd = w.fireInterval;
     a.ammo--;
+    /* Recoil you can feel, scaled off the gun's own kick — a Barrett should
+       move the camera and a Makarov should not. */
+    if (a.isPlayer) addShake(1.1 + (w.recoil || 0.05) * 16);
 
     /* Aimed fire tightens the cone. The player holds right mouse for it and
        gets the gun's full ADS benefit.
@@ -2208,6 +2219,12 @@ const Game = (() => {
      rated as an ordinary explosive it would bounce off a vault it is
      specifically the answer to. */
   function explode(x, y, baseDmg, radius, team, owner, type = 'explosive', kind = null) {
+    /* Felt, not just seen. Scaled by distance, so a grenade at your feet is a
+       different event from one across the compound. */
+    if (player) {
+      const d = Math.hypot(player.x - x, player.y - y);
+      if (d < radius * 3) addShake(11 * (1 - Math.min(1, d / (radius * 3))));
+    }
     spawnFx(x, y, '#ff9d3b', 22);
     for (const a of agents) {
       if (!a.alive || a.riding) continue;      // the hull eats it, not the driver
@@ -2268,6 +2285,7 @@ const Game = (() => {
 
     if (mine) {
       killer.streak = (killer.streak || 0) + 1;
+      noteKill();                    // ...and was that two in four seconds?
       killBanner = {
         text: 'ELIMINATED ' + nameOf(victim, '').toUpperCase(),
         sub: (zone === 'head' ? 'HEADSHOT' : '')
@@ -2385,12 +2403,65 @@ const Game = (() => {
   }
   function equipWeapon(a, w) {
     a.weapon = w; a.weaponId = w.id; a.ammo = w.mag;
+    // a different gun is a different outline — drop the cached one
+    a.gunProfile = null;
     a.reloadTimer = 0; a.burstLeft = 0; a.postBurstCd = 0;
     if (a.isPlayer) updateWeaponHud();
   }
 
   /* ================= CLASS TOOLS ([V]) ================= */
   /* Gadget tools (binoculars, goggles, ghillie) toggle; the rest swing. */
+  /* ---- what each class's gadget looks like when it goes off ----
+     Ten classes shared one click and one grey HUD line, so using the thing
+     that defines your class felt the same whichever class you were. Each now
+     has its own flare, its own colour and its own line — the effect is
+     cosmetic, the ability itself is unchanged. */
+  const TOOL_FX = {
+    'bayonet':      { color: '#e8eef8', n: 10, ring: 0, msg: 'Bayonet — in close' },
+    'binoculars':   { color: '#8fd8ff', n: 14, ring: 220, msg: 'Glassing the ground ahead' },
+    'trench-spade': { color: '#b08a5a', n: 22, ring: 60,  msg: 'Digging in' },
+    'fire-axe':     { color: '#ff9d3b', n: 14, ring: 0,   msg: 'Axe — through the wall' },
+    'riot-shield':  { color: '#cfd8ee', n: 8,  ring: 40,  msg: 'Shield up' },
+    'nvg':          { color: '#6bff9d', n: 12, ring: 260, msg: 'Night vision — contacts marked' },
+    'ghillie':      { color: '#7fbf5a', n: 18, ring: 90,  msg: 'Ghillie — hold still and vanish' },
+    'stone-hammer': { color: '#d8c8a8', n: 16, ring: 0,   msg: 'Hammer — breaking stone' },
+    'defibrillator':{ color: '#ffe066', n: 16, ring: 120, msg: 'Paddles charged' },
+    'heat-goggles': { color: '#ff6ad5', n: 12, ring: 260, msg: 'Thermal — heat through cover' },
+  };
+
+  function toolFx(a, on) {
+    const fx = TOOL_FX[a.tool && a.tool.id];
+    if (!fx) return;
+    spawnFx(a.x, a.y, fx.color, fx.n);
+    // a sweep gadget shows you how far it reaches; a swung one does not
+    if (fx.ring && on !== false) {
+      toolRings.push({ x: a.x, y: a.y, r: 12, max: fx.ring, color: fx.color, t: 0 });
+    }
+    if (a.isPlayer) {
+      hudMsg(fx.msg + (on === false ? ' — off' : ''));
+      addShake(fx.ring ? 1.2 : 2.4);
+    }
+  }
+  /* Expanding rings from the sweep gadgets, drawn under the agents. */
+  let toolRings = [];
+  function updateToolRings(dt) {
+    for (let i = toolRings.length - 1; i >= 0; i--) {
+      const r = toolRings[i];
+      r.t += dt;
+      r.r += (r.max - r.r) * Math.min(1, dt * 4.5);
+      if (r.t > 0.9) toolRings.splice(i, 1);
+    }
+  }
+  function drawToolRings() {
+    for (const r of toolRings) {
+      const k = 1 - r.t / 0.9;
+      ctx.globalAlpha = k * 0.55;
+      ctx.strokeStyle = r.color; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
   function useTool() {
     if (!canAct()) return;
     const t = player.tool;
@@ -2399,7 +2470,7 @@ const Game = (() => {
       // gadgets aren't just a toggle: switching one on sweeps for contacts and
       // marks what it finds for the whole squad
       if (player.toolActive) markContacts(player);
-      hudMsg(t.name + (player.toolActive ? ' — ON' : ' — off'));
+      toolFx(player, player.toolActive);
       SFX.click();
       return;
     }
@@ -2413,9 +2484,11 @@ const Game = (() => {
       online.transport.send('melee', {});
       player.toolCd = player.tool.cooldown * hereToolRate();      // local rate limit, so the arc animates once
       player.swingT = 0.18;
+      toolFx(player, true);
       SFX.click();
       return;
     }
+    toolFx(player, true);
     swingTool(player);
   }
 
@@ -2922,14 +2995,24 @@ const Game = (() => {
      health pool, it's hard to kill because rifle rounds do 0% to it, and the
      HUD reads that straight out of Combat.TARGETS rather than restating it. */
   const VEHICLES = {
+    /* Sized against the real thing, at 40px to the metre like everything
+       else. They were 1.45m and 1.7m across — a tank was barely wider than two
+       men standing together, which made the one heavy asset on the map read as
+       a go-kart. A light 4x4 is about 2m wide and a main battle tank about
+       3.6m over the tracks, and since collision here is a circle these are the
+       radii that put the hull where the hull should be.
+
+       The consequence is deliberate: a tank at 2.8m across no longer fits down
+       a 2.2m corridor, and has to go round buildings rather than through the
+       doorways. That is what a tank should be. */
     jeep: {
       vtype: 'jeep', name: 'Armored Jeep', icon: '🚙', klass: 'jeep',
-      weapon: 'm249', r: 29, speed: 175,
+      weapon: 'm249', r: 42, speed: 175,                  // ~2.1m across
       blurb: 'Fast and open-topped — a mounted LMG on wheels',
     },
     tank: {
       vtype: 'tank', name: 'Tank', icon: '🛡️', klass: 'tank',
-      weapon: 'qlz-87', r: 34, speed: 110,
+      weapon: 'qlz-87', r: 56, speed: 110,                // ~2.8m across
       blurb: 'Small arms bounce off — only HEAT and explosives bite',
     },
   };
@@ -2972,6 +3055,40 @@ const Game = (() => {
      keeps its position in sync so the camera, the minimap and the capture
      logic all keep working untouched, and `riding` marks it as no longer a
      target — you are inside the armour, so the armour is what gets shot. */
+  /* How far a bot will go out of its way for a vehicle. Far enough to cross a
+     compound for a tank, not so far that the map empties of infantry.
+
+     900 was too short to ever fire: nineteen hulls spread over a 7400px map
+     sit about 1700px apart, so a bot was almost never within range of one at
+     the moment it happened to look. */
+  /* Measured: at 1800 every bot on the map had a hull in range at all times,
+     so they all abandoned what they were doing to walk at one and none of them
+     entered a building any more — bots indoors went from 7 of 15 to 0. A
+     divert has to be opportunistic, not a standing order. */
+  const BOT_RIDE_RANGE = 430;
+
+  /* The nearest hull this bot could take: unclaimed, or its own squad's. */
+  function botNearestRide(a, range) {
+    let best = null, bd = range * range;
+    for (const v of agents) {
+      if (!v.isVehicle || !v.alive || v.driver) continue;
+      if (!v.neutral && v.team !== a.team) continue;
+      const dd = dist2(a.x, a.y, v.x, v.y);
+      if (dd < bd) { bd = dd; best = v; }
+    }
+    return best;
+  }
+
+  /* Put a bot in the driver's seat. Offline only — online the room decides who
+     is driving what, and a client claiming a seat for a bot it does not own is
+     exactly the kind of thing the room exists to arbitrate. */
+  function botBoard(a, v) {
+    if (online || v.driver || !v.alive) return;
+    a.riding = v; v.driver = a;
+    v.team = a.team; v.neutral = false;
+    a.path = null; a.pathTarget = null;
+  }
+
   function nearestRide(x, y, range) {
     let best = null, bd = range * range;
     for (const a of agents) {
@@ -3644,6 +3761,56 @@ const Game = (() => {
     const { enemy, d } = nearestEnemy(a);
     let moveX = 0, moveY = 0;
 
+    /* ---- a hull sitting there is a hull worth taking ----
+       Garages, car parks and the objective buildings come with unclaimed
+       vehicles in them, and until now only a human ever got into one: bots
+       walked past a tank to go and fight on foot. A bot heading somewhere
+       anyway will divert for one that is roughly on its way, and once it is
+       in, the rest of updateBot drives it — a vehicle is an agent like any
+       other, so everything below already works from the driver's seat. */
+    if (!a.isVehicle && !a.riding && a.alive) {
+      a.rideLook = (a.rideLook || 0) - dt;
+      if (a.rideLook <= 0) {
+        a.rideLook = 1.2;
+        /* Opportunistic only: a hull you have practically walked into, and
+           only when nothing is shooting at you. Anything more eager and the
+           divert stops being a divert — at a 1800px range every bot on the
+           map had one in reach permanently, walked at it instead of doing its
+           job, and the number that ever got inside a building went from 7 of
+           15 to none. */
+        const v = botNearestRide(a, BOT_RIDE_RANGE);
+        if (v && !(enemy && d < 600)) a.rideWant = v; else a.rideWant = null;
+      }
+      const want = a.rideWant;
+      if (want && want.alive && !want.driver) {
+        const dv = Math.hypot(want.x - a.x, want.y - a.y);
+        if (dv < a.r + want.r + 34) {
+          botBoard(a, want);
+          a.rideWant = null;
+          return;                              // spend this frame getting in
+        }
+        // otherwise walk to it, using the same pathing and the same speed
+        // model as every other bot movement below
+        if (ensurePath(a, want.x, want.y)) {
+          const step = followPath(a);
+          if (step !== null && step !== undefined) {
+            const base = a.weapon.moveSpeed * 0.72 * a.cls.speed
+              * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
+            const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
+            const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
+            const px = a.x, py = a.y;
+            a.x += Math.cos(step) * spd; a.y += Math.sin(step) * spd;
+            resolveObstacles(a);
+            trackStuck(a, px, py, spd, dt);
+            a.angle = step;
+            return;
+          }
+        }
+      } else if (want) {
+        a.rideWant = null;
+      }
+    }
+
     // choose a goal point
     a.aiRepath -= dt;
     if (mode === 'domination') {
@@ -3917,7 +4084,11 @@ const Game = (() => {
   function followPath(a) {
     if (!a.path || a.pathI >= a.path.length) return null;
     let wp = a.path[a.pathI];
-    while (wp && dist2(a.x, a.y, wp.x, wp.y) < 70 * 70) {
+    /* Reached means reached. At 70px a waypoint standing in a doorway counted
+       as arrived while the bot was still outside the room, so it skipped to
+       the next one and cut the corner straight into the door frame. A doorway
+       is 62px, so the radius has to be comfortably inside that. */
+    while (wp && dist2(a.x, a.y, wp.x, wp.y) < 34 * 34) {
       a.pathI++;
       wp = a.path[a.pathI];
     }
@@ -3952,6 +4123,8 @@ const Game = (() => {
 
   /* ---------------- update ---------------- */
   function update(dt) {
+    updateFeel(dt);
+    updateToolRings(dt);
     invalidateRects();
     pathBudget = 2;      // at most two A* runs a frame, spread across the bots          // walls can be built, blown up or opened any frame
     /* Online the match clock belongs to whoever is hosting, and we only read
@@ -4366,13 +4539,41 @@ const Game = (() => {
   }
 
   function applyDamage(a, dmg, owner, type = 'normal', zone = null) {
+    /* Feedback, before any of the mitigation below can turn the number into a
+       zero: you still want to know you connected with a shot that a vest ate. */
+    if (owner && owner.isPlayer && a !== player && !a.isPlayer) {
+      addHitMarker(a.hp - dmg <= 0 ? 'kill' : (zone === 'head' ? 'head' : 'normal'));
+      SFX.click();
+    }
+    if (a.isPlayer) {
+      if (owner) addHurtArc(owner.x, owner.y);
+      addShake(Math.min(7, 2 + dmg * 0.09));
+    }
     dmg *= shieldFactor(a, owner);
     // hardened cover: a bunker or a vault takes some of it for you
     if (a.isPlayer) dmg *= hereDamageMult();
-    // dug in: infantry in a trench dodge half of what comes at them
-    if (!a.isVehicle && inTrench(a) && Math.random() < Structures.WALL_TYPES.trench.dodge) {
-      spawnFx(a.x, a.y, '#b08a5a', 4);
-      return;
+    /* Dug in. A trench is a hole in the ground, so what protects you is that
+       most of you is below the line the round is travelling on — and that
+       depends on where the round came from. Somebody firing across the field
+       is shooting at a helmet; somebody standing on the lip is shooting down
+       at all of you, and the hole is worth nothing.
+
+       So the dodge is the table's value at range and falls away to nothing up
+       close, rather than being a flat coin flip whoever is shooting and from
+       where. Explosions ignore it entirely: a trench is the worst place to be
+       when something goes off in it. */
+    if (!a.isVehicle && inTrench(a) && type !== 'explosive' && type !== 'heat') {
+      const base = Structures.WALL_TYPES.trench.dodge;
+      const range = owner ? Math.hypot(owner.x - a.x, owner.y - a.y) : 900;
+      // no cover from someone on top of you; full cover from 500px out
+      const grazing = clamp((range - 90) / 410, 0, 1);
+      // ...and none at all from someone else who is also down in the ditch
+      const alsoDug = owner && inTrench(owner) ? 0.35 : 1;
+      if (Math.random() < base * grazing * alsoDug) {
+        spawnFx(a.x, a.y, '#b08a5a', 4);
+        if (a.isPlayer) addShake(1.5);
+        return;
+      }
     }
     // damage type vs target class, hit zone, armour, adrenaline
     const hit = Combat.resolve({ damage: dmg, type, zone }, a);
@@ -4712,6 +4913,7 @@ const Game = (() => {
       perfCount('structuresDrawn', n);
     });
 
+    drawToolRings();
     drawCratesAndDeployables();
     drawDrops();
 
@@ -4733,12 +4935,15 @@ const Game = (() => {
     if (online && online.bullets) {
       ctx.lineWidth = 3; ctx.lineCap = 'round';
       for (const b of online.bullets) {
-        ctx.strokeStyle = hexA(TEAM_COLORS[b.team % TEAM_COLORS.length], 0.9);
+        // the round's own tracer colour, not a flat team stripe — see netBullets
+        ctx.strokeStyle = hexA(b.color, 0.9);
+        ctx.lineWidth = 2 * (b.wide || 1);
         ctx.beginPath();
         ctx.moveTo(b.x, b.y);
-        ctx.lineTo(b.x - Math.cos(b.a) * 26, b.y - Math.sin(b.a) * 26);
+        ctx.lineTo(b.x - Math.cos(b.a) * b.len, b.y - Math.sin(b.a) * b.len);
         ctx.stroke();
       }
+      ctx.lineWidth = 2;
     }
     drawGrenades();
 
@@ -4768,23 +4973,12 @@ const Game = (() => {
         ctx.fillStyle = 'rgba(207,216,238,0.75)'; roundRect(a.r - 2, -16, 7, 32, 3); ctx.fill();
         ctx.restore();
       }
-      // barrel, painted with the equipped skin
-      const sk = a.skin || Skins.get('default');
-      const bx = a.x + Math.cos(a.angle) * (a.r + 12), by = a.y + Math.sin(a.angle) * (a.r + 12);
-      if (sk.glow) { ctx.shadowColor = sk.accent; ctx.shadowBlur = 10; }
-      ctx.strokeStyle = sk.barrel; ctx.lineWidth = 5; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(bx, by); ctx.stroke();
-      if (sk.stripes) {   // a contrasting wrap partway down the barrel
-        ctx.strokeStyle = sk.accent; ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(a.x + Math.cos(a.angle) * (a.r + 4), a.y + Math.sin(a.angle) * (a.r + 4));
-        ctx.lineTo(a.x + Math.cos(a.angle) * (a.r + 8), a.y + Math.sin(a.angle) * (a.r + 8));
-        ctx.stroke();
-      }
-      ctx.shadowBlur = 0;
-      // muzzle tip in the skin accent
-      ctx.fillStyle = sk.accent;
-      ctx.beginPath(); ctx.arc(bx, by, 2.5, 0, Math.PI * 2); ctx.fill();
+      /* The weapon, drawn to its own outline. Every gun used to be the same
+         white 12px line at 5px wide, so a Makarov and a Barrett looked
+         identical and you could not tell what anyone was carrying. The shape
+         comes from Skins.profileFor — length, thickness, stock, magazine,
+         optic and muzzle — and a bought skin repaints it without changing it. */
+      drawWeapon(a);
       // body
       ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
       ctx.fillStyle = teamInk(a.team); ctx.fill();
@@ -4878,7 +5072,9 @@ const Game = (() => {
      bridges and roads laid on top. */
   function drawIsland() {
     const T = terrain; if (!T) return;
-    const C = Terrain.COLORS;
+    /* This island's palette, not the global one: the biome the seed rolled
+       overrides the colours it changes and inherits the rest. */
+    const C = (terrain && terrain.colors) || Terrain.COLORS;
 
     // ocean fills everything; the bands paint over it
     ctx.fillStyle = C.oceanDeep;
@@ -4934,9 +5130,9 @@ const Game = (() => {
     for (const b of T.bridges) {
       ctx.save();
       ctx.translate(b.x, b.y); ctx.rotate(b.angle);
-      ctx.fillStyle = Terrain.COLORS.bridge;
+      ctx.fillStyle = C.bridge;
       ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h);
-      ctx.strokeStyle = Terrain.COLORS.bridgeEdge; ctx.lineWidth = 5;
+      ctx.strokeStyle = C.bridgeEdge; ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(-b.w / 2, -b.h / 2); ctx.lineTo(b.w / 2, -b.h / 2);
       ctx.moveTo(-b.w / 2, b.h / 2); ctx.lineTo(b.w / 2, b.h / 2);
@@ -4964,10 +5160,26 @@ const Game = (() => {
       ctx.strokeStyle = 'rgba(110,230,150,0.30)'; ctx.lineWidth = 1; ctx.stroke();
     }
     // dug trenches
+    /* A trench is a hole, so it is drawn as one: spoil heaped on the rim,
+       the cut face catching the light on one side and in shadow on the other,
+       and the floor darker than the ground around it. It used to be a flat
+       brown disc, which read as a stain rather than as something you get
+       down into. */
     for (const t of trenches) {
+      // spoil — the earth that came out of it, piled around the lip
+      ctx.beginPath(); ctx.arc(t.x, t.y, t.r + 7, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(122,96,62,0.55)'; ctx.fill();
+      // the cut: lit from the same low sun everything else uses
+      const g = ctx.createLinearGradient(t.x, t.y - t.r, t.x, t.y + t.r);
+      g.addColorStop(0, 'rgba(38,28,18,0.82)');      // far wall, in shadow
+      g.addColorStop(0.55, 'rgba(66,50,32,0.7)');
+      g.addColorStop(1, 'rgba(104,82,54,0.6)');      // near lip, catching light
       ctx.beginPath(); ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(90,66,40,0.45)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(176,138,90,0.5)'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = g; ctx.fill();
+      // and a hard edge, so the drop is legible from above
+      ctx.strokeStyle = 'rgba(24,18,12,0.75)'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.beginPath(); ctx.arc(t.x, t.y, t.r - 3, Math.PI * 0.15, Math.PI * 0.85);
+      ctx.strokeStyle = 'rgba(190,158,110,0.35)'; ctx.lineWidth = 2; ctx.stroke();
     }
   }
 
@@ -5185,6 +5397,40 @@ const Game = (() => {
       const ridge = st.pattern === 'metal' ? 24 : st.pattern === 'tile' ? 34 : 46;
       for (let y = b.y; y < b.y + b.h; y += ridge) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
       ctx.stroke();
+      /* Things that actually sit on a roof. A flat coloured slab with lines
+         across it reads as a lid; what makes it a building from above is the
+         clutter — a ridge down the spine, vents, a skylight over the middle of
+         a big span, and a gutter shadow inside the eaves.
+
+         Seeded off the building's own position, so a roof looks the same every
+         frame and every client draws the same one. */
+      const rr = ((Math.abs(b.x * 7 + b.y * 13) | 0) % 997) / 997;
+      const wide = b.w >= b.h;
+      // ridge down the long axis
+      ctx.strokeStyle = 'rgba(0,0,0,0.32)'; ctx.lineWidth = 3;
+      ctx.beginPath();
+      if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2); }
+      else { ctx.moveTo(b.x + b.w / 2, b.y - 8); ctx.lineTo(b.x + b.w / 2, b.y + b.h + 8); }
+      ctx.stroke();
+      // gutter shadow just inside the eaves
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 6;
+      ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+      // roof furniture: vents along the ridge, and a skylight on a big span
+      const vents = Math.max(1, Math.min(5, Math.floor((wide ? b.w : b.h) / 240)));
+      for (let i = 0; i < vents; i++) {
+        const t = (i + 0.5 + rr * 0.3) / vents;
+        const vx = wide ? b.x + b.w * t : b.x + b.w / 2 + (i % 2 ? 22 : -22);
+        const vy = wide ? b.y + b.h / 2 + (i % 2 ? 20 : -20) : b.y + b.h * t;
+        ctx.fillStyle = hexA(st.trim, 0.55);
+        roundRect(vx - 9, vy - 7, 18, 14, 3); ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      if (b.w > 340 && b.h > 260) {
+        const sw = Math.min(120, b.w * 0.22), sh = Math.min(90, b.h * 0.2);
+        ctx.fillStyle = 'rgba(180,220,255,0.20)';
+        roundRect(b.x + b.w * 0.5 - sw / 2, b.y + b.h * 0.28 - sh / 2, sw, sh, 4); ctx.fill();
+        ctx.strokeStyle = hexA(st.trim, 0.7); ctx.lineWidth = 2; ctx.stroke();
+      }
       ctx.strokeStyle = hexA(st.trim, 0.9); ctx.lineWidth = 4;
       ctx.strokeRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
       ctx.restore();
@@ -5483,6 +5729,12 @@ const Game = (() => {
        hard ring — beyond SIGHT_R everything is dim anyway. */
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    /* 5. SCREEN SHAKE. Applied to the world transform only — the HUD must not
+       move, or reading your own ammo count becomes a chore in a firefight. */
+    if (shake.mag > 0.2) {
+      const a2 = shake.t * 47;
+      ctx.translate(Math.cos(a2) * shake.mag, Math.sin(a2 * 1.7) * shake.mag);
+    }
     ctx.globalAlpha = SIGHT_DARK;
     ctx.drawImage(layer, 0, 0);
     ctx.restore();
@@ -5588,11 +5840,77 @@ const Game = (() => {
       ctx.strokeStyle = 'rgba(220,235,255,0.22)'; ctx.lineWidth = 1;
       ctx.strokeRect(s.x + 3, s.y + 3, Math.max(0, s.w - 6), Math.max(0, s.h - 6));
     }
+    drawWallDetail(s, k, along);
     if (dmg > 0.02) {   // damage bleeds along the length of the piece
       ctx.fillStyle = `rgba(255,75,92,${0.12 + dmg * 0.3})`;
       if (along) ctx.fillRect(s.x + 1, s.y + 1, (s.w - 2) * dmg, Math.max(2, s.h - 2));
       else ctx.fillRect(s.x + 1, s.y + 1, Math.max(2, s.w - 2), (s.h - 2) * dmg);
     }
+  }
+
+  /* ---- what a wall is made of ----
+     Every wall was a flat rectangle in its material's colour, so a plank
+     fence, a brick vault and a steel shed differed only in hue. Real
+     construction has a grain you read before you read the colour: courses in
+     masonry, boards in timber, panel seams and rivets in sheet steel.
+
+     Drawn as short strokes along the piece, spaced by material, and clipped to
+     the wall so nothing bleeds into the room. Skipped on short pieces — a
+     doorway jamb with two bricks on it is noise, not detail. */
+  const WALL_GRAIN = {
+    wood:      { step: 15, line: 'rgba(60,40,22,0.34)', edge: 'rgba(210,175,130,0.16)' },
+    rwall:     { step: 20, line: 'rgba(18,22,30,0.34)', edge: 'rgba(225,235,250,0.13)', stagger: true },
+    metal:     { step: 26, line: 'rgba(14,20,28,0.34)', edge: 'rgba(220,238,255,0.18)', rivets: true },
+    rock:      { step: 24, line: 'rgba(30,32,36,0.36)', edge: 'rgba(220,226,236,0.12)', stagger: true },
+    barricade: { step: 12, line: 'rgba(50,34,18,0.34)', edge: 'rgba(214,182,140,0.16)' },
+    sandbag:   { step: 17, line: 'rgba(60,52,34,0.30)', edge: 'rgba(226,208,166,0.18)', stagger: true },
+  };
+
+  function drawWallDetail(s, k, along) {
+    const gr = WALL_GRAIN[s.type];
+    if (!gr) return;
+    const len = along ? s.w : s.h;
+    const thick = along ? s.h : s.w;
+    if (len < gr.step * 1.6 || thick < 5) return;
+    ctx.save();
+    roundRect(s.x, s.y, s.w, s.h, k.height === 'low' ? 3 : 5);
+    ctx.clip();
+    ctx.lineWidth = 1;
+    let row = 0;
+    for (let i = gr.step; i < len; i += gr.step) {
+      // masonry is laid in courses, so every other joint is offset
+      const off = gr.stagger && (row++ % 2) ? gr.step * 0.5 : 0;
+      const at = i + off;
+      if (at >= len) continue;
+      ctx.strokeStyle = gr.line;
+      ctx.beginPath();
+      if (along) { ctx.moveTo(s.x + at, s.y + 1); ctx.lineTo(s.x + at, s.y + s.h - 1); }
+      else { ctx.moveTo(s.x + 1, s.y + at); ctx.lineTo(s.x + s.w - 1, s.y + at); }
+      ctx.stroke();
+      // a lit edge just past each joint, so the grain has depth
+      ctx.strokeStyle = gr.edge;
+      ctx.beginPath();
+      if (along) { ctx.moveTo(s.x + at + 1, s.y + 1); ctx.lineTo(s.x + at + 1, s.y + s.h - 1); }
+      else { ctx.moveTo(s.x + 1, s.y + at + 1); ctx.lineTo(s.x + s.w - 1, s.y + at + 1); }
+      ctx.stroke();
+    }
+    // a course line down the middle of thick masonry, and rivets on steel
+    if (gr.stagger && thick > 13) {
+      ctx.strokeStyle = gr.line;
+      ctx.beginPath();
+      if (along) { ctx.moveTo(s.x, s.y + s.h / 2); ctx.lineTo(s.x + s.w, s.y + s.h / 2); }
+      else { ctx.moveTo(s.x + s.w / 2, s.y); ctx.lineTo(s.x + s.w / 2, s.y + s.h); }
+      ctx.stroke();
+    }
+    if (gr.rivets && thick >= 8) {
+      ctx.fillStyle = gr.edge;
+      for (let i = gr.step * 0.5; i < len; i += gr.step) {
+        const rx = along ? s.x + i : s.x + s.w / 2;
+        const ry = along ? s.y + s.h / 2 : s.y + i;
+        ctx.beginPath(); ctx.arc(rx, ry, 1.2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   /* dropped stacks: bob gently, fade as they time out, prompt when you're close */
@@ -5618,6 +5936,58 @@ const Game = (() => {
       }
       ctx.globalAlpha = 1;
     }
+  }
+
+
+  /* One gun, drawn from its profile, in the operator's own frame: +x is where
+     they are pointing, so every piece is placed along the barrel rather than
+     recomputed with sin and cos. */
+  function drawWeapon(a) {
+    const gp = a.gunProfile || (a.gunProfile = Skins.profileFor(a.weapon, a.skinId || 'default'));
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(a.angle);
+    const r = a.r, len = gp.len, w = gp.w;
+    if (gp.glow) { ctx.shadowColor = gp.accent; ctx.shadowBlur = 10; }
+    ctx.lineCap = 'round';
+
+    // stock, behind the grip — what makes a rifle read as a rifle
+    if (gp.stock) {
+      ctx.strokeStyle = gp.barrel; ctx.lineWidth = w * 0.85;
+      ctx.beginPath(); ctx.moveTo(-gp.stock, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
+    }
+    // magazine, hanging below the receiver
+    if (gp.mag) {
+      ctx.fillStyle = gp.barrel;
+      roundRect(r * 0.35, w * 0.45, w * 1.5, w * 1.5, 1.5); ctx.fill();
+    }
+    // the barrel itself
+    ctx.strokeStyle = gp.barrel; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(r * 0.2, 0); ctx.lineTo(r + len, 0); ctx.stroke();
+    // optic, sitting on top of the receiver
+    if (gp.optic) {
+      ctx.fillStyle = gp.accent;
+      roundRect(r + len * 0.18, -w * 0.95, len * 0.26, w * 0.7, 1.5); ctx.fill();
+    }
+    // a bought skin's contrasting wrap
+    if (gp.stripes) {
+      ctx.strokeStyle = gp.accent; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(r + len * 0.45, 0); ctx.lineTo(r + len * 0.62, 0); ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+
+    // and the business end
+    const tip = r + len;
+    ctx.fillStyle = gp.accent;
+    if (gp.muzzle === 'brake') {
+      roundRect(tip - w * 0.7, -w * 0.8, w * 1.4, w * 1.6, 1.5); ctx.fill();
+    } else if (gp.muzzle === 'tube') {
+      ctx.strokeStyle = gp.accent; ctx.lineWidth = w * 1.35;
+      ctx.beginPath(); ctx.moveTo(tip - w, 0); ctx.lineTo(tip, 0); ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(tip, 0, Math.max(2, w * 0.45), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
   }
 
   /* ---------------- tactical rendering helpers ---------------- */
@@ -5796,6 +6166,7 @@ const Game = (() => {
       drawActionBar(p);
     }
     drawChannelRing(p);
+    drawFeel();
     drawHudMessage();
   }
 
@@ -5969,6 +6340,133 @@ const Game = (() => {
     ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Segoe UI';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(p.channel.label, cx, cy + rad + 16);
+  }
+
+  /* ============================================================
+     FEEL — the five things every shooter has and this one did not.
+
+     None of it changes a number in the simulation. All of it is feedback:
+     telling you that you hit, that you are being hit and from where, that you
+     are nearly dead, and that the last three seconds went well. A shooter
+     without these reads as unresponsive even when the shooting itself is
+     perfectly good, because the player is being asked to infer everything
+     from health bars and corpses.
+     ============================================================ */
+
+  /* 1. HITMARKERS — did that connect? */
+  let hitMarkers = [];                      // { t, life, kind }
+  function addHitMarker(kind) {
+    hitMarkers.push({ t: 0, life: kind === 'kill' ? 0.5 : 0.28, kind });
+    if (hitMarkers.length > 8) hitMarkers.shift();
+  }
+
+  /* 2. DAMAGE DIRECTION — who is shooting me, and from where? */
+  let hurtArcs = [];                        // { ang, t, life }
+  function addHurtArc(fromX, fromY) {
+    if (!player) return;
+    const ang = Math.atan2(fromY - player.y, fromX - player.x);
+    // one arc per direction: being shot four times from the same window is one
+    // piece of information, not four
+    const near = hurtArcs.find(h => Math.abs(angDiff(h.ang, ang)) < 0.5);
+    if (near) { near.t = 0; near.life = 1.5; return; }
+    hurtArcs.push({ ang, t: 0, life: 1.5 });
+    if (hurtArcs.length > 6) hurtArcs.shift();
+  }
+  const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+
+  /* 3. SCREEN SHAKE — weight behind the gun and the explosions */
+  let shake = { mag: 0, t: 0 };
+  function addShake(mag) { shake.mag = Math.min(14, shake.mag + mag); }
+
+  /* 4. MULTI-KILLS — the last few seconds, called out */
+  let multiKill = { n: 0, until: 0 };
+  const MULTI_NAMES = ['', '', 'DOUBLE KILL', 'TRIPLE KILL', 'QUAD KILL', 'MULTI KILL'];
+  function noteKill() {
+    const now = performance.now();
+    multiKill.n = now < multiKill.until ? multiKill.n + 1 : 1;
+    multiKill.until = now + 4000;           // the window every shooter uses
+    if (multiKill.n >= 2) {
+      const label = MULTI_NAMES[Math.min(multiKill.n, MULTI_NAMES.length - 1)];
+      streakBanner = { text: label, t: 1.8 };
+      SFX.reward();
+    }
+  }
+  let streakBanner = null;
+
+  function updateFeel(dt) {
+    for (let i = hitMarkers.length - 1; i >= 0; i--) {
+      hitMarkers[i].t += dt;
+      if (hitMarkers[i].t >= hitMarkers[i].life) hitMarkers.splice(i, 1);
+    }
+    for (let i = hurtArcs.length - 1; i >= 0; i--) {
+      hurtArcs[i].t += dt;
+      if (hurtArcs[i].t >= hurtArcs[i].life) hurtArcs.splice(i, 1);
+    }
+    if (shake.mag > 0) { shake.t += dt; shake.mag = Math.max(0, shake.mag - dt * 26); }
+    if (streakBanner) { streakBanner.t -= dt; if (streakBanner.t <= 0) streakBanner = null; }
+  }
+
+  /* Drawn in screen space, over everything. */
+  function drawFeel() {
+    const cx = W / 2, cy = H / 2;
+
+    // 1. hitmarkers on the crosshair
+    for (const h of hitMarkers) {
+      const k = 1 - h.t / h.life;
+      const gap = 7 + (1 - k) * 5, len = 7;
+      ctx.globalAlpha = Math.min(1, k * 1.6);
+      ctx.strokeStyle = h.kind === 'kill' ? '#ff5470' : h.kind === 'head' ? '#ffcf4a' : '#ffffff';
+      ctx.lineWidth = h.kind === 'normal' ? 2 : 3; ctx.lineCap = 'round';
+      for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        ctx.beginPath();
+        ctx.moveTo(cx + sx * gap, cy + sy * gap);
+        ctx.lineTo(cx + sx * (gap + len), cy + sy * (gap + len));
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 2. where it came from
+    for (const h of hurtArcs) {
+      const k = 1 - h.t / h.life;
+      const r0 = Math.min(W, H) * 0.20, r1 = r0 + 34;
+      ctx.globalAlpha = k * 0.75;
+      const g = ctx.createLinearGradient(cx, cy, cx + Math.cos(h.ang) * r1, cy + Math.sin(h.ang) * r1);
+      g.addColorStop(0, 'rgba(255,60,60,0)');
+      g.addColorStop(1, 'rgba(255,70,70,0.95)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r1, h.ang - 0.34, h.ang + 0.34);
+      ctx.arc(cx, cy, r0, h.ang + 0.34, h.ang - 0.34, true);
+      ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // 3. low health: the edges close in, and pulse as it gets worse
+    if (player && player.alive) {
+      const frac = player.hp / player.maxHp;
+      if (frac < 0.45) {
+        const bite = (0.45 - frac) / 0.45;
+        const pulse = 0.72 + 0.28 * Math.sin(performance.now() / (120 + frac * 420));
+        const g = ctx.createRadialGradient(cx, cy, Math.min(W, H) * 0.30, cx, cy, Math.max(W, H) * 0.62);
+        g.addColorStop(0, 'rgba(140,0,0,0)');
+        g.addColorStop(1, 'rgba(150,10,10,' + (bite * 0.72 * pulse).toFixed(3) + ')');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // 4. the callout
+    if (streakBanner) {
+      const k = Math.min(1, streakBanner.t / 0.4);
+      ctx.globalAlpha = k;
+      ctx.font = 'bold 34px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffcf4a';
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 5;
+      const yy = cy - Math.min(W, H) * 0.22 + (1 - k) * 14;
+      ctx.strokeText(streakBanner.text, cx, yy);
+      ctx.fillText(streakBanner.text, cx, yy);
+      ctx.globalAlpha = 1;
+    }
   }
 
   function drawHudMessage() {
@@ -6681,6 +7179,35 @@ const Game = (() => {
     if (list) for (const e of list) m.set(e.i, e);
     return m;
   };
+
+  /* The tracers to draw this frame, with the look of whatever fired them.
+     Nothing about the gun travels on the wire: the shooter is in the same
+     snapshot, so their weapon and skin are one lookup away, and a Gold rifle's
+     round is gold on every screen for free. */
+  const SENTRY_TRACER = '#35e0ff';
+  function netBullets(a, b, k) {
+    const out = [];
+    const prev = byId(a && a.bullets);
+    const shooters = new Map();
+    for (const ag of (b.agents || [])) shooters.set(ag.id, ag);
+    for (const bl of (b.bullets || [])) {
+      // our own gunfire is already on screen — but our sentry's is not
+      if (bl.o === online.id && !bl.s) continue;
+      const p = prev.get(bl.i);
+      const shooter = shooters.get(bl.o);
+      const gun = bl.s || !shooter ? null : gunFor(shooter.weaponId, shooter.skin).weapon;
+      out.push({
+        x: p ? p.x + (bl.x - p.x) * k : bl.x,
+        y: p ? p.y + (bl.y - p.y) * k : bl.y,
+        a: bl.a, team: bl.team,
+        color: bl.s ? SENTRY_TRACER : ((gun && gun.ammoColor) || '#ffd36a'),
+        // a Tracer round is fatter, and a slower round draws a shorter streak
+        wide: gun ? (gun.hitboxMult || 1) : 1,
+        len: gun ? Math.max(14, Math.min(40, gun.bulletSpeed / 90)) : 26,
+      });
+    }
+    return out;
+  }
   // which barricades are standing, so the index is only rebuilt when that changes
   let barricadeSig = '';
 
@@ -6700,6 +7227,14 @@ const Game = (() => {
       }
       v.hp = c.hp; v.maxHp = c.mx; v.team = c.tm; v.alive = c.hp > 0;
       v.neutral = c.tm < 0;
+      /* The mounted gun's magazine belongs to the room, like every other
+         magazine. The driver's client was keeping its own count as it fired,
+         so the two drifted apart and the HUD showed rounds that were not
+         there — and a reload nobody had started. */
+      if (c.am !== undefined) {
+        v.ammo = c.am;
+        v.reloadTimer = c.rl ? Math.max(v.reloadTimer, 1) : 0;
+      }
       /* Whether *we* are the one driving. The room decides that, so a client
          that asked to get in only actually gets in when the answer comes back. */
       const mine = c.d && online && c.d === online.id;
@@ -6721,10 +7256,10 @@ const Game = (() => {
         v.x = p.x + (c.x - p.x) * k;
         v.y = p.y + (c.y - p.y) * k;
         v.angle = p.a + angleDiff(c.a, p.a) * k;
+        v.hullAngle = p.ha + angleDiff(c.ha, p.ha) * k;
       } else {
-        v.x = c.x; v.y = c.y; v.angle = c.a;
+        v.x = c.x; v.y = c.y; v.angle = c.a; v.hullAngle = c.ha;
       }
-      v.hullAngle = v.angle;
     }
     for (let i = agents.length - 1; i >= 0; i--) {
       const a = agents[i];
@@ -6833,7 +7368,20 @@ const Game = (() => {
        rather than interpolated — bullets carry no stable id, so there is
        nothing to match up between two frames, and at 20Hz a tracer is a
        streak either way. */
-    online.bullets = (pair.b.bullets || []).filter(b => b.o !== online.id);
+    /* Rounds other people have in the air, and the ones our own kit fired
+       without us pulling the trigger.
+
+       The filter used to be "not mine", which was right for a gun — we drew
+       that shot the moment we fired it — and wrong for everything else we own.
+       A sentry's rounds are stamped with the player who deployed it, so the
+       one person guaranteed to be watching the turret was the only person it
+       appeared to be firing blanks at.
+
+       Interpolated on the same clock as everything else now that a round
+       carries an id. At 20Hz an unmatched tracer moves a couple of hundred
+       pixels between snapshots, which reads as a dotted line rather than a
+       shot. */
+    online.bullets = netBullets(pair.a, pair.b, pair.t);
 
     /* Our own agent is authoritative on the server too: take its HP and ammo
        from the room, but keep a locally-predicted position so aiming and
@@ -7077,6 +7625,39 @@ const Game = (() => {
     };
   }
 
+  /* ---------- somebody else's gun ----------
+     A snapshot names a weapon and a skin; drawWeapon wants the weapon object
+     and a cached profile. Resolving that is a table lookup and a shape build,
+     so the result is kept per weapon-and-skin rather than per player per
+     frame — a full lobby is a handful of distinct guns, not two dozen.
+
+     A looted legendary is the one id that is not in the weapon table: it is
+     minted at pickup as `<base>-gold` (see Items.makeLegendary), so it is
+     rebuilt here the same way rather than falling back to a stock rifle. */
+  const gunCache = new Map();
+  function gunFor(weaponId, skinId) {
+    const key = weaponId + '|' + skinId;
+    let g = gunCache.get(key);
+    if (g) return g;
+    let w = Weapons.byId[weaponId];
+    if (!w && typeof weaponId === 'string' && weaponId.endsWith('-gold')) {
+      const base = Weapons.byId[weaponId.slice(0, -5)];
+      if (base) w = Items.makeLegendary(base);
+    }
+    if (!w) w = Weapons.byId[Weapons.default];
+    g = { weapon: w, profile: Skins.profileFor(w, skinId || 'default') };
+    gunCache.set(key, g);
+    return g;
+  }
+  /* A snapshot agent dressed up as something drawWeapon can take. */
+  const remoteProbe = { x: 0, y: 0, angle: 0, r: BODY_R, weapon: null, gunProfile: null };
+  function remoteGun(a) {
+    const g = gunFor(a.weaponId, a.skin);
+    remoteProbe.x = a.x; remoteProbe.y = a.y; remoteProbe.angle = a.angle;
+    remoteProbe.weapon = g.weapon; remoteProbe.gunProfile = g.profile;
+    return remoteProbe;
+  }
+
   /* remote players, drawn from the server's snapshot */
   function drawRemotePlayers() {
     if (!online) return;
@@ -7086,9 +7667,13 @@ const Game = (() => {
       // same body size as a local agent — a remote player must be the same
       // target the server is hit-testing
       drawUnitShadow(a.x, a.y, BODY_R);
-      ctx.strokeStyle = '#e9f0ff'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(a.x, a.y);
-      ctx.lineTo(a.x + Math.cos(a.angle) * (BODY_R + 12), a.y + Math.sin(a.angle) * (BODY_R + 12)); ctx.stroke();
+      /* The gun they are actually carrying, in the skin they bought for it.
+         Both have been in the snapshot all along and neither was ever drawn:
+         everyone else on the island held the same white stick, so you could
+         not tell a shotgun closing on you from a sniper lining you up, and a
+         Gold rifle looked like everybody else's. Same routine the local agents
+         use, so a remote player and a bot are drawn by one piece of code. */
+      drawWeapon(remoteGun(a));
       ctx.beginPath(); ctx.arc(a.x, a.y, BODY_R, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.fill();
       ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.stroke();
@@ -7299,6 +7884,87 @@ const Game = (() => {
       return { remembering, takingCover, flanking, inContact, exposed };
     },
     vehicleDoors: () => obstacles.filter(o => o.type === 'garage-door').length,
+    vehicleSizes() {
+      const M = Structures.PX_PER_M;
+      const list = agents.filter(a => a.isVehicle).map(v => ({
+        name: v.name, m: +((v.r * 2) / M).toFixed(2),
+        insideGeometry: pointInObstacle(v.x, v.y),
+      }));
+      const seen = {};
+      return { list: list.filter(v => (seen[v.name] ? false : (seen[v.name] = true))) };
+    },
+    biome: () => (terrain && terrain.biome
+      ? { name: terrain.biome.name, tree: terrain.biome.tree, grass: terrain.colors.grass }
+      : null),
+    /* Trench cover by range, a wall from a barricade, and an effect for every
+       class tool. */
+    realismTest() {
+      const out = { toolsWithFx: 0, tools: 0, missing: [] };
+      for (const id of Object.keys(Classes.TOOLS || {})) {
+        out.tools++;
+        if (TOOL_FX[id]) out.toolsWithFx++; else out.missing.push(id);
+      }
+      // a deployed barricade has to reach the collision world as a real wall
+      out.barricadeIsWall = solidRects().some(r => r.type === 'barricade' && r.deployed);
+      return out;
+    },
+    /* Cover from a trench, sampled at three ranges. */
+    trenchTest() {
+      const t = { x: player.x, y: player.y, r: 48 };
+      trenches.push(t);
+      const shots = (range) => {
+        let saved = 0;
+        const shooter = { x: player.x + range, y: player.y, isPlayer: false };
+        for (let i = 0; i < 400; i++) {
+          const hp0 = player.hp;
+          applyDamage(player, 1, shooter, 'normal');
+          if (player.hp === hp0) saved++;
+          player.hp = player.maxHp;
+        }
+        return Math.round(saved / 4);
+      };
+      const res = { pointBlank: shots(60), mid: shots(300), across: shots(700) };
+      trenches.pop();
+      player.hp = player.maxHp;
+      return res;
+    },
+    /* Do the five feedback systems actually fire? */
+    feelTest() {
+      hitMarkers = []; hurtArcs = []; shake = { mag: 0, t: 0 }; streakBanner = null;
+      addHitMarker('head');
+      addHurtArc(player.x + 300, player.y + 120);
+      addShake(8);
+      multiKill = { n: 1, until: performance.now() + 4000 };
+      noteKill();
+      const lowHp = player.maxHp * 0.2;
+      return {
+        hitmarkers: hitMarkers.length,
+        damageArcs: hurtArcs.length,
+        screenShake: +shake.mag.toFixed(1),
+        multiKillCallout: streakBanner ? streakBanner.text : 'none',
+        lowHealthAt: lowHp < player.maxHp * 0.45,
+      };
+    },
+    /* Are the bots getting into buildings, and are they driving? */
+    botNav() {
+      let bots = 0, everIndoors = 0, withPath = 0, stuck = 0, botDriven = 0;
+      let vehicles = 0, unclaimed = 0;
+      for (const a2 of agents) {
+        if (a2.isVehicle) {
+          vehicles++;
+          if (!a2.driver) unclaimed++;
+          else if (!a2.driver.isPlayer) botDriven++;
+          continue;
+        }
+        if (a2.isPlayer || !a2.alive) continue;
+        bots++;
+        if (insideAnyBuilding(a2.x, a2.y, -10)) a2.everIndoors = true;
+        if (a2.everIndoors) everIndoors++;
+        if (a2.path && a2.path.length) withPath++;
+        if ((a2.stuckAcc || 0) > 0.6) stuck++;
+      }
+      return { bots, everIndoors, withPath, stuck, botDriven, vehicles, unclaimed };
+    },
     /* Are the props the size of the things they are, can you hide in the ones
        you should be able to, and do the solid ones actually stop you? */
     propAudit() {

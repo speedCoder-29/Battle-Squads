@@ -80,6 +80,7 @@
         <button class="topnav__btn" data-nav="battlepass">Battle Pass</button>
         <button class="topnav__btn" data-nav="loadout">Loadout</button>
         <button class="topnav__btn" data-nav="shop">Shop</button>
+        <button class="topnav__btn" data-nav="ranks">Ranks</button>
       </nav>
 
       <div class="profile">
@@ -317,6 +318,18 @@
       </div>
 
       <!-- ===== SHOP FULL PANEL ===== -->
+      <div class="subpage" data-panelgroup="ranks">
+        <div class="subpage__head">
+          <h2>Leaderboard</h2>
+          <p>Standings on this machine. Every match you finish counts.</p>
+        </div>
+        <div class="lb-tabs" id="lb-tabs"></div>
+        <table class="lb"><thead><tr>
+          <th>#</th><th>Player</th><th>Level</th><th>Wins</th><th>Matches</th>
+          <th>Elims</th><th>K/M</th><th>Win&nbsp;%</th>
+        </tr></thead><tbody id="lb-body"></tbody></table>
+      </div>
+
       <div class="subpage" data-panelgroup="shop">
         <div class="subpage__head">
           <h1>Shop</h1>
