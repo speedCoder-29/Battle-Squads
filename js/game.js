@@ -50,7 +50,7 @@ const Game = (() => {
      ground. The per-team cap is what the agent list and the bot AI stay
      comfortable with on a browser frame budget. */
   const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
-  const TEAM_LIMITS = { teams: [2, 6], perTeam: [1, 8] };
+  const TEAM_LIMITS = { teams: [2, 20], perTeam: [1, 8] };
 
   /* The setup a match should actually use: the mode's default, with whatever
      the player chose laid over it and clamped to what the game can stage. */
@@ -3088,6 +3088,10 @@ const Game = (() => {
      entered a building any more — bots indoors went from 7 of 15 to 0. A
      divert has to be opportunistic, not a standing order. */
   const BOT_RIDE_RANGE = 430;
+  /* How far a bot will go to pick somebody up, and how far it will go to
+     finish somebody off. Reviving reaches further because it is worth more. */
+  const BOT_REVIVE_RANGE = 1100;
+  const BOT_FINISH_RANGE = 620;
 
   /* The nearest hull this bot could take: unclaimed, or its own squad's. */
   function botNearestRide(a, range) {
@@ -3876,6 +3880,63 @@ const Game = (() => {
         }
       } else if (want) {
         a.rideWant = null;
+      }
+    }
+
+    /* ---- read the situation before picking a goal ----
+       Two things a competent squad does that these bots did not: they pick
+       their own people up, and they finish the ones they put down. Both are
+       decisions about the *state of the fight* rather than about aim, which
+       is what separates a hard bot from an accurate one.
+
+       Reviving comes first, because a squadmate back on their feet is worth
+       more than any position on the map. */
+    if (!a.isVehicle && !a.riding) {
+      a.tacticT = (a.tacticT || 0) - dt;
+      if (a.tacticT <= 0) {
+        a.tacticT = 0.6;
+        a.tacticPt = null;
+        // a squadmate on the floor, close enough to be worth the walk
+        let best = null, bd = BOT_REVIVE_RANGE * BOT_REVIVE_RANGE;
+        for (const q of agents) {
+          if (!q.alive || !q.downed || q.team !== a.team || q === a) continue;
+          const dd = dist2(a.x, a.y, q.x, q.y);
+          if (dd < bd) { bd = dd; best = q; }
+        }
+        if (best) a.tacticPt = { x: best.x, y: best.y, revive: true };
+        else {
+          /* Nobody to pick up: finish anyone we have put down. A downed enemy
+             is both a kill waiting to happen and bait for whoever comes to
+             get them, so closing on one is rarely the wrong move. */
+          let kill = null, kd = BOT_FINISH_RANGE * BOT_FINISH_RANGE;
+          for (const q of agents) {
+            if (!q.alive || !q.downed || q.team === a.team || q.isVehicle) continue;
+            const dd = dist2(a.x, a.y, q.x, q.y);
+            if (dd < kd) { kd = dd; kill = q; }
+          }
+          if (kill) a.tacticPt = { x: kill.x, y: kill.y, finish: true };
+        }
+      }
+      /* Walking to a downed body outranks the objective, but never outranks
+         someone shooting at you right now. */
+      if (a.tacticPt && !(enemy && d < 300)) {
+        const tp = a.tacticPt;
+        const near = dist2(a.x, a.y, tp.x, tp.y) < (tp.revive ? 60 * 60 : 90 * 90);
+        if (!near && ensurePath(a, tp.x, tp.y)) {
+          const step = followPath(a);
+          if (step !== null && step !== undefined) {
+            const base = a.weapon.moveSpeed * 0.72 * a.cls.speed
+              * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
+            const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
+            const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
+            const px = a.x, py = a.y;
+            a.x += Math.cos(step) * spd; a.y += Math.sin(step) * spd;
+            resolveObstacles(a);
+            trackStuck(a, px, py, spd, dt);
+            a.angle = step;
+            return;                    // committed to it this frame
+          }
+        }
       }
     }
 

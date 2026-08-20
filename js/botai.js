@@ -128,5 +128,10 @@ const BotAI = (() => {
 
   const all = () => Array.from({ length: 10 }, (_, i) => profile(i + 1));
 
-  return { profile, individual, all, NAMES, BLURBS, DEFAULT: 5 };
+  /* Default difficulty. Was 5 — the middle of the ladder, which reads as
+     sparring rather than as opposition. 7 is where they lead their shots
+     properly, hold fire outside their weapon's range and break off when hurt,
+     without the near-perfect aim of 9 and 10. The setting is still there for
+     anyone who wants it easier or harder. */
+  return { profile, individual, all, NAMES, BLURBS, DEFAULT: 7 };
 })();
