@@ -41,7 +41,7 @@ const Game = (() => {
   const NEUTRAL_INK = '#9aa3b5';
   const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t % TEAM_COLORS.length] : NEUTRAL_INK);
   // squad setup per mode
-  const TEAM_SETUP = { domination: { teams: 4, perTeam: 5 }, elimination: { teams: 10, perTeam: 8 } };
+  const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
   let nTeams = 4;
   let botLevel = BotAI.DEFAULT;      // 1-10 bot difficulty — see js/botai.js
 
