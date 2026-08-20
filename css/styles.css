@@ -886,3 +886,24 @@ input, select { font-family: inherit; }
   .subpage, .mode-card, .intel li, .lb tbody tr, .btn--play { animation: none; }
   .bar__fill { transition: none; }
 }
+
+
+/* ---------- match size ---------- */
+.setupbar {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  width: 100%; max-width: 640px;
+  background: rgba(0,0,0,0.22); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 14px;
+}
+.setupbar__row { display: flex; align-items: center; gap: 10px; }
+.setupbar__k { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.setupbar__total { font-size: 11px; color: var(--muted); margin-left: auto; }
+.stepper { display: flex; align-items: center; gap: 8px; }
+.stepper b { min-width: 18px; text-align: center; font-size: 15px; }
+.stepper__btn {
+  width: 24px; height: 24px; border-radius: 7px; line-height: 1;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.05);
+  color: var(--text); font-size: 15px; font-weight: 700; transition: 0.15s;
+}
+.stepper__btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
+.stepper__btn:disabled { opacity: 0.3; cursor: default; }

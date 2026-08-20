@@ -220,6 +220,7 @@ const Screens = (() => {
     }
     renderCareer(p);
     renderKit(p);
+    renderSetup();
     renderIntel();
     // season strip mirrors the battle-pass numbers rather than inventing its own
     const st = document.getElementById('season-tier');
@@ -267,6 +268,52 @@ const Screens = (() => {
     set('kit-weapon', w ? w.name : (lo.weapon || 'Class default'));
     const perk = lo.perk && typeof Perks !== 'undefined' && Perks.byId(lo.perk);
     set('kit-perk', perk ? perk.name : 'None');
+  }
+
+  /* ---- how big a match you want ----
+     Written to the profile, so the choice survives a reload, and read back by
+     Game.setupFor when a match actually starts. Clamped there as well as
+     here — the menu is a convenience, not the authority. */
+  function matchSetup() {
+    const p = DB.getProfile() || {};
+    /* Its own reader rather than the `selectedMode` further down this file:
+       that one is a const declared after this runs, so calling it from here
+       threw on every render. */
+    const card = document.querySelector('.mode-card.is-selected');
+    const mode = (card && card.dataset.mode) || 'domination';
+    const base = Game.setupFor ? Game.setupFor(mode) : { teams: 4, perTeam: 4 };
+    return Object.assign({}, base, p.matchSetup || {});
+  }
+  function renderSetup() {
+    const lim = (Game.TEAM_LIMITS) || { teams: [2, 6], perTeam: [1, 8] };
+    const cur = matchSetup();
+    const t = document.getElementById('setup-teams');
+    const q = document.getElementById('setup-perteam');
+    if (!t || !q) return;
+    t.textContent = cur.teams;
+    q.textContent = cur.perTeam;
+    const total = cur.teams * cur.perTeam;
+    const tot = document.getElementById('setup-total');
+    if (tot) tot.textContent = total + ' in the match · you + ' + (total - 1) + ' bots';
+    // grey the buttons out at the ends rather than letting them do nothing
+    document.querySelectorAll('.stepper__btn').forEach((b) => {
+      const key = b.dataset.setup, d = +b.dataset.delta;
+      const [lo, hi] = lim[key];
+      b.disabled = (cur[key] + d) < lo || (cur[key] + d) > hi;
+    });
+  }
+
+  function bumpSetup(key, delta) {
+    const lim = (Game.TEAM_LIMITS) || { teams: [2, 6], perTeam: [1, 8] };
+    const p = DB.getProfile();
+    const cur = matchSetup();
+    const [lo, hi] = lim[key];
+    const next = Math.max(lo, Math.min(hi, cur[key] + delta));
+    p.matchSetup = Object.assign({}, p.matchSetup, { teams: cur.teams, perTeam: cur.perTeam });
+    p.matchSetup[key] = next;
+    DB.saveProfile(p);
+    renderSetup();
+    SFX.click();
   }
 
   /* ---- what is out on the map ----
@@ -781,6 +828,12 @@ const Screens = (() => {
     // nav
     document.querySelectorAll('.topnav__btn').forEach(b =>
       b.addEventListener('click', () => { setView(b.dataset.nav); SFX.click(); }));
+    // match size steppers
+    document.querySelectorAll('.stepper__btn').forEach(b =>
+      b.addEventListener('click', () => bumpSetup(b.dataset.setup, +b.dataset.delta)));
+    // and the totals follow the mode you pick, since the defaults differ
+    document.querySelectorAll('.mode-card').forEach(c =>
+      c.addEventListener('click', () => setTimeout(renderSetup, 0)));
     // mode cards
     document.querySelectorAll('.mode-card').forEach(c =>
       c.addEventListener('click', () => selectMode(c.dataset.mode)));

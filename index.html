@@ -202,6 +202,28 @@
           </button>
         </div>
 
+        <!-- How big a match you want. Applies to games you start yourself;
+             online, the host's room decides. -->
+        <div class="setupbar" id="setupbar">
+          <div class="setupbar__row">
+            <span class="setupbar__k">Squads</span>
+            <div class="stepper">
+              <button class="stepper__btn" data-setup="teams" data-delta="-1">−</button>
+              <b id="setup-teams">4</b>
+              <button class="stepper__btn" data-setup="teams" data-delta="1">+</button>
+            </div>
+          </div>
+          <div class="setupbar__row">
+            <span class="setupbar__k">Per squad</span>
+            <div class="stepper">
+              <button class="stepper__btn" data-setup="perTeam" data-delta="-1">−</button>
+              <b id="setup-perteam">4</b>
+              <button class="stepper__btn" data-setup="perTeam" data-delta="1">+</button>
+            </div>
+          </div>
+          <span class="setupbar__total" id="setup-total">16 in the match · you + 15 bots</span>
+        </div>
+
         <!-- What you are deploying with, so the mode screen is not the only
              thing you can see before a match. -->
         <div class="kitstrip" id="kitstrip">

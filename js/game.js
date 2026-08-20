@@ -41,7 +41,29 @@ const Game = (() => {
   const NEUTRAL_INK = '#9aa3b5';
   const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t % TEAM_COLORS.length] : NEUTRAL_INK);
   // squad setup per mode
+  /* How many squads, and how many in each. These are the defaults per mode;
+     the player can override both from the lobby, and an override is kept in
+     the profile so it survives a reload.
+
+     Bounded rather than free: one team is not a match, and the spawn ring
+     places squads around the island by corner, so past six they start sharing
+     ground. The per-team cap is what the agent list and the bot AI stay
+     comfortable with on a browser frame budget. */
   const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
+  const TEAM_LIMITS = { teams: [2, 6], perTeam: [1, 8] };
+
+  /* The setup a match should actually use: the mode's default, with whatever
+     the player chose laid over it and clamped to what the game can stage. */
+  function setupFor(m) {
+    const base = TEAM_SETUP[m] || TEAM_SETUP.domination;
+    let pick = null;
+    try { pick = (DB.getProfile() || {}).matchSetup; } catch (e) { pick = null; }
+    const lim = (v, d, [lo, hi]) => clamp(Math.round(v === undefined || v === null ? d : v), lo, hi);
+    return {
+      teams: lim(pick && pick.teams, base.teams, TEAM_LIMITS.teams),
+      perTeam: lim(pick && pick.perTeam, base.perTeam, TEAM_LIMITS.perTeam),
+    };
+  }
   let nTeams = 4;
   let botLevel = BotAI.DEFAULT;      // 1-10 bot difficulty — see js/botai.js
 
@@ -1782,7 +1804,7 @@ const Game = (() => {
     const profile = DB.getProfile();
     const playerWeapon = (profile && Weapons.byId[profile.weapon]) ? profile.weapon : Weapons.default;
 
-    const setup = TEAM_SETUP[mode];
+    const setup = setupFor(mode);
     nTeams = setup.teams;
 
     if (mode === 'domination') {
@@ -7051,6 +7073,8 @@ const Game = (() => {
       /* The mode came from the host, so the things the menu set from *our*
          choice have to follow it: how many squads there are, and what the HUD
          calls the match we're actually in. */
+      /* Online the host's room decides the squad count, not our menu — ours
+         is a preference for the matches we start ourselves. */
       nTeams = (TEAM_SETUP[mode] || TEAM_SETUP.domination).teams;
       teamScores = new Array(nTeams).fill(0);
       document.getElementById('hud-gamemode').textContent =
@@ -8028,6 +8052,16 @@ const Game = (() => {
       const seen = {};
       return { list: list.filter(v => (seen[v.name] ? false : (seen[v.name] = true))) };
     },
+    roster() {
+      const live = agents.filter(a => !a.isVehicle);
+      const byTeam = {};
+      for (const a of live) byTeam[a.team] = (byTeam[a.team] || 0) + 1;
+      const counts = Object.values(byTeam);
+      return {
+        teams: counts.length, perTeam: counts[0] || 0,
+        total: live.length, even: counts.every(c => c === counts[0]),
+      };
+    },
     biome: () => (terrain && terrain.biome
       ? { name: terrain.biome.name, tree: terrain.biome.tree, grass: terrain.colors.grass }
       : null),
@@ -8471,7 +8505,8 @@ const Game = (() => {
 
   return {
     start, startOnline, isOnline, netDebug, debug,
-    setupFor: (m) => TEAM_SETUP[m] || TEAM_SETUP.domination,
+    setupFor,
+    TEAM_LIMITS,
     // the map, as the simulation needs to see it (see netWorld above)
     netWorld, netObjectives, netCrates, netVehicles,
   };
