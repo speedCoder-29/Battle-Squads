@@ -41,7 +41,7 @@ const Game = (() => {
   const NEUTRAL_INK = '#9aa3b5';
   const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t % TEAM_COLORS.length] : NEUTRAL_INK);
   // squad setup per mode
-  const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
+  const TEAM_SETUP = { domination: { teams: 4, perTeam: 5 }, elimination: { teams: 10, perTeam: 8 } };
   let nTeams = 4;
   let botLevel = BotAI.DEFAULT;      // 1-10 bot difficulty — see js/botai.js
 
@@ -3381,7 +3381,8 @@ const Game = (() => {
   /* Item slots, tools and call-ins are all on-foot actions — you can't reach
      any of them from a driver's seat. Getting out (E) is handled before this
      check, so it stays available. */
-  const canAct = () => running && !paused && player && player.alive && player.inv && !player.riding;
+  // on the floor you can crawl and nothing else — no gun, no tool, no boarding
+  const canAct = () => running && !paused && player && player.alive && player.inv && !player.riding && !player.downed;
 
   /* --- per-frame updates for the tactical entities --- */
   function updateGrenades(dt) {
@@ -3750,6 +3751,20 @@ const Game = (() => {
   }
 
   function updateBot(a, dt) {
+    /* Down: no fighting, just dragging yourself toward someone who can pick
+       you up. The squad's own logic walks over on its own, because a downed
+       teammate is just an agent they can path to. */
+    if (a.downed) {
+      const mate = agents.find(q => q.alive && !q.downed && !q.isVehicle && q.team === a.team && q !== a);
+      if (mate) {
+        const ang = Math.atan2(mate.y - a.y, mate.x - a.x);
+        const spd = a.weapon.moveSpeed * 0.72 * CRAWL * dt;
+        a.x += Math.cos(ang) * spd; a.y += Math.sin(ang) * spd;
+        resolveObstacles(a);
+        a.angle = ang;
+      }
+      return;
+    }
     // flashed: stumble blindly, can't fight
     if (a.blindTimer > 0) {
       const spd = (a.isVehicle ? a.vspeed : a.weapon.moveSpeed * 0.5) * dt;
@@ -4140,6 +4155,7 @@ const Game = (() => {
     // you're actually hurt. At full health it just sits there buffing you.
     for (const a of agents) {
       if (a.alive) updateLastStand(a, dt);
+      if (a.alive) updateDowned(a, dt);
       if (!a.alive || a.isVehicle || !a.adrenaline) continue;
       const adr = Combat.adrenaline(a.adrenaline);
       if (a.hp < a.maxHp) {
@@ -4201,7 +4217,10 @@ const Game = (() => {
         // terrain applies either way: the room is handed the same lookup, so
         // both sides slow down in the same river
         const surf = terrain ? Terrain.surfaceAt(terrain, player.x, player.y) : null;
-        const spd = base * RoomSim.surfaceSpeedFor(player, surf) * hereSpeed() * dt;
+        /* On the floor you crawl. Slow enough that going down matters, quick
+           enough to drag yourself out of the open while help arrives. */
+        const spd = base * RoomSim.surfaceSpeedFor(player, surf) * hereSpeed()
+          * (player.downed ? CRAWL : 1) * dt;
         const px = player.x, py = player.y;
         /* Clamped to the same bounds the room uses. Without this the client
            walked on past the map edge while the room stopped at the boundary,
@@ -4509,6 +4528,88 @@ const Game = (() => {
      It is deliberately a *reward for hoarding* rather than a safety net — the
      same top band drains twice as fast, so the seconds are being spent the
      whole time you hold them. */
+  /* ============================================================
+     KNOCKED OUT — the shot that puts you down does not have to finish you.
+
+     A squad game where the first hit removes you for good is a game where
+     losing a fight is the end of the fight. Going down instead gives your
+     squad something to do about it and gives the other side a reason to push
+     rather than back off: a downed enemy is bait, and the person crawling to
+     them is the shot you actually wanted.
+
+     Down means: on the floor, no weapon, crawling at a fraction of pace, and
+     bleeding out on a clock. A teammate standing over you for REVIVE_SECS
+     brings you back on a sliver of health. Nobody revives themselves.
+     ============================================================ */
+  const BLEED_OUT = 22;          // seconds on the floor before it is over
+  const REVIVE_SECS = 3.2;       // how long a teammate has to stand there
+  const REVIVE_REACH = 74;       // and how close
+  const REVIVE_HP = 0.35;        // what you come back on
+  const CRAWL = 0.32;            // fraction of normal pace while down
+
+  function knockOut(a, owner) {
+    if (a.isVehicle || a.riding) return false;      // hulls brew up, they don't bleed
+    if (a.downed) return false;                     // already down: this one finishes it
+    if (mode !== 'domination' && !a.isPlayer && !squadOf(a).length) return false;
+    a.downed = true;
+    a.bleed = BLEED_OUT;
+    a.reviveT = 0;
+    a.hp = 1;                                       // alive, but only just
+    a.toolActive = false;
+    a.path = null;
+    spawnFx(a.x, a.y, '#ff4b5c', 18);
+    if (owner) { owner.streak = owner.streak || 0; }
+    if (a.isPlayer) {
+      hudMsg('DOWN — hold on, someone can bring you back');
+      SFX.hurt(); addShake(6);
+    } else if (a.team === (player && player.team)) {
+      hudMsg(nameOf(a, 'A teammate') + ' is down');
+    }
+    return true;
+  }
+
+  /* Everyone on your side who is up and can reach you. */
+  const squadOf = (a) => agents.filter(q => q.alive && !q.downed && !q.isVehicle && q.team === a.team && q !== a);
+
+  /* Finish what the knockdown started. */
+  function bleedOut(a) {
+    a.downed = false; a.reviveT = 0;
+    a.hp = 0;
+    killAgent(a, a.lastAttacker || null, null);
+  }
+
+  /* Back on your feet. */
+  function reviveAgent(a, by) {
+    a.downed = false; a.bleed = 0; a.reviveT = 0;
+    a.hp = Math.round(a.maxHp * REVIVE_HP);
+    a.adrenaline = 0;
+    spawnFx(a.x, a.y, '#4be08a', 20);
+    if (a.isPlayer || (by && by.isPlayer)) SFX.reward();
+    if (a.isPlayer) { hudMsg('BACK UP — ' + a.hp + ' HP'); addShake(3); }
+    else if (by && by.isPlayer) hudMsg('Revived ' + nameOf(a, 'a teammate'));
+    if (by) { by.revives = (by.revives || 0) + 1; if (by.isPlayer) matchStats.revives = (matchStats.revives || 0) + 1; }
+  }
+
+  /* Tick every downed agent: bleed, and count anyone working on them. A medic
+     with the paddles does it in half the time — the class whose whole tool is
+     bringing people back should be the best at bringing people back. */
+  function updateDowned(a, dt) {
+    if (!a.downed || !a.alive) return;
+    const helpers = agents.filter(q => q.alive && !q.downed && !q.isVehicle && !q.riding
+      && q.team === a.team && q !== a
+      && dist2(q.x, q.y, a.x, a.y) < REVIVE_REACH * REVIVE_REACH);
+    if (helpers.length) {
+      const fast = helpers.some(q => q.tool && q.tool.id === 'defibrillator') ? 2 : 1;
+      a.reviveT += dt * fast * Math.min(2, helpers.length);
+      if (a.isPlayer && Math.random() < dt * 6) spawnFx(a.x, a.y, '#4be08a', 1);
+      if (a.reviveT >= REVIVE_SECS) { reviveAgent(a, helpers[0]); return; }
+    } else if (a.reviveT > 0) {
+      a.reviveT = Math.max(0, a.reviveT - dt * 1.5);   // interrupted, but not from scratch
+    }
+    a.bleed -= dt;
+    if (a.bleed <= 0) bleedOut(a);
+  }
+
   function lastStand(a) {
     if (a.isVehicle) return false;
     if (a.standT > 0) { a.hp = 1; return true; }      // already on borrowed time
@@ -4595,21 +4696,30 @@ const Game = (() => {
     if (hit.zone === 'head' && owner && owner.isPlayer) SFX.reward();
     if (a.isPlayer) SFX.hurt();
     if (a.hp <= 0 && lastStand(a)) return;   // running on adrenaline, not blood
-    if (a.hp <= 0) {
-      a.hp = 0; a.alive = false;
-      a.deaths++; a.streak = 0;
-      a.standT = 0;
-      spawnFx(a.x, a.y, teamInk(a.team), 14);
-      if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
-      pushKill(owner, a, hit.zone);
-      if (mode === 'domination') a.respawnTimer = 3;
-      if (a.isPlayer) SFX.hurt();
-      // brewed up with someone inside: throw the driver clear rather than
-      // leaving them welded to a dead agent with no way out
-      if (a.isVehicle && a.driver && a.driver.riding === a) {
-        explode(a.x, a.y, 60, a.r * 3, a.team, owner, 'explosive');
-        exitVehicle(true);
-      }
+    if (a.hp <= 0 && knockOut(a, owner)) return;   // down, not dead — yet
+    if (a.hp <= 0) killAgent(a, owner, hit.zone);
+  }
+
+  /* The one place an agent actually dies. Pulled out of applyDamage so that
+     bleeding out on the floor goes through exactly the same path — the score,
+     the kill feed and the respawn clock should not depend on whether the last
+     point of damage or the bleed timer was what finished it. */
+  function killAgent(a, owner, zone) {
+    if (!a.alive) return;
+    a.hp = 0; a.alive = false;
+    a.downed = false; a.reviveT = 0;
+    a.deaths++; a.streak = 0;
+    a.standT = 0;
+    spawnFx(a.x, a.y, teamInk(a.team), 14);
+    if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
+    pushKill(owner, a, zone);
+    if (mode === 'domination') a.respawnTimer = 3;
+    if (a.isPlayer) SFX.hurt();
+    // brewed up with someone inside: throw the driver clear rather than
+    // leaving them welded to a dead agent with no way out
+    if (a.isVehicle && a.driver && a.driver.riding === a) {
+      explode(a.x, a.y, 60, a.r * 3, a.team, owner, 'explosive');
+      exitVehicle(true);
     }
   }
 
@@ -4979,6 +5089,31 @@ const Game = (() => {
          comes from Skins.profileFor — length, thickness, stock, magazine,
          optic and muzzle — and a bought skin repaints it without changing it. */
       drawWeapon(a);
+      /* Down: flat on the floor, so it reads as a body rather than a player
+         who happens to be standing still. */
+      if (a.downed) {
+        ctx.save();
+        ctx.translate(a.x, a.y); ctx.rotate(a.angle);
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath(); ctx.ellipse(0, 0, a.r * 1.25, a.r * 0.6, 0, 0, Math.PI * 2);
+        ctx.fillStyle = teamInk(a.team); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+        ctx.restore();
+        // bleed-out clock, draining; and the revive filling over the top of it
+        const bw = 34;
+        const bx = a.x - bw / 2, by = a.y - a.r - 14;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(bx, by, bw, 5);
+        ctx.fillStyle = '#ff4b5c';
+        ctx.fillRect(bx, by, bw * clamp(a.bleed / BLEED_OUT, 0, 1), 5);
+        if (a.reviveT > 0) {
+          ctx.fillStyle = '#4be08a';
+          ctx.fillRect(bx, by, bw * clamp(a.reviveT / REVIVE_SECS, 0, 1), 5);
+        }
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Segoe UI'; ctx.textAlign = 'center';
+        ctx.fillText(a.team === (player && player.team) ? 'DOWN' : 'DOWNED', a.x, by - 6);
+        ctx.globalAlpha = 1;
+        return;
+      }
       // body
       ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
       ctx.fillStyle = teamInk(a.team); ctx.fill();
@@ -7927,6 +8062,29 @@ const Game = (() => {
       trenches.pop();
       player.hp = player.maxHp;
       return res;
+    },
+    /* Does going down actually work: down, crawl, revive, bleed out? */
+    downTest() {
+      const mate = agents.find(q => q.alive && !q.isPlayer && !q.isVehicle && q.team === player.team);
+      if (!mate) return { error: 'no teammate on this map' };
+      const out = {};
+      // put them down rather than killing them
+      mate.x = player.x + 40; mate.y = player.y;
+      mate.hp = 1;
+      applyDamage(mate, 999, null, 'normal');
+      out.downedNotDead = !!(mate.downed && mate.alive);
+      out.deathsUnchanged = mate.deaths === 0;
+      // stand over them and count them back up
+      for (let i = 0; i < 90 && mate.downed; i++) updateDowned(mate, 0.05);
+      out.revivedByStandingOver = !mate.downed && mate.alive;
+      out.reviveHp = mate.hp;
+      // and bleeding out goes through the same death path as a kill
+      mate.hp = 1; applyDamage(mate, 999, null, 'normal');
+      const wasDowned = !!mate.downed;
+      mate.x = player.x + 4000; mate.y = player.y + 4000;   // nobody near
+      for (let i = 0; i < 600 && mate.alive; i++) updateDowned(mate, 0.05);
+      out.bleedsOutAlone = wasDowned && !mate.alive && mate.deaths > 0;
+      return out;
     },
     /* Do the five feedback systems actually fire? */
     feelTest() {
