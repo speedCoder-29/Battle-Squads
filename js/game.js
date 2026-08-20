@@ -3142,6 +3142,37 @@ const Game = (() => {
 
   /* `thrown` is the blast that killed the vehicle: you come out hurt and to
      the side rather than standing on the wreck. */
+  /* Get whoever is actually in the seat out of it.
+
+     This used to be written only for the player: it read `player.riding`,
+     moved `player` and damaged `player`. That was safe while the player was
+     the only thing that could drive, and it stopped being true the moment
+     bots were allowed to take vehicles. A bot's hull brewing up anywhere on
+     the map called it, and if you happened to be riding something of your own
+     at that moment it threw *you* out of *your* vehicle and put 35 damage on
+     you from an explosion you were nowhere near — while the driver of the
+     actual wreck stayed welded to it. */
+  function ejectDriver(v, thrown) {
+    if (!v) return;
+    const who = v.driver;
+    if (!who || who.riding !== v) return;
+    who.riding = null; v.driver = null;
+    v.aiHold = 6;
+    const side = v.angle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1);
+    who.x = v.x + Math.cos(side) * (v.r + who.r + 6);
+    who.y = v.y + Math.sin(side) * (v.r + who.r + 6);
+    resolveObstacles(who);
+    if (pointInObstacle(who.x, who.y)) { who.x = v.x; who.y = v.y; }
+    if (who.isPlayer) updateWeaponHud();
+    if (thrown) {
+      applyDamage(who, 35, null, 'true', 'body');
+      spawnFx(who.x, who.y, '#ff9d3b', 12);
+      if (who.isPlayer) hudMsg('Thrown clear of the wreck');
+    } else if (who.isPlayer) {
+      hudMsg('Dismounted');
+    }
+  }
+
   function exitVehicle(thrown) {
     const v = player.riding;
     if (!v) return;
@@ -4741,7 +4772,7 @@ const Game = (() => {
     // leaving them welded to a dead agent with no way out
     if (a.isVehicle && a.driver && a.driver.riding === a) {
       explode(a.x, a.y, 60, a.r * 3, a.team, owner, 'explosive');
-      exitVehicle(true);
+      ejectDriver(a, true);          // whoever was in *this* hull, not the player
     }
   }
 
@@ -5025,8 +5056,49 @@ const Game = (() => {
         ctx.arc(obj.x, obj.y, obj.r - 6, -Math.PI / 2, -Math.PI / 2 + (obj.progress / 100) * Math.PI * 2);
         ctx.lineWidth = 6; ctx.strokeStyle = obj.capTeam >= 0 ? TEAM_COLORS[obj.capTeam] : '#fff'; ctx.stroke();
       }
+      /* Who holds this, shown as something physical rather than only as a
+         tinted circle. A captured point gets a planted standard in the
+         holder's colour with a claimed base ring; a contested one shows the
+         attacker's colour bleeding into it. Standing on a letter told you
+         where you were, not whose it was. */
       ctx.fillStyle = col; ctx.font = 'bold 40px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.globalAlpha = 0.5; ctx.fillText(obj.name, obj.x, obj.y); ctx.globalAlpha = 1;
+
+      if (obj.owner >= 0) {
+        // a ring of claim markers around the point: this ground is taken
+        const pegs = 8;
+        for (let i = 0; i < pegs; i++) {
+          const a2 = (i / pegs) * Math.PI * 2 + (obj.owner * 0.4);
+          const px = obj.x + Math.cos(a2) * (obj.r - 14);
+          const py = obj.y + Math.sin(a2) * (obj.r - 14);
+          ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2);
+          ctx.fillStyle = hexA(col, 0.9); ctx.fill();
+          ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.stroke();
+        }
+        // and a standard planted in the middle of it, flying their colour
+        const fy = obj.y - 34;
+        ctx.strokeStyle = '#6d6a63'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(obj.x, obj.y + 6); ctx.lineTo(obj.x, fy - 26); ctx.stroke();
+        // the banner ripples, so a held point reads as alive from a distance
+        const wave = Math.sin(performance.now() / 320 + obj.x) * 4;
+        ctx.beginPath();
+        ctx.moveTo(obj.x + 2, fy - 26);
+        ctx.quadraticCurveTo(obj.x + 26, fy - 22 + wave, obj.x + 46, fy - 16);
+        ctx.lineTo(obj.x + 46, fy - 2);
+        ctx.quadraticCurveTo(obj.x + 26, fy - 8 + wave, obj.x + 2, fy - 4);
+        ctx.closePath();
+        ctx.fillStyle = hexA(col, 0.95); ctx.fill();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.stroke();
+        ctx.fillStyle = '#12161f'; ctx.font = 'bold 15px Segoe UI';
+        ctx.fillText(obj.name, obj.x + 22, fy - 13);
+      } else if (obj.progress > 0 && obj.capTeam >= 0) {
+        // being taken: the attacker's colour creeping in from the edge
+        const take = TEAM_COLORS[obj.capTeam];
+        ctx.globalAlpha = 0.16 + (obj.progress / 100) * 0.24;
+        ctx.beginPath(); ctx.arc(obj.x, obj.y, obj.r * (obj.progress / 100), 0, Math.PI * 2);
+        ctx.fillStyle = take; ctx.fill();
+        ctx.globalAlpha = 1;
+      }
     }
 
     drawBasements();   // cellar floors, below everything
@@ -8051,6 +8123,35 @@ const Game = (() => {
       }));
       const seen = {};
       return { list: list.filter(v => (seen[v.name] ? false : (seen[v.name] = true))) };
+    },
+    objectiveState: () => ({
+      total: objectives.length,
+      owned: objectives.filter(o => o.owner >= 0).length,
+      names: objectives.map(o => o.name + ':' + (o.owner >= 0 ? 'T' + o.owner : '-')),
+    }),
+    captureAll() { for (const o of objectives) { o.owner = 0; o.progress = 100; } return true; },
+    /* Reproduce the teleport: blow up a bot-driven hull while the player is
+       riding a different one, and see whether the player gets thrown out of
+       their own vehicle by an explosion they were nowhere near. */
+    wreckTest() {
+      const hulls = agents.filter(a => a.isVehicle && a.alive);
+      if (hulls.length < 2) return { error: 'need two hulls' };
+      const mine = hulls[0], theirs = hulls[1];
+      // put the player in one, a bot in the other, far apart
+      const bot = agents.find(a => !a.isPlayer && !a.isVehicle && a.alive);
+      mine.x = player.x; mine.y = player.y;
+      theirs.x = player.x + 3000; theirs.y = player.y + 3000;
+      player.riding = mine; mine.driver = player;
+      bot.riding = theirs; theirs.driver = bot;
+      const before = { x: player.x, y: player.y, hp: player.hp, riding: !!player.riding };
+      killAgent(theirs, null, null);            // their hull brews up, far away
+      const after = { x: player.x, y: player.y, hp: player.hp, riding: !!player.riding };
+      const moved = Math.round(Math.hypot(after.x - before.x, after.y - before.y));
+      const botFreed = !bot.riding;
+      // tidy up
+      if (player.riding) { player.riding.driver = null; player.riding = null; }
+      return { playerMoved: moved, playerLostHp: before.hp - after.hp,
+               playerStillRiding: after.riding, botFreedFromWreck: botFreed };
     },
     roster() {
       const live = agents.filter(a => !a.isVehicle);

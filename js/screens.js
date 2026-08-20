@@ -287,6 +287,9 @@ const Screens = (() => {
   function renderSetup() {
     const lim = (Game.TEAM_LIMITS) || { teams: [2, 6], perTeam: [1, 8] };
     const cur = matchSetup();
+    // which mode's card to relabel — read here, since matchSetup keeps its own
+    const card = document.querySelector('.mode-card.is-selected');
+    const mode = (card && card.dataset.mode) || 'domination';
     const t = document.getElementById('setup-teams');
     const q = document.getElementById('setup-perteam');
     if (!t || !q) return;
@@ -295,6 +298,16 @@ const Screens = (() => {
     const total = cur.teams * cur.perTeam;
     const tot = document.getElementById('setup-total');
     if (tot) tot.textContent = total + ' in the match · you + ' + (total - 1) + ' bots';
+    /* The mode card says what the match will actually be, not a fixed string.
+       It read "3v3v3" while domination has been four squads of four for as
+       long as it has existed, and now that the size is adjustable a hardcoded
+       label would go stale the moment anybody touched the steppers. */
+    const meta = document.getElementById('mode-meta-' + mode);
+    if (meta) {
+      meta.textContent = cur.teams <= 4
+        ? new Array(cur.teams).fill(cur.perTeam).join('v')
+        : cur.teams + ' squads of ' + cur.perTeam;
+    }
     // grey the buttons out at the ends rather than letting them do nothing
     document.querySelectorAll('.stepper__btn').forEach((b) => {
       const key = b.dataset.setup, d = +b.dataset.delta;
