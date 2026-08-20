@@ -55,6 +55,7 @@ const Game = (() => {
   /* The setup a match should actually use: the mode's default, with whatever
      the player chose laid over it and clamped to what the game can stage. */
   function setupFor(m) {
+
     const base = TEAM_SETUP[m] || TEAM_SETUP.domination;
     let pick = null;
     try { pick = (DB.getProfile() || {}).matchSetup; } catch (e) { pick = null; }
@@ -3057,6 +3058,27 @@ const Game = (() => {
   /* `team` of -1 parks it unclaimed: a garage jeep or one of the four in a
      camp's car park belongs to whoever reaches it first, and until then it is
      hostile hardware to everybody — anyone can shoot it, anyone can take it. */
+  /* Somewhere a hull of this radius actually fits. Walks outward from the
+     requested point; returns null if nothing within reach is clear, because a
+     vehicle half-buried in a wall is worse than one that never spawned. */
+  function clearHullSpot(x, y, r) {
+    const fits = (px, py) => {
+      if (px < r || py < r || px > MAP_W - r || py > MAP_H - r) return false;
+      // the hull's own box, not a point
+      return !solidRects().some(o => padOverlap({ x: px - r, y: py - r, w: r * 2, h: r * 2 }, o, 0));
+    };
+    if (fits(x, y)) return { x, y };
+    for (let ring = 1; ring <= 6; ring++) {
+      for (let k = 0; k < 12; k++) {
+        const a2 = (k / 12) * Math.PI * 2 + ring * 0.5;
+        const d = ring * (r * 0.75);
+        const px = x + Math.cos(a2) * d, py = y + Math.sin(a2) * d;
+        if (fits(px, py)) return { x: px, y: py };
+      }
+    }
+    return null;
+  }
+
   function spawnVehicle(team, vtype, x, y) {
     const conf = VEHICLES[vtype] || VEHICLES.jeep;
     const v = makeAgent(Math.max(0, team), false, conf.weapon);
@@ -3087,9 +3109,25 @@ const Game = (() => {
      so they all abandoned what they were doing to walk at one and none of them
      entered a building any more — bots indoors went from 7 of 15 to 0. A
      divert has to be opportunistic, not a standing order. */
-  const BOT_RIDE_RANGE = 430;
+  const BOT_RIDE_RANGE = 1500;
   /* How far a bot will go to pick somebody up, and how far it will go to
      finish somebody off. Reviving reaches further because it is worth more. */
+  /* How much further a bot will accept walking to collect a vehicle, as a
+     multiple of the direct distance to where it was already headed. 1.35 is
+     "a short way off my route"; anything past that is a different errand. */
+  const RIDE_DETOUR_MAX = 1.35;
+
+  /* Is this hull on the bot's way? Compares going straight to the goal against
+     going via the vehicle. With no goal yet, anything close enough will do. */
+  function rideIsOnTheWay(a, v) {
+    const goal = a.aiTargetPt;
+    if (!goal) return dist2(a.x, a.y, v.x, v.y) < 700 * 700;
+    const direct = Math.hypot(goal.x - a.x, goal.y - a.y);
+    if (direct < 260) return false;                 // nearly there; just finish
+    const viaRide = Math.hypot(v.x - a.x, v.y - a.y) + Math.hypot(goal.x - v.x, goal.y - v.y);
+    return viaRide <= direct * RIDE_DETOUR_MAX;
+  }
+
   const BOT_REVIVE_RANGE = 1100;
   const BOT_FINISH_RANGE = 620;
 
@@ -3350,8 +3388,21 @@ const Game = (() => {
        crossing the map for. */
     parkedVehicles = [];
     for (const v of pendingRoomVehicles) {
-      if (pointInObstacle(v.x, v.y)) continue;
-      const car = spawnVehicle(-1, v.vtype, v.x, v.y);
+      /* Test the hull, not the point under its middle.
+
+         A vehicle is a body with a radius, and this only ever asked whether
+         the single pixel at its centre was clear. That was survivable while a
+         jeep was 1.45m across; once they were sized against the real thing a
+         hull could sit with its centre in the open and half its body inside a
+         garage wall, and client and room then resolved that overlap slightly
+         differently every frame — which is what has been showing up as
+         intermittent rubber-banding for anyone walking nearby.
+
+         So: find a spot the whole hull fits in, spiralling out from where the
+         map wanted it, and drop the vehicle if there genuinely isn't one. */
+      const spot = clearHullSpot(v.x, v.y, VEHICLES[v.vtype] ? VEHICLES[v.vtype].r : 42);
+      if (!spot) continue;
+      const car = spawnVehicle(-1, v.vtype, spot.x, spot.y);
       /* Remembered separately from `agents`, because startOnline() clears that
          list — the host supplies everyone in it. The hulls the *map* came with
          are not somebody's agent, they are part of the world, so they have to
@@ -3844,14 +3895,22 @@ const Game = (() => {
       a.rideLook = (a.rideLook || 0) - dt;
       if (a.rideLook <= 0) {
         a.rideLook = 1.2;
-        /* Opportunistic only: a hull you have practically walked into, and
-           only when nothing is shooting at you. Anything more eager and the
-           divert stops being a divert — at a 1800px range every bot on the
-           map had one in reach permanently, walked at it instead of doing its
-           job, and the number that ever got inside a building went from 7 of
-           15 to none. */
+        /* On the way, not out of the way.
+
+           The two previous attempts at this both failed for the same reason:
+           range was the only test. At 1800px every bot had a hull in reach
+           permanently and they all abandoned their jobs to walk at one — bots
+           that ever got inside a building went from 7 of 15 to zero. Dropping
+           to 430px fixed that by making the divert so rare it never fired at
+           all: 0 vehicles taken in a 30-second match.
+
+           Range was the wrong question. What matters is whether the hull is
+           roughly *towards* where the bot is already going: a tank fifteen
+           hundred pixels ahead on your route is worth taking, and one the same
+           distance behind you is not. So the range goes back up, and the
+           divert is gated on the detour being small. */
         const v = botNearestRide(a, BOT_RIDE_RANGE);
-        if (v && !(enemy && d < 600)) a.rideWant = v; else a.rideWant = null;
+        a.rideWant = (v && !(enemy && d < 600) && rideIsOnTheWay(a, v)) ? v : null;
       }
       const want = a.rideWant;
       if (want && want.alive && !want.driver) {
@@ -8213,6 +8272,39 @@ const Game = (() => {
       if (player.riding) { player.riding.driver = null; player.riding = null; }
       return { playerMoved: moved, playerLostHp: before.hp - after.hp,
                playerStillRiding: after.riding, botFreedFromWreck: botFreed };
+    },
+    /* Do the bots actually behave like a squad: pick their own up, finish the
+       ones they put down, and shoot better than a sparring partner? */
+    botTactics() {
+      const bots = agents.filter(x => !x.isPlayer && !x.isVehicle && x.alive);
+      const mate = bots.find(x => x.team !== player.team);
+      const helper = bots.find(x => x.team === mate.team && x !== mate);
+      if (!mate || !helper) return { error: 'need two bots on a side' };
+      // put one down and stand its squadmate off at a distance
+      mate.hp = 1; applyDamage(mate, 999, null, 'normal');
+      const wasDowned = !!mate.downed;
+      helper.x = mate.x + 500; helper.y = mate.y;
+      helper.tacticT = 0; helper.path = null;
+      let closed = Infinity;
+      /* Give it a path budget and tick the revive, the way the real update
+         loop does — calling updateBot on its own starves the pathfinder after
+         a couple of frames and never counts anybody standing over anybody. */
+      for (let i = 0; i < 400; i++) {
+        pathBudget = 4;
+        updateBot(helper, 0.05);
+        updateDowned(mate, 0.05);
+        closed = Math.min(closed, Math.hypot(helper.x - mate.x, helper.y - mate.y));
+        if (!mate.downed) break;
+      }
+      const revived = !mate.downed && mate.alive;
+      return {
+        level: botLevel,
+        aimError: +(agents.find(x => x.diff) || { diff: { aim: {} } }).diff.aim.error.toFixed(3),
+        reaction: +(agents.find(x => x.diff) || { diff: { aim: {} } }).diff.aim.reaction.toFixed(2),
+        downedTeammate: wasDowned,
+        closedToWithin: Math.round(closed),
+        pickedThemUp: revived,
+      };
     },
     roster() {
       const live = agents.filter(a => !a.isVehicle);
