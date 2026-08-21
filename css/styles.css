@@ -907,3 +907,22 @@ input, select { font-family: inherit; }
 }
 .stepper__btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
 .stepper__btn:disabled { opacity: 0.3; cursor: default; }
+
+
+/* ---------- scoreboard with many squads ----------
+   The pills were laid out for four. At twenty they ran off both sides of the
+   screen and over the match timer, so the strip wraps, shrinks and scrolls
+   rather than overflowing. */
+#hud-scores, .hud-scores {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 4px 6px; max-width: min(74vw, 1100px);
+  max-height: 76px; overflow-y: auto;
+}
+#hud-scores::-webkit-scrollbar, .hud-scores::-webkit-scrollbar { height: 4px; width: 4px; }
+#hud-scores::-webkit-scrollbar-thumb, .hud-scores::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.2); border-radius: 3px;
+}
+/* past a handful of squads the pills lose their padding before their legibility */
+.score-pill { white-space: nowrap; }
+.hud-scores--many .score-pill { padding: 2px 7px; font-size: 12px; }
+.hud-scores--many .score-pill .dot { width: 7px; height: 7px; }

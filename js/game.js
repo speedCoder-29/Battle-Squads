@@ -94,6 +94,9 @@ const Game = (() => {
   let running = false, paused = false;
   let lastTime = 0;
   let camX = 0, camY = 0;
+  /* How many times a non-finite position had to be put back — see the guard
+     in the camera step. Should stay at zero. */
+  let nanRescues = 0;
   let timeLeft = MATCH_SECONDS;
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
@@ -1770,9 +1773,24 @@ const Game = (() => {
   /* Spread the squads evenly around the edge of the map, whatever the team count. */
   function spawnPoint(team) {
     const cx = MAP_W / 2, cy = MAP_H / 2;
-    const rx = MAP_W / 2 - 240, ry = MAP_H / 2 - 240;
     const ang = -Math.PI / 2 + (team / Math.max(1, nTeams)) * Math.PI * 2;
-    return { x: cx + Math.cos(ang) * rx + rand(-70, 70), y: cy + Math.sin(ang) * ry + rand(-70, 70) };
+    /* Squads sat on one ring, evenly spaced by angle. That is fine for four
+       and cramped for twenty: the gap between neighbours on a single circle
+       shrinks as the count grows, so at twenty you deploy within sight of the
+       squads either side of you.
+
+       Alternating between an outer and an inner ring puts consecutive squads
+       at different distances from the middle as well as different bearings,
+       which roughly doubles how far apart two neighbours actually are without
+       needing a bigger island. */
+    const tight = nTeams > 6;
+    const band = tight && (team % 2) ? 0.62 : 1;
+    const rx = (MAP_W / 2 - 240) * band, ry = (MAP_H / 2 - 240) * band;
+    const jitter = tight ? 40 : 70;
+    return {
+      x: cx + Math.cos(ang) * rx + rand(-jitter, jitter),
+      y: cy + Math.sin(ang) * ry + rand(-jitter, jitter),
+    };
   }
 
   function makeAgent(team, isPlayer, weaponId) {
@@ -4666,6 +4684,29 @@ const Game = (() => {
     for (let i = fx.length - 1; i >= 0; i--) { const f = fx[i]; f.x += f.vx * dt; f.y += f.vy * dt; f.life -= dt; if (f.life <= 0) fx.splice(i, 1); }
     for (let i = dmgNums.length - 1; i >= 0; i--) { const d = dmgNums[i]; d.y -= 30 * dt; d.life -= dt; if (d.life <= 0) dmgNums.splice(i, 1); }
 
+    /* Nothing may reach the camera as a non-number.
+
+       The camera is `clamp(focus.x - vw/2, ...)`, and clamp of NaN is NaN, so
+       one bad coordinate anywhere in the simulation translates the whole world
+       by NaN and the screen goes blank or lands somewhere arbitrary. Two
+       separate causes of exactly that have already been found and fixed —
+       both `Math.cos(vector)` returning NaN into a position — and the shape of
+       the bug is that a single frame of bad arithmetic poisons a coordinate
+       permanently, because NaN survives every later addition.
+
+       So every agent is checked, and any that has gone bad is put back where
+       it last was rather than being allowed to take the camera with it. The
+       counter is exposed on Game.debug so the cause can be found rather than
+       guessed at if it ever happens again. */
+    for (const a of agents) {
+      if (Number.isFinite(a.x) && Number.isFinite(a.y)) { a.lastGoodX = a.x; a.lastGoodY = a.y; continue; }
+      nanRescues++;
+      a.x = Number.isFinite(a.lastGoodX) ? a.lastGoodX : MAP_W / 2;
+      a.y = Number.isFinite(a.lastGoodY) ? a.lastGoodY : MAP_H / 2;
+      a.path = null; a.pathTarget = null;
+      if (a.isPlayer) hudMsg('Position recovered');
+    }
+
     // camera follow (player, or a living teammate if player is down in elimination)
     const focus = player.alive ? player : (agents.find(a => a.alive && a.team === 0) || player);
     const vw = W / zoom, vh = H / zoom;
@@ -5224,6 +5265,9 @@ const Game = (() => {
     updateRoomChip();
     // scores
     const wrap = document.getElementById('hud-scores');
+    /* Past a handful of squads the pills need to be smaller as well as
+       wrapped, or twenty of them push the timer off the top of the screen. */
+    if (wrap) wrap.classList.toggle('hud-scores--many', nTeams > 6);
     if (mode === 'domination') {
       wrap.innerHTML = teamScores.map((s, t) =>
         `<div class="score-pill ${t === 0 ? 'is-you' : ''}"><span class="dot" style="background:${TEAM_COLORS[t]}"></span>${Math.round(s)}</div>`
@@ -8391,6 +8435,16 @@ const Game = (() => {
       };
     },
     teamColor: (t) => teamInk(t),
+    nanRescues: () => nanRescues,
+    spawnSpread() {
+      const pts = [];
+      for (let t = 0; t < nTeams; t++) pts.push(spawnPoint(t));
+      let minGap = Infinity;
+      for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+        minGap = Math.min(minGap, Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y));
+      }
+      return { teams: nTeams, minGap: Math.round(minGap) };
+    },
     roster() {
       const live = agents.filter(a => !a.isVehicle);
       const byTeam = {};

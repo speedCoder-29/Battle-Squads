@@ -55,8 +55,8 @@ const Perks = (() => {
     flak: {
       id: 'flak', name: 'Flak Jacket', icon: '🧥',
       blurb: 'Grenades, launchers and barrels stop deciding fights.',
-      effects: ['+50% explosion damage reduction'],
-      mods: { explosiveMult: 0.50 },
+      effects: ['+90% explosion damage reduction'],
+      mods: { explosiveMult: 0.10 },
     },
     cargo: {
       id: 'cargo', name: 'Cargo Pants', icon: '👖',
