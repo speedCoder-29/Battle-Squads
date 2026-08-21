@@ -35,8 +35,29 @@ const Game = (() => {
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
   const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
-  const TEAM_COLORS = ['#3d7bff', '#ff4b5c', '#4be08a', '#c46bff', '#ffa726', '#35e0ff'];
-  const TEAM_NAMES  = ['Blue', 'Red', 'Green', 'Violet', 'Amber', 'Cyan'];
+  /* Twenty squads, twenty colours, twenty names.
+
+     There were six of each, and every read is `TEAM_COLORS[t % length]` — so a
+     seventh team would have been drawn in the first team's colour. Two sides
+     you cannot tell apart, in a game where colour is the only thing marking
+     friend from enemy. The palette is therefore the real limit on how many
+     squads can play, and it is now twenty.
+
+     Ordered so neighbouring indices are far apart in hue: squads are placed
+     around a ring in index order, so consecutive teams end up beside each
+     other on the map — exactly where two similar colours hurt most. */
+  const TEAM_COLORS = [
+    '#3d7bff', '#ff4b5c', '#4be08a', '#c46bff', '#ffa726',
+    '#35e0ff', '#ff6ad5', '#a3e635', '#f97316', '#22d3ee',
+    '#facc15', '#8b5cf6', '#10b981', '#fb7185', '#60a5fa',
+    '#eab308', '#e879f9', '#34d399', '#f87171', '#818cf8',
+  ];
+  const TEAM_NAMES = [
+    'Blue', 'Red', 'Green', 'Violet', 'Amber',
+    'Cyan', 'Magenta', 'Lime', 'Orange', 'Teal',
+    'Gold', 'Indigo', 'Emerald', 'Rose', 'Azure',
+    'Saffron', 'Orchid', 'Jade', 'Coral', 'Iris',
+  ];
   /* Colour for a team index, safe for the -1 an unclaimed vehicle carries. */
   const NEUTRAL_INK = '#9aa3b5';
   const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t % TEAM_COLORS.length] : NEUTRAL_INK);
@@ -50,7 +71,7 @@ const Game = (() => {
      ground. The per-team cap is what the agent list and the bot AI stay
      comfortable with on a browser frame budget. */
   const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
-  const TEAM_LIMITS = { teams: [2, 20], perTeam: [1, 8] };
+  const TEAM_LIMITS = { teams: [2, TEAM_COLORS.length], perTeam: [1, 8] };
 
   /* The setup a match should actually use: the mode's default, with whatever
      the player chose laid over it and clamped to what the game can stage. */
@@ -3698,6 +3719,12 @@ const Game = (() => {
     for (const o of agents) {
       // someone inside a vehicle isn't a target; the vehicle is
       if (!o.alive || o.team === a.team || o.riding) continue;
+      /* An unclaimed hull is not the enemy — it is transport. It carries team
+         -1, which matched "not my team", so every bot on the map treated a
+         parked jeep as a target and shot it to pieces before anyone could
+         drive it. Once somebody is in it, it is a vehicle with a crew and a
+         side, and fair game again. */
+      if (o.isVehicle && o.neutral && !o.driver) continue;
       const d = dist2(a.x, a.y, o.x, o.y);
       if (d < bd) { bd = d; best = o; }
     }
@@ -3923,17 +3950,21 @@ const Game = (() => {
         // otherwise walk to it, using the same pathing and the same speed
         // model as every other bot movement below
         if (ensurePath(a, want.x, want.y)) {
+          /* followPath returns a unit vector, not an angle. Passing it to
+             Math.cos gives NaN, and `a.x += NaN` makes the bot's position NaN
+             for the rest of the match — which is why bots never once reached a
+             vehicle they set out for. */
           const step = followPath(a);
-          if (step !== null && step !== undefined) {
+          if (step) {
             const base = a.weapon.moveSpeed * 0.72 * a.cls.speed
               * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
             const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
             const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
             const px = a.x, py = a.y;
-            a.x += Math.cos(step) * spd; a.y += Math.sin(step) * spd;
+            a.x += step.x * spd; a.y += step.y * spd;
             resolveObstacles(a);
             trackStuck(a, px, py, spd, dt);
-            a.angle = step;
+            a.angle = Math.atan2(step.y, step.x);
             return;
           }
         }
@@ -3982,17 +4013,21 @@ const Game = (() => {
         const tp = a.tacticPt;
         const near = dist2(a.x, a.y, tp.x, tp.y) < (tp.revive ? 60 * 60 : 90 * 90);
         if (!near && ensurePath(a, tp.x, tp.y)) {
+          /* followPath returns a unit vector, not an angle. Passing it to
+             Math.cos gives NaN, and `a.x += NaN` makes the bot's position NaN
+             for the rest of the match — which is why bots never once reached a
+             vehicle they set out for. */
           const step = followPath(a);
-          if (step !== null && step !== undefined) {
+          if (step) {
             const base = a.weapon.moveSpeed * 0.72 * a.cls.speed
               * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
             const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
             const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
             const px = a.x, py = a.y;
-            a.x += Math.cos(step) * spd; a.y += Math.sin(step) * spd;
+            a.x += step.x * spd; a.y += step.y * spd;
             resolveObstacles(a);
             trackStuck(a, px, py, spd, dt);
-            a.angle = step;
+            a.angle = Math.atan2(step.y, step.x);
             return;                    // committed to it this frame
           }
         }
@@ -4155,8 +4190,36 @@ const Game = (() => {
           a.angle = Math.atan2(dir.y, dir.x);
           moveX += dir.x; moveY += dir.y;
         } else {
-          // no route at all — fall back to nosing toward it
-          const ang = Math.atan2(goal.y - a.y, goal.x - a.x);
+          /* No route. Walking straight at the goal is what made bots stand
+             against a wall shoving at it: the direct line is blocked — that is
+             precisely why the pathfinder had nothing — so following it means
+             walking into the thing in the way.
+
+             Instead, slide along the obstruction. Probe left and right of the
+             blocked bearing for a heading that is actually open and take the
+             one that still makes progress; that walks a bot around a corner
+             and along a frontage until the way round comes into view, which is
+             what a person does when a door is not where they are standing. */
+          const want = Math.atan2(goal.y - a.y, goal.x - a.x);
+          const open = (ang) => {
+            const px = a.x + Math.cos(ang) * (a.r + 34);
+            const py = a.y + Math.sin(ang) * (a.r + 34);
+            return !pointInObstacle(px, py);
+          };
+          let ang = null;
+          if (open(want)) ang = want;
+          else {
+            // widen the sweep either side until something is clear
+            for (let step = 1; step <= 5 && ang === null; step++) {
+              const off = step * (Math.PI / 7);
+              const side = a.wallSide || (a.wallSide = Math.random() < 0.5 ? 1 : -1);
+              if (open(want + off * side)) ang = want + off * side;
+              else if (open(want - off * side)) ang = want - off * side;
+            }
+            // committed to a way round; keep going that way for a moment so it
+            // does not dither at the corner
+            if (ang === null) { ang = want + (Math.PI / 2) * (a.wallSide || 1); }
+          }
           a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
         }
         if (a.aiTargetPt && dist2(a.x, a.y, a.aiTargetPt.x, a.aiTargetPt.y) < 90 * 90) {
@@ -4297,8 +4360,29 @@ const Game = (() => {
       if (d && !d.open) { toggleDoor(d, a); a.stuckAcc = 0; return; }
     }
     if (a.stuckAcc > 0.45) {
+      /* Sidestepping is the right first move — it clears a doorframe you
+         clipped or a crate you walked into. But it was also the *only* move,
+         and a bot whose route is genuinely wrong sidesteps, walks back into
+         the same wall, sidesteps again, and does that until the round ends.
+
+         So the route is thrown away too. The next frame asks the pathfinder
+         for a fresh one from where the bot actually is, which is the only
+         thing that can fix a path that no longer fits the world — a wall
+         someone built, a door someone shut, a hull parked in a gap. */
       a.stuckDir = a.angle + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
       a.stuckT = 0.9; a.stuckAcc = 0;
+      a.path = null; a.pathTarget = null; a.pathAge = 0;
+      a.stuckRepaths = (a.stuckRepaths || 0) + 1;
+      /* Still fighting the same corner after several tries: the goal itself is
+         the problem, not the route to it. Drop it and let the bot choose a new
+         one — an objective it cannot reach is worth less than one it can. */
+      if (a.stuckRepaths >= 3) {
+        a.aiTargetPt = null; a.aiRepath = 0;
+        a.tacticPt = null; a.rideWant = null;
+        a.stuckRepaths = 0;
+      }
+    } else if (a.stuckAcc === 0 && a.stuckRepaths) {
+      a.stuckRepaths = 0;                 // moving freely again
     }
   }
   const obj_jitter = (o) => o.x + rand(-o.r * 0.5, o.r * 0.5);
@@ -8306,6 +8390,7 @@ const Game = (() => {
         pickedThemUp: revived,
       };
     },
+    teamColor: (t) => teamInk(t),
     roster() {
       const live = agents.filter(a => !a.isVehicle);
       const byTeam = {};

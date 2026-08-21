@@ -285,7 +285,7 @@ const Screens = (() => {
     return Object.assign({}, base, p.matchSetup || {});
   }
   function renderSetup() {
-    const lim = (Game.TEAM_LIMITS) || { teams: [2, 6], perTeam: [1, 8] };
+    const lim = (Game.TEAM_LIMITS) || { teams: [2, 20], perTeam: [1, 8] };
     const cur = matchSetup();
     // which mode's card to relabel — read here, since matchSetup keeps its own
     const card = document.querySelector('.mode-card.is-selected');
@@ -317,7 +317,7 @@ const Screens = (() => {
   }
 
   function bumpSetup(key, delta) {
-    const lim = (Game.TEAM_LIMITS) || { teams: [2, 6], perTeam: [1, 8] };
+    const lim = (Game.TEAM_LIMITS) || { teams: [2, 20], perTeam: [1, 8] };
     const p = DB.getProfile();
     const cur = matchSetup();
     const [lo, hi] = lim[key];
