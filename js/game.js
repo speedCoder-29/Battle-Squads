@@ -97,6 +97,9 @@ const Game = (() => {
   /* How many times a non-finite position had to be put back — see the guard
      in the camera step. Should stay at zero. */
   let nanRescues = 0;
+  /* Who the camera is watching while you are dead, held rather than re-chosen
+     each frame, and whether the next placement should cut instead of pan. */
+  let camTarget = null, camWasDead = false, camSnap = true;
   let timeLeft = MATCH_SECONDS;
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
@@ -1951,6 +1954,7 @@ const Game = (() => {
     if (kit && kit.cat !== 'heal') player.inv.heal = { id: 'bandage', n: 2 };
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
+    camTarget = player; camWasDead = false; camSnap = true;
     matchStats = { kills: 0, captures: 0 };
     paused = false; running = true;
 
@@ -4707,11 +4711,61 @@ const Game = (() => {
       if (a.isPlayer) hudMsg('Position recovered');
     }
 
-    // camera follow (player, or a living teammate if player is down in elimination)
-    const focus = player.alive ? player : (agents.find(a => a.alive && a.team === 0) || player);
+    /* ---- who the camera is watching ----
+
+       This used to be re-decided every single frame:
+
+           player.alive ? player : agents.find(a => a.alive && a.team === 0)
+
+       `find` returns the first match in array order, and that order shifts as
+       agents die and respawn — so while you were dead the camera hopped
+       between whichever teammate happened to be first in the list that frame,
+       with no transition. That is the screen "randomly teleporting somewhere":
+       you die, the view snaps across the island to somebody else, and if they
+       are inside a building you cannot see anything either.
+
+       Now a spectate target is chosen once and held until it dies or you are
+       back on your feet, it prefers the teammate nearest to where you fell so
+       the jump is as short as possible, and it reads your actual team instead
+       of assuming you are team 0. */
+    if (player.alive) {
+      // back on your feet: cut straight to yourself rather than flying home
+      if (camWasDead) camSnap = true;
+      camTarget = player;
+      camWasDead = false;
+    } else {
+      const gone = !camTarget || !camTarget.alive || camTarget === player;
+      if (gone) {
+        let best = null, bd = Infinity;
+        for (const a of agents) {
+          if (!a.alive || a.isVehicle || a.team !== player.team || a === player) continue;
+          const d = dist2(player.x, player.y, a.x, a.y);
+          if (d < bd) { bd = d; best = a; }
+        }
+        camTarget = best || player;
+      }
+      camWasDead = true;
+    }
+    const focus = camTarget || player;
+
     const vw = W / zoom, vh = H / zoom;
-    camX = clamp(focus.x - vw / 2, 0, Math.max(0, MAP_W - vw));
-    camY = clamp(focus.y - vh / 2, 0, Math.max(0, MAP_H - vh));
+    const wantX = clamp(focus.x - vw / 2, 0, Math.max(0, MAP_W - vw));
+    const wantY = clamp(focus.y - vh / 2, 0, Math.max(0, MAP_H - vh));
+    /* Travel to a new subject rather than appearing at it. A cut is what makes
+       a change of view read as a glitch; a fast pan reads as the camera going
+       somewhere, and tells you the two places are related. Deliberate jumps —
+       spawning in, a fresh match — still snap, because there is nothing to
+       relate them to. */
+    const jump = Math.hypot(wantX - camX, wantY - camY);
+    if (camSnap || jump < 4) {
+      camX = wantX; camY = wantY; camSnap = false;
+    } else if (jump > 40) {
+      const k = Math.min(1, dt * 6);
+      camX += (wantX - camX) * k;
+      camY += (wantY - camY) * k;
+    } else {
+      camX = wantX; camY = wantY;
+    }
 
     onlineTick(dt);
     if (!online) checkWinConditions();
@@ -8436,6 +8490,8 @@ const Game = (() => {
     },
     teamColor: (t) => teamInk(t),
     nanRescues: () => nanRescues,
+    camPos: () => ({ x: camX, y: camY }),
+    killSelf() { applyDamage(player, 9999, null, 'true', 'body'); if (player.downed) applyDamage(player, 9999, null, 'true', 'body'); return !player.alive; },
     spawnSpread() {
       const pts = [];
       for (let t = 0; t < nTeams; t++) pts.push(spawnPoint(t));
