@@ -5508,7 +5508,17 @@ const Game = (() => {
         ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Segoe UI'; ctx.textAlign = 'center';
         ctx.fillText(a.team === (player && player.team) ? 'DOWN' : 'DOWNED', a.x, by - 6);
         ctx.globalAlpha = 1;
-        return;
+        /* `continue`, not `return`. This loop is written inline inside
+           render(), so returning from it returned from the whole frame: the
+           moment anybody was knocked down on screen, drawing stopped dead
+           there. Every agent after them in the list vanished — the player
+           included — along with every HUD layer drawn after the loop, and
+           render()'s closing ctx.restore() never ran. That left the world
+           scale and translate on the context, so the next frame stacked its
+           own transform on top and the view slid somewhere else entirely.
+           One keyword, and it accounted for the vanishing player, the missing
+           interface and the teleport all at once. */
+        continue;
       }
       // body
       ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
@@ -8491,6 +8501,28 @@ const Game = (() => {
     teamColor: (t) => teamInk(t),
     nanRescues: () => nanRescues,
     camPos: () => ({ x: camX, y: camY }),
+    downEveryoneNearby() {
+      let n = 0;
+      for (const a of agents) {
+        if (a.isPlayer || a.isVehicle || !a.alive) continue;
+        if (dist2(a.x, a.y, player.x, player.y) > 900 * 900) continue;
+        a.hp = 1; applyDamage(a, 999, null, 'normal');
+        if (a.downed) n++;
+      }
+      return n;
+    },
+    /* Is the canvas transform back to identity between frames? If render()
+       bailed out early its ctx.restore() never ran and the scale/translate is
+       still on the context. */
+    transformClean() {
+      const m = ctx.getTransform();
+      return Math.abs(m.a - 1) < 0.001 && Math.abs(m.d - 1) < 0.001
+        && Math.abs(m.e) < 0.5 && Math.abs(m.f) < 0.5;
+    },
+    playerOnScreen() {
+      const sx = (player.x - camX) * zoom, sy = (player.y - camY) * zoom;
+      return sx > -50 && sy > -50 && sx < W + 50 && sy < H + 50;
+    },
     killSelf() { applyDamage(player, 9999, null, 'true', 'body'); if (player.downed) applyDamage(player, 9999, null, 'true', 'body'); return !player.alive; },
     spawnSpread() {
       const pts = [];
