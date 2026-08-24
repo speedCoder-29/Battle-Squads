@@ -58,9 +58,48 @@ const Game = (() => {
     'Gold', 'Indigo', 'Emerald', 'Rose', 'Azure',
     'Saffron', 'Orchid', 'Jade', 'Coral', 'Iris',
   ];
-  /* Colour for a team index, safe for the -1 an unclaimed vehicle carries. */
+  /* ---------------- how the world is presented ----------------
+     Sight settings, read once and kept, because teamInk() alone is called
+     hundreds of times a frame and DB.getSettings() parses JSON out of
+     localStorage every time it is asked. Screens calls Game.refreshView()
+     when the settings panel is closed, so a change still lands immediately. */
+  let view = {
+    teamColors: 'teams', foeColor: '#ff9d2e',
+    crosshair: 'dynamic', crosshairSize: 10, crosshairColor: '#7ff2c1',
+    fov: 100,
+  };
+  function refreshView() {
+    let s = {};
+    try { s = DB.getSettings() || {}; } catch (e) { s = {}; }
+    view = {
+      teamColors: s.teamColors || 'teams',
+      foeColor: s.foeColor || '#ff9d2e',
+      crosshair: s.crosshair || 'dynamic',
+      crosshairSize: +s.crosshairSize || 10,
+      crosshairColor: s.crosshairColor || '#7ff2c1',
+      fov: +s.fov || 100,
+    };
+    // two crosshairs on screen is worse than either one alone
+    if (canvas) canvas.style.cursor = view.crosshair === 'system' ? 'crosshair' : 'none';
+  }
+
+  /* Colour for a team index, safe for the -1 an unclaimed vehicle carries.
+
+     Twenty squads need twenty colours, and no palette that size can keep every
+     pair apart for someone who cannot separate red from green. So there is a
+     second mode: your side is one colour and everybody else is another, which
+     is the only distinction that actually matters in a firefight. It is the
+     same answer Valorant and Overwatch reached, and it helps players with
+     ordinary colour vision read a twenty-team match too. */
   const NEUTRAL_INK = '#9aa3b5';
-  const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t % TEAM_COLORS.length] : NEUTRAL_INK);
+  const FRIEND_INK = '#39c0ff';
+  const teamInk = (t) => {
+    if (t < 0) return NEUTRAL_INK;
+    if (view.teamColors === 'friendfoe' && player) {
+      return t === player.team ? FRIEND_INK : view.foeColor;
+    }
+    return TEAM_COLORS[t % TEAM_COLORS.length];
+  };
   // squad setup per mode
   /* How many squads, and how many in each. These are the defaults per mode;
      the player can override both from the lobby, and an override is kept in
@@ -100,6 +139,7 @@ const Game = (() => {
   /* Who the camera is watching while you are dead, held rather than re-chosen
      each frame, and whether the next placement should cut instead of pan. */
   let camTarget = null, camWasDead = false, camSnap = true;
+  let lastDt = 0.016;                 // the frame delta, for anything render() animates
   let timeLeft = MATCH_SECONDS;
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
@@ -111,10 +151,27 @@ const Game = (() => {
      fraction of the screen height. BASE_ZOOM sets that framing; the binoculars
      and ADS still scale relative to it. */
   const BASE_ZOOM = 1.45;
+  /* ...and how much of that framing you actually want. Every shooter with a
+     field-of-view slider has one for the same reason: the tuned default suits
+     the average screen and nobody plays on the average screen. Higher setting,
+     wider view, smaller targets — the trade is the player's to make. */
+  const baseZoom = () => BASE_ZOOM * (100 / clamp(view.fov, 70, 130));
   let zoom = BASE_ZOOM, zoomTarget = BASE_ZOOM;
   let teamScores = [];
   let player = null;
-  let matchStats = { kills: 0, captures: 0 };
+  let matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0 };
+  /* ---- what the last death is owed an explanation for ----
+     Call of Duty's death recap, and for the same reason: dying with no idea
+     what happened teaches you nothing. Filled in at the moment of death from
+     the running log of hits taken, and cleared when you respawn. */
+  let deathRecap = null;
+  /* Battlefield's squad spawn: the squadmate you have chosen to come back on
+     top of, instead of at your side of the island. Cleared every respawn, so
+     it is a decision you make each time rather than a setting. */
+  let deployAnchor = null;
+  /* Scorestreaks earned this life but not yet spent, and how many the current
+     run has already paid out. */
+  let streakBank = [], streakEarned = 0;
   /* One tile, the unit everything spatial is measured in: weapon ranges
      (weapons.js), blast radii (items.js) and the map itself, which is 128
      tiles across. */
@@ -1796,6 +1853,21 @@ const Game = (() => {
     };
   }
 
+  /* A landing spot beside a squadmate: behind them where possible, never on
+     top of them, and never inside a wall. Tries a ring of bearings before
+     giving up, so spawning on someone standing in a doorway still works. */
+  function squadDropNear(mate) {
+    const back = mate.angle + Math.PI;      // arrive behind their line of sight
+    for (let i = 0; i < 12; i++) {
+      const ang = back + (i % 2 ? 1 : -1) * (i * 0.42);
+      const d = 70 + i * 8;
+      const x = clamp(mate.x + Math.cos(ang) * d, BODY_R, MAP_W - BODY_R);
+      const y = clamp(mate.y + Math.sin(ang) * d, BODY_R, MAP_H - BODY_R);
+      if (!pointInObstacle(x, y)) return { x, y };
+    }
+    return { x: mate.x, y: mate.y };        // resolveObstacles will push us clear
+  }
+
   function makeAgent(team, isPlayer, weaponId) {
     const base = Weapons.byId[weaponId] || Weapons.byId[Weapons.default];
     // the player's saved attachments / ammo / skin are baked in at spawn
@@ -1842,6 +1914,54 @@ const Game = (() => {
     };
   }
 
+  /* ================= the firing range =================
+     Apex Legends' single most-used menu item, and the reason is simple: thirty
+     weapons in this game and no way to find out what any of them feels like
+     except by taking one into a match and dying with it. A lane, targets at
+     known distances, and a readout of what you actually did to them.
+
+     Targets stand still, say how far away they are, and come back a second
+     after you knock them down, so a magazine is one continuous experiment. */
+  const DUMMY_RESPAWN = 1.2;
+  const RANGE_MARKS = [10, 25, 40, 60, 85, 120];      // metres down the lane
+  let rangeShot = null;                               // the last hit, for the readout
+
+  function setupRange() {
+    const profile = DB.getProfile();
+    const playerWeapon = (profile && Weapons.byId[profile.weapon]) ? profile.weapon : Weapons.default;
+    nTeams = 2;
+    teamScores = [0, 0];
+    objectives = [];
+    agents = [];
+
+    player = makeAgent(0, true, playerWeapon);
+    const y = MAP_H / 2;
+    player.x = MAP_W * 0.10; player.y = y; player.angle = 0;
+
+    /* Clear the lane. The map generator does not know it is building a range,
+       so whatever it dropped between the firing point and 120 m gets levelled
+       — otherwise half the targets are behind a warehouse. */
+    const far = player.x + RANGE_MARKS[RANGE_MARKS.length - 1] * PX_PER_M;
+    for (let x = player.x - 160; x <= far + 220; x += 150) bulldoze(x, y, 190);
+
+    agents.push(player);
+    for (const m of RANGE_MARKS) {
+      const d = makeAgent(1, false, playerWeapon);
+      d.isDummy = true;
+      d.rangeM = m;
+      d.x = player.x + m * PX_PER_M; d.y = y; d.angle = Math.PI;
+      d.name = m + ' m';
+      agents.push(d);
+    }
+  }
+
+  /* Stand a knocked-down target back up, where it was, at full health. */
+  function resetDummy(d) {
+    d.alive = true; d.hp = d.maxHp;
+    d.respawnTimer = 0; d.downed = false; d.reviveT = 0;
+    d.firstHitAt = 0; d.shotsTaken = 0; d.dealt = 0;
+  }
+
   function setupTeams() {
     agents = [];
     const profile = DB.getProfile();
@@ -1850,7 +1970,9 @@ const Game = (() => {
     const setup = setupFor(mode);
     nTeams = setup.teams;
 
-    if (mode === 'domination') {
+    if (mode === 'range') {
+      setupRange();
+    } else if (mode === 'domination') {
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
         for (let i = 0; i < setup.perTeam; i++) {
@@ -1886,9 +2008,26 @@ const Game = (() => {
   function pickBotWeapon() { return Weapons.randomBot(); }
 
   function respawnAgent(a, initial = false) {
+    /* Coming back on a squadmate, if you chose one and they are still a
+       sensible place to arrive. Checked again here rather than trusting the
+       choice you made ten seconds ago: they may have died, got in a jeep or
+       walked into an ambush since. */
+    let sp = null;
+    if (a.isPlayer && !initial && deployAnchor) {
+      if (deployTargetOk(deployAnchor)) {
+        sp = squadDropNear(deployAnchor);
+        hudMsg(`Deployed on ${nameOf(deployAnchor, 'your squadmate')}`);
+      } else {
+        hudMsg('Squad deploy unavailable — back at your own lines');
+      }
+      deployAnchor = null;      // one respawn, one decision
+    }
     // re-roll the drop point a few times rather than landing inside a building
-    let sp = spawnPoint(a.team);
-    for (let i = 0; i < 12 && pointInObstacle(sp.x, sp.y); i++) sp = spawnPoint(a.team);
+    if (!sp) {
+      sp = spawnPoint(a.team);
+      for (let i = 0; i < 12 && pointInObstacle(sp.x, sp.y); i++) sp = spawnPoint(a.team);
+    }
+    if (a.isPlayer) { deathRecap = null; a.hurtLog = []; }
     a.x = sp.x; a.y = sp.y;
     a.hp = a.maxHp; a.alive = true;
     a.ammo = a.weapon.mag; a.reloadTimer = 0; a.fireCd = 0;
@@ -1920,7 +2059,9 @@ const Game = (() => {
     resize();
     window.addEventListener('resize', resize);
 
-    MAP_W = MAP_SIZES[mode].w; MAP_H = MAP_SIZES[mode].h;
+    refreshView();       // sight settings, before anything is drawn with them
+    const size = MAP_SIZES[mode] || MAP_SIZES.elimination;
+    MAP_W = size.w; MAP_H = size.h;
     worldSeed = (seed >>> 0) || ((Math.random() * 0xffffffff) >>> 0);
     botLevel = DB.getSettings().botLevel || BotAI.DEFAULT;
     squadIntel = [];
@@ -1928,7 +2069,8 @@ const Game = (() => {
     setupTeams();
     bullets = []; fx = []; dmgNums = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
-    zoom = zoomTarget = BASE_ZOOM;
+    deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
+    zoom = zoomTarget = baseZoom();
     hudMessage = ''; hudMessageT = 0;
     killFeed = []; killBanner = null; soundPings = [];
     hereBuilding = null; hereEffect = null; resupplyT = 0;
@@ -1955,10 +2097,11 @@ const Game = (() => {
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
     camTarget = player; camWasDead = false; camSnap = true;
-    matchStats = { kills: 0, captures: 0 };
+    matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0 };
     paused = false; running = true;
 
-    document.getElementById('hud-gamemode').textContent = mode === 'domination' ? 'DOMINATION' : 'ELIMINATION';
+    document.getElementById('hud-gamemode').textContent =
+      mode === 'domination' ? 'DOMINATION' : mode === 'range' ? 'FIRING RANGE' : 'ELIMINATION';
     document.getElementById('game-pause').classList.remove('is-open');
     document.getElementById('game-results').classList.remove('is-open');
     // legend is loud for the first few seconds, then fades back (hover to read)
@@ -2023,6 +2166,16 @@ const Game = (() => {
     window.addEventListener('keydown', e => {
       if (!running) return;
       const act = Controls.actionFor(e.code);
+      /* Dead, the movement keys have nothing to drive, so they change who you
+         are watching instead — left and right through your surviving squad.
+         Reusing the keys already under your fingers beats teaching a second
+         set for the one situation you are least able to look them up in. */
+      if (player && !player.alive && running && !paused) {
+        if (act === 'left') { cycleSpectate(-1); return; }
+        if (act === 'right') { cycleSpectate(1); return; }
+        // and the one thing you *can* still decide: where you come back
+        if (act === 'deploy') { toggleDeployAnchor(); e.preventDefault(); return; }
+      }
       switch (act) {
         case 'up': input.up = true; break;
         case 'down': input.down = true; break;
@@ -2037,6 +2190,9 @@ const Game = (() => {
         case 'interact': interact(); break;
         case 'tool': useTool(); break;
         case 'airstrike': callAirstrike(); break;
+        case 'streak': useStreak(); break;
+        case 'resupply': resupplyMate(); break;
+        case 'deploy': e.preventDefault(); break;   // alive, it does nothing but must not scroll the page
         case 'ping': openWheel('ping'); break;
         case 'emote': openWheel('emote'); break;
         case 'scoreboard': showScores = true; e.preventDefault(); break;
@@ -2076,6 +2232,13 @@ const Game = (() => {
     canvas.addEventListener('mousedown', e => {
       if (!running || paused) return;
       if (wheel) { if (e.button === 0) closeWheel(true); e.preventDefault(); return; }
+      /* Dead, clicking cycles the view instead of firing a gun you do not
+         have: left for the next teammate, right for the previous one. */
+      if (player && !player.alive) {
+        cycleSpectate(e.button === 2 ? -1 : 1);
+        e.preventDefault();
+        return;
+      }
       if (e.button === 0) { input.shooting = true; input.fireEdge = true; }   // left = fire
       if (e.button === 1) { quickMark(); e.preventDefault(); }                // middle = quick ping
       if (e.button === 2) input.ads = true;                                    // right = aim
@@ -4426,7 +4589,7 @@ const Game = (() => {
        guess for most of every 50ms between snapshots, and a player who joined
        late sat on 8:00 until the first one landed. */
     if (online) timeLeft = onlineClock();
-    else timeLeft -= dt;
+    else if (mode !== 'range') timeLeft -= dt;   // the range has no clock to beat
     if (input.dashCd > 0) input.dashCd -= dt;
 
     // player status timers
@@ -4449,6 +4612,7 @@ const Game = (() => {
     if (flashOverlay > 0) flashOverlay -= dt;
     if (hudMessageT > 0) hudMessageT -= dt;
     updateKillFeed(dt);
+    if (rangeShot && (rangeShot.life -= dt) <= 0) rangeShot = null;
     updateSoundPings(dt);
     updateBuildingEffect(dt);
     findSecrets();
@@ -4532,10 +4696,11 @@ const Game = (() => {
     // scope stat (snipers ~0.16 = a lot of magnification, pistols ~2 = none)
     // driving pulls the view out a little: you're bigger, faster, and the
     // things that can hurt you are further away
-    if (player.alive && player.riding) zoomTarget = BASE_ZOOM * 0.85;
-    else if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = BASE_ZOOM / player.tool.zoom;
-    else if (player.alive && input.ads) zoomTarget = BASE_ZOOM * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
-    else zoomTarget = BASE_ZOOM;
+    const bz = baseZoom();
+    if (player.alive && player.riding) zoomTarget = bz * 0.85;
+    else if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = bz / player.tool.zoom;
+    else if (player.alive && input.ads) zoomTarget = bz * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
+    else zoomTarget = bz;
     zoom += (zoomTarget - zoom) * Math.min(1, 9 * dt);
 
     // agents timers + AI
@@ -4547,6 +4712,9 @@ const Game = (() => {
       if (a.toolCd > 0) a.toolCd -= dt;
       if (a.markedUntil > 0) a.markedUntil -= dt;
       if (a.swingT > 0) a.swingT -= dt;
+      // how long since anyone shot at them — what squad deploy is judged on
+      a.hurtT = (a.hurtT || 0) + dt;
+      if (a.resupplyCd > 0) a.resupplyCd -= dt;
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
       a.wireSlow = (a.alive && !a.isVehicle && !a.riding) ? wireAt(a, dt) : 1;
       if (!a.isPlayer) a.stillT = Math.hypot(a.vx || 0, a.vy || 0) < 12 ? (a.stillT || 0) + dt : 0;
@@ -4560,7 +4728,10 @@ const Game = (() => {
         }
       }
       if (!a.alive) {
-        if (mode === 'domination' && !a.isVehicle) { a.respawnTimer -= dt; if (a.respawnTimer <= 0) respawnAgent(a); }
+        if ((mode === 'domination' || mode === 'range') && !a.isVehicle) {
+          a.respawnTimer -= dt;
+          if (a.respawnTimer <= 0) { a.isDummy ? resetDummy(a) : respawnAgent(a); }
+        }
         continue;
       }
       // a vehicle the player is driving takes its orders from the player, and
@@ -4572,6 +4743,7 @@ const Game = (() => {
          its driver had stepped out meant this client drove it somewhere nobody
          else could see, and then the next snapshot dragged it back. */
       if (online) continue;
+      if (a.isDummy) { a.vx = a.vy = 0; continue; }   // a target stands there and takes it
       if (!a.isPlayer && !a.driver) updateBot(a, dt);
     }
 
@@ -4936,6 +5108,7 @@ const Game = (() => {
     a.hp = Math.round(a.maxHp * REVIVE_HP);
     a.adrenaline = 0;
     spawnFx(a.x, a.y, '#4be08a', 20);
+    if (by && by.isPlayer) matchStats.revives++;      // counted on the after-action card
     if (a.isPlayer || (by && by.isPlayer)) SFX.reward();
     if (a.isPlayer) { hudMsg('BACK UP — ' + a.hp + ' HP'); addShake(3); }
     else if (by && by.isPlayer) hudMsg('Revived ' + nameOf(a, 'a teammate'));
@@ -5039,6 +5212,35 @@ const Game = (() => {
     }
     a.hp -= dmg;
     if (owner) a.lastHitBy = owner;      // credited if a last stand runs out
+    /* Anyone can be shot at; only what happens to *you* needs explaining
+       afterwards. Every hit the player takes goes into a short rolling log,
+       which is what the death recap is assembled from. `hurtT` is a separate
+       matter — it is how long since this agent was last in a firefight, which
+       is what decides whether a squadmate is a safe place to spawn on. */
+    a.hurtT = 0;
+    if (a.isPlayer) {
+      if (!a.hurtLog) a.hurtLog = [];
+      a.hurtLog.push({
+        name: nameOf(owner, type === 'explosive' ? 'Explosion' : 'Unknown'),
+        team: owner ? owner.team : -1,
+        weapon: owner && owner.weapon ? owner.weapon.name : (type === 'explosive' ? 'Explosive' : '—'),
+        dmg: Math.round(dmg), zone: hit.zone,
+        dist: owner ? Math.round(Math.hypot(owner.x - a.x, owner.y - a.y)) : 0,
+      });
+      if (a.hurtLog.length > 8) a.hurtLog.shift();
+    }
+    /* On the range, every round is a measurement. Time-to-kill starts at the
+       first hit on a given target, not when you pulled the trigger, so a miss
+       does not quietly inflate the number. */
+    if (a.isDummy && owner && owner.isPlayer) {
+      if (!a.firstHitAt) { a.firstHitAt = performance.now(); a.shotsTaken = 0; a.dealt = 0; }
+      a.shotsTaken++; a.dealt += dmg;
+      rangeShot = {
+        dmg: Math.round(dmg), zone: hit.zone, m: a.rangeM,
+        shots: a.shotsTaken, dealt: Math.round(a.dealt),
+        ttk: null, life: 4,
+      };
+    }
     if (DB.getSettings().dmgNumbers) {
       dmgNums.push({
         x: a.x, y: a.y - a.r, val: Math.round(dmg), life: 0.7,
@@ -5065,7 +5267,17 @@ const Game = (() => {
     spawnFx(a.x, a.y, teamInk(a.team), 14);
     if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
     pushKill(owner, a, zone);
-    if (mode === 'domination') a.respawnTimer = 3;
+    if (a.isPlayer) { matchStats.deaths++; buildRecap(a, owner, zone); }
+    if (a.isDummy && rangeShot) {
+      // the number the range exists to tell you: how long that target took
+      rangeShot.ttk = a.firstHitAt ? (performance.now() - a.firstHitAt) / 1000 : 0;
+      rangeShot.life = 5;
+    }
+    if (owner && owner.isPlayer) {
+      matchStats.bestStreak = Math.max(matchStats.bestStreak, owner.streak || 0);
+      earnStreaks(owner.streak || 0);
+    }
+    if (mode === 'domination' || mode === 'range') a.respawnTimer = a.isDummy ? DUMMY_RESPAWN : 3;
     if (a.isPlayer) SFX.hurt();
     // brewed up with someone inside: throw the driver clear rather than
     // leaving them welded to a dead agent with no way out
@@ -5073,6 +5285,161 @@ const Game = (() => {
       explode(a.x, a.y, 60, a.r * 3, a.team, owner, 'explosive');
       ejectDriver(a, true);          // whoever was in *this* hull, not the player
     }
+  }
+
+  /* ================= death recap =================
+     Modern Warfare put this in because "you died" is not information. Who
+     killed you, what they were holding, how far away they were, what state
+     they were left in, and which of the hits that landed on you actually
+     mattered — all of it was already in the simulation; none of it was ever
+     shown. Assembled from the rolling hit log the player carries. */
+  function buildRecap(a, owner, zone) {
+    const log = (a.hurtLog || []).slice(-6).reverse();
+    deathRecap = {
+      killer: owner ? nameOf(owner, 'Enemy') : (log[0] ? log[0].name : 'The island'),
+      team: owner ? owner.team : -1,
+      weapon: owner && owner.weapon ? owner.weapon.name : (log[0] ? log[0].weapon : '—'),
+      dist: owner ? Math.round(Math.hypot(owner.x - a.x, owner.y - a.y) / PX_PER_M) : 0,
+      killerHp: owner && owner.maxHp ? Math.max(0, Math.round(owner.hp)) : null,
+      killerMaxHp: owner ? owner.maxHp : null,
+      zone,
+      hits: log,
+      total: log.reduce((n, h) => n + h.dmg, 0),
+    };
+    a.hurtLog = [];
+  }
+  /* Distances are quoted in metres, not pixels: "killed you from 62 m" means
+     something to a player, "from 2480 px" does not. */
+  const PX_PER_M = (typeof Structures !== 'undefined' && Structures.PX_PER_M) || 40;
+
+  /* ================= scorestreaks =================
+     Kills in a row buy you something, and dying takes it away. It is the
+     oldest reward loop in the genre, and it works because it makes a good run
+     compound instead of just adding to a number in the corner: three kills
+     buys you the information to get the fourth.
+
+     Banked rather than automatic, so the reward is a decision. Spent with the
+     scorestreak key, highest first. */
+  const STREAKS = [
+    { at: 3, id: 'recon', name: 'Recon Sweep', icon: '📡', blurb: 'every enemy near you, marked for the squad' },
+    { at: 5, id: 'resupply', name: 'Resupply', icon: '📦', blurb: 'full magazine, grenades and heals' },
+    { at: 7, id: 'strike', name: 'Airstrike', icon: '✈️', blurb: 'a bombing run on your cursor' },
+  ];
+  const RECON_RANGE = 1900;
+
+  function earnStreaks(streak) {
+    for (const s of STREAKS) {
+      if (s.at !== streak) continue;
+      streakBank.push(s.id);
+      streakEarned++;
+      hudMsg(`${s.icon}  ${s.name} ready — press ${Controls.labelFor('streak')}`);
+      Toast.show(`${s.at} in a row: ${s.name} earned`);
+      SFX.reward();
+    }
+  }
+
+  function useStreak() {
+    if (!canAct()) return;
+    if (!streakBank.length) {
+      const next = STREAKS.find(s => s.at > (player.streak || 0));
+      hudMsg(next ? `No streak ready — ${next.at - (player.streak || 0)} more for ${next.name}` : 'No streak ready');
+      return;
+    }
+    // spend the best one you are holding, not the oldest
+    let bi = 0;
+    for (let i = 1; i < streakBank.length; i++) {
+      if (rankOfStreak(streakBank[i]) > rankOfStreak(streakBank[bi])) bi = i;
+    }
+    const id = streakBank.splice(bi, 1)[0];
+    const def = STREAKS.find(s => s.id === id);
+    if (id === 'recon') {
+      let found = 0;
+      for (const o of agents) {
+        if (!o.alive || o.team === player.team) continue;
+        if (dist2(o.x, o.y, player.x, player.y) > RECON_RANGE * RECON_RANGE) continue;
+        o.markedUntil = Math.max(o.markedUntil || 0, 9);   // longer than a gadget sweep
+        found++;
+      }
+      hudMsg(found ? `📡  Recon sweep — ${found} contact${found > 1 ? 's' : ''} marked` : '📡  Recon sweep — nobody out there');
+    } else if (id === 'resupply') {
+      player.ammo = player.weapon.mag;
+      player.reloadTimer = 0;
+      refillFromBag();
+      if (player.inv && player.inv.heal) {
+        player.inv.heal.id = player.inv.heal.id || 'bandage';
+        player.inv.heal.n = Math.max(player.inv.heal.n || 0, 3);
+      }
+      updateWeaponHud();
+      hudMsg('📦  Resupplied');
+      SFX.reload();
+    } else if (id === 'strike') {
+      const p = worldMouse();
+      airstrikes.push({ x: p.x, y: p.y, team: player.team, owner: player, delay: 3.5, hits: 6 });
+      hudMsg('✈️  Strike called — get clear');
+      SFX.win();
+    }
+    if (def) Toast.show(`${def.icon} ${def.name} used`);
+  }
+  const rankOfStreak = (id) => STREAKS.findIndex(s => s.id === id);
+
+  /* ================= giving a squadmate ammo =================
+     Battlefield's support role in one key. Running dry beside a teammate who
+     has a full bag is a problem the game already contains all the pieces to
+     solve; it just never let you hand anything over. Costs you a magazine and
+     a bandage, so it is a choice rather than a free top-up, and it only works
+     on someone who actually needs it. */
+  const RESUPPLY_REACH = 150;
+  const RESUPPLY_CD = 6;
+  function resupplyMate() {
+    if (!canAct()) return;
+    if (player.resupplyCd > 0) { hudMsg(`Bag is restocking — ${player.resupplyCd.toFixed(1)}s`); return; }
+    let best = null, bd = RESUPPLY_REACH * RESUPPLY_REACH;
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle || a.isPlayer || a.team !== player.team) continue;
+      // someone who is topped up does not need your last magazine
+      const short = a.ammo < a.weapon.mag * 0.5 || a.hp < a.maxHp * 0.6;
+      if (!short) continue;
+      const d = dist2(a.x, a.y, player.x, player.y);
+      if (d < bd) { bd = d; best = a; }
+    }
+    if (!best) { hudMsg('No squadmate in reach needs a resupply'); return; }
+    best.ammo = best.weapon.mag;
+    best.reloadTimer = 0;
+    best.hp = Math.min(best.maxHp, best.hp + 25);
+    player.resupplyCd = RESUPPLY_CD;
+    matchStats.resupplies++;
+    spawnFx(best.x, best.y, '#7ff2c1', 8);
+    hudMsg(`Resupplied ${nameOf(best, 'your squadmate')}`);
+    SFX.reload();
+  }
+
+  /* ================= deploying on a squadmate =================
+     Battlefield's squad spawn. Walking the width of the island back to the
+     fight is the least interesting thing a respawn can ask of you, and it is
+     also what breaks a squad up: everybody restarts alone.
+
+     The one rule that keeps it from being a free teleport into a firefight is
+     the one Battlefield uses — you cannot land on someone who is currently
+     being shot at. `hurtT` counts up from the last hit they took. */
+  const DEPLOY_SAFE_SECS = 4;
+  function deployTargetOk(a) {
+    return !!(a && a.alive && !a.downed && !a.isVehicle && !a.riding
+      && a !== player && a.team === player.team && (a.hurtT === undefined || a.hurtT >= DEPLOY_SAFE_SECS));
+  }
+  /* Whoever you are watching is who you would come back on: no second list to
+     learn, and the choice is made by looking at where you want to be. */
+  function toggleDeployAnchor() {
+    if (!player || player.alive || !running || paused) return;
+    if (mode !== 'domination' && mode !== 'range') { hudMsg('No respawns in this mode'); return; }
+    if (deployAnchor) { deployAnchor = null; hudMsg('Deploying at your own lines'); SFX.click(); return; }
+    const t = camTarget;
+    if (!deployTargetOk(t)) {
+      hudMsg(t && t !== player ? `${nameOf(t, 'They')} are under fire — pick someone else` : 'Nobody to deploy on');
+      return;
+    }
+    deployAnchor = t;
+    hudMsg(`Deploying on ${nameOf(t, 'your squadmate')}`);
+    SFX.click();
   }
 
   function updateObjectives(dt) {
@@ -5110,6 +5477,7 @@ const Game = (() => {
 
   function checkWinConditions() {
     if (!running) return;
+    if (mode === 'range') return;      // nothing to win: you leave when you're done
     if (mode === 'domination') {
       for (let t = 0; t < teamScores.length; t++) {
         if (teamScores[t] >= SCORE_CAP) return endMatch(t === 0);
@@ -5193,6 +5561,55 @@ const Game = (() => {
   }
 
   /* ---------------- match end + rewards ---------------- */
+  /* ================= the after-action record =================
+     A results screen you can read once tells you how that match went. A record
+     tells you whether you are getting better, which is the thing people
+     actually stay for. Kept on the profile, newest first, capped so it never
+     grows without bound; the personal bests beside it are what the results
+     screen calls out when you beat one. */
+  const HISTORY_MAX = 12;
+  function recordMatch(profile, won, score, xp) {
+    const best = profile.best || (profile.best = { kills: 0, streak: 0, score: 0 });
+    const beat = {
+      kills: matchStats.kills > (best.kills || 0),
+      streak: matchStats.bestStreak > (best.streak || 0),
+      score: score > (best.score || 0),
+    };
+    best.kills = Math.max(best.kills || 0, matchStats.kills);
+    best.streak = Math.max(best.streak || 0, matchStats.bestStreak);
+    best.score = Math.max(best.score || 0, score);
+
+    const entry = {
+      mode, won, score, xp, at: Date.now(),
+      kills: matchStats.kills, deaths: matchStats.deaths,
+      streak: matchStats.bestStreak, captures: matchStats.captures,
+      revives: matchStats.revives, resupplies: matchStats.resupplies,
+    };
+    if (!Array.isArray(profile.history)) profile.history = [];
+    profile.history.unshift(entry);
+    profile.history.length = Math.min(profile.history.length, HISTORY_MAX);
+    return { entry, beat, best };
+  }
+
+  /* The extra line on the results panel: the numbers the four big tiles leave
+     out, and a callout for anything that is now a personal best. */
+  function renderAfterAction(recap) {
+    const box = document.getElementById('res-aar');
+    if (!box || !recap) return;
+    const e = recap.entry, b = recap.beat;
+    const kd = e.deaths ? (e.kills / e.deaths).toFixed(2) : e.kills.toFixed(2);
+    const cell = (label, value, isBest) =>
+      `<div class="aar__cell${isBest ? ' is-best' : ''}"><b>${value}</b><span>${label}</span>`
+      + (isBest ? '<i class="aar__pb">BEST</i>' : '') + '</div>';
+    box.innerHTML =
+      cell('Eliminations', e.kills, b.kills)
+      + cell('Deaths', e.deaths, false)
+      + cell('K/D', kd, false)
+      + cell('Best streak', e.streak, b.streak)
+      + cell('Captures', e.captures, false)
+      + cell('Squad assists', e.revives + e.resupplies, false);
+  }
+
   function endMatch(won, roster) {
     if (!running) return;
     running = false;
@@ -5222,6 +5639,8 @@ const Game = (() => {
 
     // xp / battle pass / level
     Progression.awardXp(profile, xp);
+    // ...and the after-action record, written before the profile is saved
+    const recap = recordMatch(profile, won, score, xp);
     DB.saveProfile(profile);
 
     // results UI
@@ -5235,6 +5654,7 @@ const Game = (() => {
     document.getElementById('res-score').textContent = score;
     document.getElementById('res-xp').textContent = '+' + xp;
     document.getElementById('res-credits').textContent = '+' + (credits + bonusCredits);
+    renderAfterAction(recap);
     renderLeaderboard(board);
     document.getElementById('game-results').classList.add('is-open');
     requestAnimationFrame(scrollBoardToPlayer);   // needs the panel laid out first
@@ -5261,7 +5681,40 @@ const Game = (() => {
   /* While driving, the bottom HUD describes the vehicle rather than the
      player: its gun is the one that fires, its magazine is the one that runs
      out, and its hull is the health that matters. */
-  const hudSubject = () => (player && player.riding) || player;
+  /* Whose numbers the HUD is showing.
+
+     While you are dead the camera is on a teammate, but every readout still
+     came from your own corpse: zero health, your last magazine, the gun you
+     died holding. You were watching one person and reading another's kit,
+     which makes spectating useless for learning anything.
+
+     Now it follows the camera — their health, their weapon, their ammo. */
+  const hudSubject = () => {
+    if (player && !player.alive && camTarget && camTarget !== player && camTarget.alive) {
+      return camTarget.riding || camTarget;
+    }
+    return (player && player.riding) || player;
+  };
+
+  /* Everyone you are allowed to watch: your side, alive, on foot or driving. */
+  function spectatable() {
+    if (!player) return [];
+    return agents.filter(a => a.alive && !a.isVehicle && a.team === player.team && a !== player);
+  }
+
+  /* Step to the next or previous teammate. */
+  function cycleSpectate(dir) {
+    const list = spectatable();
+    if (!list.length) return;
+    const i = list.indexOf(camTarget);
+    const next = list[((i < 0 ? 0 : i + dir) % list.length + list.length) % list.length];
+    if (next && next !== camTarget) {
+      camTarget = next;
+      camSnap = false;                 // pan across, as with any change of subject
+      updateWeaponHud();
+      SFX.click();
+    }
+  }
 
   function updateWeaponHud() {
     if (!player) return;
@@ -5597,11 +6050,17 @@ const Game = (() => {
     perfMark('sight', drawSightShadows);   // hide what the walls stand in front of
     drawSoundPings();
     drawMinimap();
+    drawCompass();          // which way to turn, as opposed to where things are
+    drawEdgeIndicators();   // squad and objectives that are off the screen
+    drawRangeHud();         // firing range only: target distances and the readout
+    drawStreakChips();      // scorestreaks you are holding
     drawKillFeed();
     drawKillBanner();
     drawOffscreenMarks();   // pings behind you still have to be findable
+    drawDeathRecap();       // what killed you, while you wait to come back
     drawScoreboard();       // hold Tab
     drawWheel();            // the ping / emote wheel, when one is open
+    drawCrosshair();        // over everything, because it is where you are looking
 
     // flashbang whiteout (screen space, over everything)
     if (flashOverlay > 0) { ctx.fillStyle = `rgba(255,255,255,${clamp(flashOverlay / 1.5, 0, 0.96)})`; ctx.fillRect(0, 0, W, H); }
@@ -6196,7 +6655,12 @@ const Game = (() => {
      Deliberately not pitch black — SIGHT_DARK leaves enough to read the
      terrain and your own minimap knowledge. This is "you cannot see who is
      back there", not "the screen is off". */
-  const SIGHT_R = 1500;              // how far you can see at all
+  const SIGHT_R = 1500;              // how far you can see at all in the clear
+  /* ...and how far you can see today. Rain, snow, dust and ash all close the
+     map down, which is the whole point of them: they push everyone into
+     shorter engagements without moving a single wall. */
+  const weatherNow = () => (terrain && terrain.weather) || { sight: 1, density: 0 };
+  const sightReach = () => SIGHT_R * weatherNow().sight;
   const SIGHT_DARK = 0.82;           // how completely a shadow hides things
 
   /* The two corners of a rect that form its silhouette from a point.
@@ -6231,7 +6695,7 @@ const Game = (() => {
        query is the view rather than the full sight radius — off-screen walls
        used to be projected and then clipped away, which is the same work for
        nothing. */
-    const reach = Math.min(SIGHT_R, Math.hypot(W / zoom, H / zoom) * 0.75);
+    const reach = Math.min(sightReach(), Math.hypot(W / zoom, H / zoom) * 0.75);
     const blockers = nearRects(g, px, py, reach);
     if (!blockers.length) return;
 
@@ -6707,7 +7171,9 @@ const Game = (() => {
       drawActionBar(p);
     }
     drawChannelRing(p);
+    drawWeather(Math.min(0.05, lastDt || 0.016));
     drawFeel();
+    drawSpectateUi();
     drawHudMessage();
   }
 
@@ -6948,6 +7414,119 @@ const Game = (() => {
   }
 
   /* Drawn in screen space, over everything. */
+  /* The spectator bar. Replaces a bare "you died" with the things you
+     actually want while waiting: who you are watching, what they are holding,
+     how they are doing, how to look at somebody else, and how long until you
+     are back in it. */
+  function drawSpectateUi() {
+    if (!player || player.alive) return;
+    const t = camTarget && camTarget !== player && camTarget.alive ? camTarget : null;
+    const list = spectatable();
+    const w = 460, h = t ? 108 : 62;   // taller than it was: the deploy line lives here now
+    const x = (W - w) / 2, y = H - h - 92;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,14,24,0.82)';
+    roundRect(x, y, w, h, 12); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    if (t) {
+      // who, in their own colour
+      ctx.fillStyle = teamInk(t.team);
+      ctx.beginPath(); ctx.arc(x + 26, y + 28, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Segoe UI';
+      ctx.fillText(nameOf(t, 'Teammate'), x + 46, y + 27);
+      ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '11px Segoe UI';
+      ctx.fillText('SPECTATING', x + 46 + ctx.measureText(nameOf(t, 'Teammate')).width + 74, y + 27);
+
+      // what they are holding, and how much of it is left
+      const sub = t.riding || t;
+      ctx.fillStyle = '#e9f0ff'; ctx.font = 'bold 13px Segoe UI';
+      ctx.fillText(sub.weapon ? sub.weapon.name : '—', x + 46, y + 52);
+      ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '13px Segoe UI';
+      const ammo = sub.reloading ? 'reloading' : (sub.ammo + '/' + (sub.weapon ? sub.weapon.mag : 0));
+      ctx.fillText(ammo, x + 46 + 190, y + 52);
+      // their health, as a bar rather than a number
+      const bw = 120, bx = x + w - bw - 22, by = y + 46;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, 8);
+      ctx.fillStyle = t.hp / t.maxHp > 0.35 ? '#4be08a' : '#ff4b5c';
+      ctx.fillRect(bx, by, bw * clamp(t.hp / t.maxHp, 0, 1), 8);
+      ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '10px Segoe UI';
+      ctx.fillText('HP', bx - 20, by + 4);
+      /* Whether you can come back on top of them, and why not if not. The
+         person you are already watching is the person you would deploy on, so
+         the offer belongs here rather than in a menu of its own. */
+      ctx.textAlign = 'center';
+      if (mode === 'domination' || mode === 'range') {
+        const ok = deployTargetOk(t);
+        ctx.font = 'bold 11px Segoe UI';
+        ctx.fillStyle = deployAnchor === t ? '#7ff2c1' : ok ? '#ffcf4a' : 'rgba(255,120,120,0.75)';
+        ctx.fillText(deployAnchor === t
+          ? '✔  DEPLOYING HERE — ' + Controls.labelFor('deploy') + ' to cancel'
+          : ok ? '[' + Controls.labelFor('deploy') + ']  deploy on them'
+            : 'under fire — cannot deploy here',
+          x + w / 2, y + h - 30);
+      }
+      // and how to look at somebody else
+      ctx.fillStyle = 'rgba(200,212,232,0.6)'; ctx.font = '11px Segoe UI';
+      ctx.fillText('[A] / [D] or click — change view'
+        + (list.length > 1 ? '   ·   ' + (list.indexOf(t) + 1) + ' of ' + list.length : ''),
+        x + w / 2, y + h - 13);
+    } else {
+      ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '14px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.fillText('No one left to watch', x + w / 2, y + 24);
+    }
+
+    /* No respawn clock in here: there is already one across the middle of the
+       screen in letters an inch high, and repeating it inside the bar put the
+       countdown on top of the weapon line. */
+    ctx.restore();
+  }
+
+  /* ---- the sky ----
+     Particles live in screen space and wrap, so the field is always full
+     however fast the camera moves, and the cost does not depend on the size of
+     the map. Seeded per map so it is the same weather for everyone. */
+  let wxParts = null, wxFor = null;
+  function drawWeather(dt) {
+    const w = weatherNow();
+    if (!w || !w.density) { wxParts = null; return; }
+    if (wxParts === null || wxFor !== w.id || wxParts.length !== w.density) {
+      wxFor = w.id;
+      wxParts = [];
+      for (let i = 0; i < w.density; i++) {
+        wxParts.push({
+          x: Math.random() * W, y: Math.random() * H,
+          v: 180 + Math.random() * 260,
+          s: 0.6 + Math.random() * 0.8,
+        });
+      }
+    }
+    const drift = w.drift || 0;
+    ctx.save();
+    // a wash first, so the whole scene sits under the same light
+    if (w.tint) { ctx.fillStyle = w.tint; ctx.fillRect(0, 0, W, H); }
+    ctx.strokeStyle = w.color; ctx.fillStyle = w.color; ctx.lineWidth = 1.2;
+    for (const p of wxParts) {
+      p.y += p.v * p.s * dt;
+      p.x += p.v * p.s * drift * dt;
+      if (p.y > H) { p.y = -8; p.x = Math.random() * W; }
+      if (p.x > W) p.x -= W; else if (p.x < 0) p.x += W;
+      if (w.streak) {
+        // rain and dust are streaks; snow and ash are grains
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x - w.streak * drift * p.s, p.y - w.streak * p.s);
+        ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 1.6 * p.s, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
   function drawFeel() {
     const cx = W / 2, cy = H / 2;
 
@@ -7092,6 +7671,314 @@ const Game = (() => {
       ctx.strokeText(b.sub, W / 2, cy + 28);
       ctx.fillStyle = '#ffcf4a';
       ctx.fillText(b.sub, W / 2, cy + 28);
+    }
+    ctx.restore();
+  }
+
+  /* ================= the compass =================
+     A minimap tells you where things are; a compass tells you which way to
+     turn, which is the question you actually have while you are moving. Every
+     Battlefield since Bad Company has carried one, and it earns its space by
+     answering that question without asking you to look away from the fight.
+
+     The strip shows the arc you are facing. North is up the screen, because
+     that is the direction the map is drawn in. */
+  const COMPASS_ARC = Math.PI * 0.62;      // how much of the world fits on the strip
+  const CARDINALS = [
+    { a: -Math.PI / 2, s: 'N' }, { a: -Math.PI / 4, s: 'NE' },
+    { a: 0, s: 'E' }, { a: Math.PI / 4, s: 'SE' },
+    { a: Math.PI / 2, s: 'S' }, { a: Math.PI * 0.75, s: 'SW' },
+    { a: Math.PI, s: 'W' }, { a: -Math.PI * 0.75, s: 'NW' },
+  ];
+
+  function drawCompass() {
+    const sub = hudSubject();
+    if (!sub || !running) return;
+    const w = Math.min(460, W * 0.44), h = 26;
+    const x = (W - w) / 2, y = 96;                 // under the score pills, over the world
+    const facing = sub.angle || 0;
+    /* Where on the strip a given world bearing lands, or null if it is behind
+       you. Returned as a fraction so the caller does not repeat the maths. */
+    const at = (ang) => {
+      const d = angDiff(ang, facing);
+      if (Math.abs(d) > COMPASS_ARC / 2) return null;
+      return x + w / 2 + (d / (COMPASS_ARC / 2)) * (w / 2);
+    };
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,14,24,0.55)';
+    roundRect(x, y, w, h, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(175,210,255,0.18)'; ctx.lineWidth = 1; ctx.stroke();
+    // clip so nothing spills off the ends of the strip
+    ctx.beginPath(); roundRect(x, y, w, h, 6); ctx.clip();
+
+    // degree ticks every 15°, taller every 45°
+    ctx.strokeStyle = 'rgba(200,216,244,0.30)'; ctx.lineWidth = 1;
+    for (let deg = 0; deg < 360; deg += 15) {
+      const px = at(((deg - 90) * Math.PI) / 180);
+      if (px === null) continue;
+      const tall = deg % 45 === 0;
+      ctx.beginPath();
+      ctx.moveTo(px, y + h); ctx.lineTo(px, y + h - (tall ? 10 : 5));
+      ctx.stroke();
+    }
+    // the letters
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const c of CARDINALS) {
+      const px = at(c.a);
+      if (px === null) continue;
+      ctx.font = c.s.length === 1 ? 'bold 13px Segoe UI' : 'bold 10px Segoe UI';
+      ctx.fillStyle = c.s === 'N' ? '#ff8a6a' : 'rgba(226,236,255,0.85)';
+      ctx.fillText(c.s, px, y + 10);
+    }
+
+    /* What is worth turning toward: the capture points and whatever your squad
+       has pinged. Both already exist; the compass just gives them a bearing. */
+    for (const o of objectives) {
+      const px = at(Math.atan2(o.y - sub.y, o.x - sub.x));
+      if (px === null) continue;
+      ctx.fillStyle = o.owner >= 0 ? teamInk(o.owner) : '#8ea0c9';
+      ctx.beginPath();
+      ctx.moveTo(px, y + h - 2); ctx.lineTo(px - 5, y + h - 9); ctx.lineTo(px + 5, y + h - 9);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#0b1020'; ctx.font = 'bold 8px Segoe UI';
+      ctx.fillText(o.name, px, y + h - 6);
+    }
+    for (const m of marks) {
+      const def = Comms.pingById[m.kind];
+      if (!def) continue;
+      const px = at(Math.atan2(m.y - sub.y, m.x - sub.x));
+      if (px === null) continue;
+      ctx.globalAlpha = clamp(m.life / 1.5, 0, 1);
+      ctx.fillStyle = def.color;
+      ctx.beginPath(); ctx.arc(px, y + h - 6, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    // the notch marking dead ahead, drawn outside the clip so it reads clearly
+    ctx.fillStyle = view.crosshairColor;
+    ctx.beginPath();
+    ctx.moveTo(W / 2, y - 1); ctx.lineTo(W / 2 - 5, y - 8); ctx.lineTo(W / 2 + 5, y - 8);
+    ctx.closePath(); ctx.fill();
+  }
+
+  /* ================= off-screen indicators =================
+     Halo's motion-tracker arrows and Apex's squad chevrons do the same job:
+     the things you most need to find are, by definition, the ones not on your
+     screen. Squadmates in trouble first, then the rest of the squad, then the
+     objectives — drawn as arrows pinned to the edge of the view, with a
+     distance so "that way" also means "how far". */
+  function drawEdgeIndicators() {
+    const sub = hudSubject();
+    if (!sub || !running) return;
+    const cx = W / 2, cy = H / 2;
+    const mx = W / 2 - 74, my = H / 2 - 74;          // how far out the arrows sit
+
+    const items = [];
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle || a === sub || a.team !== sub.team) continue;
+      items.push({
+        x: a.x, y: a.y, color: a.downed ? '#ff4b5c' : FRIEND_INK,
+        label: a.downed ? 'DOWN' : null, urgent: !!a.downed,
+      });
+    }
+    if (online) {
+      for (const a of online.remote || []) {
+        if (!a.alive || a.team !== sub.team) continue;
+        items.push({ x: a.x, y: a.y, color: FRIEND_INK, label: null, urgent: false });
+      }
+    }
+    for (const o of objectives) {
+      items.push({
+        x: o.x, y: o.y, color: o.owner >= 0 ? teamInk(o.owner) : '#8ea0c9',
+        label: o.name, urgent: false, ring: true,
+      });
+    }
+
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const it of items) {
+      if (onScreen(it.x, it.y, 60)) continue;
+      const ang = Math.atan2(it.y - sub.y, it.x - sub.x);
+      /* Pushed out to the edge of an ellipse rather than a circle, so the
+         arrows follow the shape of the screen instead of bunching into the
+         corners of a wide one. */
+      const px = cx + Math.cos(ang) * mx, py = cy + Math.sin(ang) * my;
+      const metres = Math.round(Math.hypot(it.x - sub.x, it.y - sub.y) / PX_PER_M);
+      const pulse = it.urgent ? 0.72 + 0.28 * Math.sin(performance.now() / 130) : 1;
+      ctx.globalAlpha = 0.9 * pulse;
+      ctx.save();
+      ctx.translate(px, py); ctx.rotate(ang);
+      ctx.fillStyle = it.color;
+      ctx.beginPath();
+      ctx.moveTo(11, 0); ctx.lineTo(-6, -7); ctx.lineTo(-3, 0); ctx.lineTo(-6, 7);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      ctx.font = 'bold 10px Segoe UI';
+      ctx.fillStyle = 'rgba(6,10,20,0.75)';
+      const txt = (it.label ? it.label + ' · ' : '') + metres + 'm';
+      const tw = ctx.measureText(txt).width + 10;
+      roundRect(px - tw / 2, py + 12, tw, 14, 4); ctx.fill();
+      ctx.fillStyle = it.color;
+      ctx.fillText(txt, px, py + 19);
+    }
+    ctx.restore();
+  }
+
+  /* ================= the reticle =================
+     A browser's crosshair cursor is one fixed shape in one fixed colour that
+     vanishes against half the terrain on this island. Drawing it ourselves
+     costs nothing and buys a size, a colour, and — the useful one — a gap that
+     opens with the gun's actual bloom, so the spread you are firing into is
+     something you can see rather than something you learn by missing. */
+  function drawCrosshair() {
+    if (view.crosshair === 'system') return;
+    if (!player || !player.alive || player.riding || wheel || showScores) return;
+    const x = input.mx, y = input.my;
+    const s = clamp(view.crosshairSize, 4, 24);
+    ctx.save();
+    ctx.strokeStyle = view.crosshairColor;
+    ctx.fillStyle = view.crosshairColor;
+    ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 3;
+    if (view.crosshair === 'dot') {
+      ctx.beginPath(); ctx.arc(x, y, Math.max(1.5, s / 5), 0, Math.PI * 2); ctx.fill();
+    } else {
+      // bloom is in world pixels; on screen it is scaled by the current zoom
+      const spread = view.crosshair === 'dynamic'
+        ? Math.min(46, (player.bloom || 0) * 40 * zoom)
+        : 0;
+      const gap = s * 0.45 + spread;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        ctx.beginPath();
+        ctx.moveTo(x + dx * gap, y + dy * gap);
+        ctx.lineTo(x + dx * (gap + s), y + dy * (gap + s));
+        ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(x, y, 1.3, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ================= banked scorestreaks ================= */
+  function drawStreakChips() {
+    if (!streakBank.length || !player || !running) return;
+    const key = Controls.labelFor('streak');
+    ctx.save();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    let y = hudBarY() - 44;
+    for (let i = streakBank.length - 1; i >= 0; i--) {
+      const def = STREAKS.find(s => s.id === streakBank[i]);
+      if (!def) continue;
+      const txt = `${def.icon}  ${def.name}`;
+      ctx.font = 'bold 13px Segoe UI';
+      const w = ctx.measureText(txt).width + 76;
+      const x = W - w - 22;
+      ctx.fillStyle = 'rgba(10,14,24,0.78)';
+      roundRect(x, y, w, 28, 8); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,207,74,0.55)'; ctx.lineWidth = 1.4; ctx.stroke();
+      ctx.fillStyle = '#ffcf4a';
+      ctx.fillText(txt, x + 12, y + 15);
+      ctx.font = '11px Segoe UI'; ctx.fillStyle = 'rgba(210,222,244,0.7)';
+      ctx.fillText('[' + key + ']', x + w - 46, y + 15);
+      y -= 34;
+    }
+    ctx.restore();
+  }
+
+  /* ================= the death recap ================= */
+  function drawDeathRecap() {
+    if (!deathRecap || !player || player.alive) return;
+    const r = deathRecap;
+    const w = 380, rows = Math.min(4, r.hits.length);
+    const h = 118 + rows * 20;
+    const x = 26, y = (H - h) / 2;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,14,24,0.88)';
+    roundRect(x, y, w, h, 12); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,75,92,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(200,212,232,0.65)'; ctx.font = 'bold 11px Segoe UI';
+    ctx.fillText('DEATH RECAP', x + 18, y + 22);
+
+    // who, in their colour
+    ctx.fillStyle = teamInk(r.team);
+    ctx.beginPath(); ctx.arc(x + 26, y + 50, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 17px Segoe UI';
+    ctx.fillText(r.killer, x + 42, y + 49);
+
+    // what with, and from how far
+    ctx.fillStyle = 'rgba(220,230,248,0.9)'; ctx.font = '13px Segoe UI';
+    ctx.fillText(`${r.weapon}  ·  ${r.dist} m${r.zone === 'head' ? '  ·  headshot' : ''}`, x + 42, y + 70);
+
+    /* What they had left. This is the line that changes how you play: dying to
+       someone on nine health means the trade was there and you lost it by a
+       shot, which is a different lesson from being outgunned. */
+    if (r.killerHp !== null) {
+      const frac = clamp(r.killerHp / (r.killerMaxHp || 100), 0, 1);
+      const bw = w - 60, bx = x + 42, by = y + 84;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, 7);
+      ctx.fillStyle = frac > 0.35 ? '#4be08a' : '#ffcf4a';
+      ctx.fillRect(bx, by, bw * frac, 7);
+      ctx.fillStyle = 'rgba(200,212,232,0.75)'; ctx.font = '11px Segoe UI';
+      ctx.fillText(`they finished on ${r.killerHp} HP`, bx, by + 18);
+    }
+
+    // and the shots that put you here
+    let ry = y + 118;
+    ctx.font = '12px Segoe UI';
+    for (let i = 0; i < rows; i++) {
+      const hitRow = r.hits[i];
+      ctx.fillStyle = 'rgba(200,212,232,0.55)';
+      ctx.fillText(hitRow.name, x + 18, ry);
+      ctx.fillStyle = hitRow.zone === 'head' ? '#ffcf4a' : '#ff8a8a';
+      ctx.textAlign = 'right';
+      ctx.fillText('-' + hitRow.dmg + (hitRow.zone === 'head' ? '  head' : ''), x + w - 18, ry);
+      ctx.textAlign = 'left';
+      ry += 20;
+    }
+    ctx.restore();
+  }
+
+  /* ================= the range readout ================= */
+  function drawRangeHud() {
+    if (mode !== 'range') return;
+    ctx.save();
+    // distance labels standing beside each target, in world space
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const d of agents) {
+      if (!d.isDummy || !onScreen(d.x, d.y, 90)) continue;
+      const sx = (d.x - camX) * zoom, sy = (d.y - camY) * zoom;
+      ctx.fillStyle = d.alive ? 'rgba(226,236,255,0.75)' : 'rgba(140,152,176,0.6)';
+      ctx.font = 'bold 12px Segoe UI';
+      ctx.fillText(d.rangeM + ' m', sx, sy - 44 * zoom);
+    }
+    // and what the last round actually did
+    if (rangeShot) {
+      const r = rangeShot;
+      const w = 300, h = r.ttk === null ? 66 : 88, x = (W - w) / 2, y = H - h - 130;
+      ctx.globalAlpha = clamp(r.life, 0, 1);
+      ctx.fillStyle = 'rgba(10,14,24,0.84)';
+      roundRect(x, y, w, h, 10); ctx.fill();
+      ctx.strokeStyle = 'rgba(127,242,193,0.45)'; ctx.lineWidth = 1.4; ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(200,212,232,0.6)'; ctx.font = 'bold 10px Segoe UI';
+      ctx.fillText('LAST SHOT', x + 16, y + 18);
+      ctx.fillStyle = r.zone === 'head' ? '#ffcf4a' : '#fff';
+      ctx.font = 'bold 24px Segoe UI';
+      ctx.fillText(String(r.dmg), x + 16, y + 42);
+      ctx.fillStyle = 'rgba(220,230,248,0.85)'; ctx.font = '12px Segoe UI';
+      ctx.fillText(`${r.zone}  ·  ${r.m} m  ·  ${r.shots} shot${r.shots > 1 ? 's' : ''}  ·  ${r.dealt} total`,
+        x + 74, y + 42);
+      if (r.ttk !== null) {
+        ctx.fillStyle = '#7ff2c1'; ctx.font = 'bold 14px Segoe UI';
+        ctx.fillText(`DOWN in ${r.ttk.toFixed(2)}s over ${r.shots} shots`, x + 16, y + 68);
+      }
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
   }
@@ -7304,6 +8191,7 @@ const Game = (() => {
     let dt = (now - lastTime) / 1000;
     lastTime = now;
     dt = Math.min(dt, 0.05);
+    lastDt = dt;               // render() needs it for the weather layer
     update(dt);
     render();
     requestAnimationFrame(loop);
@@ -8500,7 +9388,25 @@ const Game = (() => {
     },
     teamColor: (t) => teamInk(t),
     nanRescues: () => nanRescues,
+    weather: () => {
+      const w = weatherNow();
+      return { id: w.id || 'clear', name: w.name || 'Clear', density: w.density || 0,
+               sight: w.sight, reach: Math.round(sightReach()),
+               biome: terrain && terrain.biome ? terrain.biome.name : null };
+    },
     camPos: () => ({ x: camX, y: camY }),
+    spectateState() {
+      const t = camTarget && camTarget !== player ? camTarget : null;
+      const sub = hudSubject();
+      return {
+        watching: t ? (t.name || ('bot' + agents.indexOf(t))) : 'you',
+        options: (agents.filter(a => a.alive && !a.isVehicle && a.team === player.team && a !== player)).length,
+        theirWeapon: t ? (t.weapon && t.weapon.name) : null,
+        theirHp: t ? Math.round(t.hp) : null,
+        hudWeapon: sub && sub.weapon ? sub.weapon.name : null,
+        hudHp: sub ? Math.round(sub.hp) : null,
+      };
+    },
     downEveryoneNearby() {
       let n = 0;
       for (const a of agents) {

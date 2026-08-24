@@ -205,9 +205,9 @@ const Screens = (() => {
     document.getElementById('hud-credits').textContent = p.credits;
     document.getElementById('hud-gems').textContent = p.gems;
     // lifetime stats
-    document.getElementById('stat-wins').textContent = p.wins;
-    document.getElementById('stat-matches').textContent = p.matches;
-    document.getElementById('stat-kills').textContent = p.kills;
+    countUp(document.getElementById('stat-wins'), p.wins);
+    countUp(document.getElementById('stat-matches'), p.matches);
+    countUp(document.getElementById('stat-kills'), p.kills);
     // multiplayer status — tells you plainly whether you're online or on bots
     const chip = document.getElementById('net-chip');
     if (chip) {
@@ -218,6 +218,7 @@ const Screens = (() => {
         ? `Connecting to ${url} when you deploy. Falls back to bots if it's unreachable.`
         : 'No multiplayer server configured. See server/README.md, or add ?server=wss://your-host to the URL.';
     }
+    bindPointerGlow();
     renderCareer(p);
     renderKit(p);
     renderSetup();
@@ -268,6 +269,40 @@ const Screens = (() => {
     set('kit-weapon', w ? w.name : (lo.weapon || 'Class default'));
     const perk = lo.perk && typeof Perks !== 'undefined' && Perks.byId(lo.perk);
     set('kit-perk', perk ? perk.name : 'None');
+  }
+
+  /* ---- the pointer-lit edge ----
+     Panels carry a highlight that follows the cursor. Done with two custom
+     properties rather than a repaint, so it costs a style recalculation and
+     nothing else. */
+  function bindPointerGlow() {
+    const sel = '.panel, .mode-card';
+    document.querySelectorAll(sel).forEach((el) => {
+      if (el.dataset.glow) return;
+      el.dataset.glow = '1';
+      el.addEventListener('pointermove', (e) => {
+        const r = el.getBoundingClientRect();
+        el.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+        el.style.setProperty('--my', (e.clientY - r.top) + 'px');
+      });
+    });
+  }
+
+  /* ---- numbers that arrive ----
+     A career stat that counts up reads as a result; the same number written
+     straight in reads as a placeholder. Short, eased, and it never overshoots
+     the real figure. */
+  function countUp(el, to) {
+    const from = 0;
+    if (!el || to === from) { if (el) el.textContent = to; return; }
+    const t0 = performance.now(), ms = 620;
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / ms);
+      const eased = 1 - Math.pow(1 - k, 3);
+      el.textContent = Math.round(from + (to - from) * eased);
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
 
   /* ---- how big a match you want ----

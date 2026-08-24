@@ -38,10 +38,31 @@ const DB = (() => {
       attachments: {},           // weaponId -> [attachment name]
       ammo: {},                  // weaponId -> specialized ammo name
       perk: 'none',              // the one passive you deploy with (js/perks.js)
+      /* Three saved kits, the way every shooter since Modern Warfare has done
+         it: the gun and the passive, named, switchable from the loadout screen
+         without rebuilding the set piece by piece. `null` is an empty slot. */
+      presets: [null, null, null],
+      activePreset: -1,
+      /* The last few matches, newest first, and the numbers worth beating.
+         A results screen you can only read once tells you how you did; a
+         history tells you whether you are getting better. */
+      history: [],
+      best: { kills: 0, streak: 0, score: 0 },
       // missions (regenerated daily)
       missions: null,
       missionsDate: null,
     };
+  }
+
+  /* Fill in anything a profile saved by an older build has never heard of.
+     Without this, every field added after a player's first launch reads
+     undefined forever, because the defaults above only apply to brand new
+     accounts. Only missing keys are written — nothing is overwritten. */
+  function hydrate(p) {
+    if (!p) return p;
+    const base = freshProfile(p.username);
+    for (const k of Object.keys(base)) if (p[k] === undefined) p[k] = base[k];
+    return p;
   }
 
   return {
@@ -74,9 +95,9 @@ const DB = (() => {
     getProfile() {
       const s = this.getSession();
       if (!s) return null;
-      if (s === '__guest__') return read('bs_guest', freshProfile('Guest'));
+      if (s === '__guest__') return hydrate(read('bs_guest', freshProfile('Guest')));
       const users = this.getUsers();
-      return users[s] ? users[s].profile : null;
+      return users[s] ? hydrate(users[s].profile) : null;
     },
 
     saveProfile(profile) {
@@ -92,12 +113,28 @@ const DB = (() => {
       write('bs_guest', freshProfile('Guest'));
     },
 
-    /* ---- device settings ---- */
-    getSettings: () => read(KEY_SETTINGS, {
+    /* ---- device settings ----
+       Merged over the defaults rather than falling back to them wholesale:
+       `read` only returns the fallback when the key is absent entirely, so a
+       device that has ever saved settings would otherwise read `undefined` for
+       every option added afterwards. */
+    getSettings: () => Object.assign({
       volume: 70, sfx: true, sensitivity: 100, quality: 'medium', dmgNumbers: true,
       botLevel: 5,        // 1-10, see js/botai.js
       keybinds: {},       // action -> [code, code]; only what differs from stock (js/controls.js)
-    }),
+      /* Sight. `teamColors` recolours the world for players who cannot separate
+         the stock red and green: 'teams' is the normal per-squad palette,
+         'friendfoe' paints your side one colour and everyone else another, in
+         a pairing chosen for the common forms of colour blindness. */
+      teamColors: 'teams',        // teams | friendfoe
+      foeColor: '#ff9d2e',        // what the other side is painted in friendfoe
+      // The reticle. 'system' keeps the browser's crosshair cursor.
+      crosshair: 'dynamic',       // system | dot | cross | dynamic
+      crosshairSize: 10,
+      crosshairColor: '#7ff2c1',
+      // How much of the world is on screen; 100 is the tuned default.
+      fov: 100,
+    }, read(KEY_SETTINGS, {})),
     saveSettings: (s) => write(KEY_SETTINGS, s),
     freshProfile,
   };

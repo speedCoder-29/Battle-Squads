@@ -30,8 +30,11 @@ const Controls = (() => {
     { id: 'tool',       name: 'Tool',           group: 'Combat',   keys: ['KeyV'] },
     { id: 'token',      name: 'Call-in',        group: 'Combat',   keys: ['KeyB'] },
     { id: 'airstrike',  name: 'Airstrike',      group: 'Combat',   keys: ['KeyG'] },
+    { id: 'streak',     name: 'Use scorestreak',group: 'Combat',   keys: ['KeyH'] },
+    { id: 'resupply',   name: 'Give ammo',      group: 'Combat',   keys: ['KeyT'] },
 
     { id: 'interact',   name: 'Use / open',     group: 'World',    keys: ['KeyE'] },
+    { id: 'deploy',     name: 'Deploy on squad',group: 'World',    keys: ['Space'] },
     { id: 'ping',       name: 'Ping wheel',     group: 'World',    keys: ['KeyZ'] },
     { id: 'emote',      name: 'Emote wheel',    group: 'World',    keys: ['KeyX'] },
     { id: 'scoreboard', name: 'Scoreboard',     group: 'World',    keys: ['Tab'] },

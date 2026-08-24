@@ -858,22 +858,27 @@ input, select { font-family: inherit; }
 @keyframes bs-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes bs-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes bs-pop { from { transform: scale(0.94); opacity: 0; } to { transform: none; opacity: 1; } }
+/* `backwards`, not `both`. With `both` the animation keeps its final frame
+   applied forever — and an animated property beats a plain declaration, so
+   every hover transform underneath it silently did nothing. `backwards` holds
+   the opening frame before the animation starts and releases the property the
+   moment it ends, which is what an entrance should do. */
 .screen.is-active .panel,
 .screen.is-active .play-hub,
-.screen.is-active .rail { animation: bs-rise 0.34s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.screen.is-active .rail { animation: bs-rise 0.34s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
 .screen.is-active .rail { animation-delay: 0.06s; }
 .screen.is-active .play-hub { animation-delay: 0.03s; }
-.subpage { animation: bs-fade 0.25s ease both; }
-.mode-card { animation: bs-pop 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.subpage { animation: bs-fade 0.25s ease backwards; }
+.mode-card { animation: bs-pop 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
 .mode-card:nth-child(2) { animation-delay: 0.07s; }
-.intel li { animation: bs-rise 0.3s ease both; }
+.intel li { animation: bs-rise 0.3s ease backwards; }
 .intel li:nth-child(2) { animation-delay: 0.04s; }
 .intel li:nth-child(3) { animation-delay: 0.08s; }
 .intel li:nth-child(4) { animation-delay: 0.12s; }
 .intel li:nth-child(5) { animation-delay: 0.16s; }
 .intel li:nth-child(6) { animation-delay: 0.20s; }
 .intel li:nth-child(7) { animation-delay: 0.24s; }
-.lb tbody tr { animation: bs-fade 0.22s ease both; }
+.lb tbody tr { animation: bs-fade 0.22s ease backwards; }
 /* the deploy button breathes, so the eye lands on it */
 @keyframes bs-pulse { 0%, 100% { box-shadow: 0 0 24px rgba(255,106,43,0.35); } 50% { box-shadow: 0 0 38px rgba(255,106,43,0.6); } }
 .btn--play { animation: bs-pulse 2.6s ease-in-out infinite; }
@@ -926,3 +931,126 @@ input, select { font-family: inherit; }
 .score-pill { white-space: nowrap; }
 .hud-scores--many .score-pill { padding: 2px 7px; font-size: 12px; }
 .hud-scores--many .score-pill .dot { width: 7px; height: 7px; }
+
+
+/* ============================================================
+   POLISH — the screen reacting to you.
+
+   The home screen was static: things sat there, and clicking them changed a
+   value somewhere. Everything below is about making the interface answer
+   back — surfaces that light where the pointer is, cards that lift when you
+   reach for them, a deploy button that looks armed, numbers that arrive
+   rather than appear. None of it changes what anything does.
+
+   All of it is behind prefers-reduced-motion at the bottom of this file.
+   ============================================================ */
+
+/* ---------- panels: a lit edge that follows the pointer ---------- */
+.panel, .mode-card, .kitstrip, .setupbar, .season, .party {
+  position: relative;
+  --mx: 50%; --my: 0%;
+}
+.panel::after, .mode-card::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none; opacity: 0; transition: opacity 0.35s;
+  background: radial-gradient(420px circle at var(--mx) var(--my),
+              rgba(255,255,255,0.07), transparent 42%);
+}
+.panel:hover::after, .mode-card:hover::after { opacity: 1; }
+
+/* ---------- mode cards: lift, glow, and a live selected state ---------- */
+.mode-card {
+  transition: transform 0.22s cubic-bezier(0.2,0.7,0.3,1), border-color 0.22s, box-shadow 0.22s;
+  will-change: transform;
+}
+.mode-card:hover { transform: translateY(-6px) scale(1.012); box-shadow: 0 16px 40px rgba(0,0,0,0.4); }
+.mode-card:active { transform: translateY(-2px) scale(0.996); }
+.mode-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 14px 42px rgba(255,106,43,0.22);
+}
+/* a slow sheen across whichever mode is armed */
+.mode-card.is-selected::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(115deg, transparent 40%, rgba(255,255,255,0.09) 50%, transparent 60%);
+  background-size: 280% 100%;
+  animation: bs-sheen 4.5s ease-in-out infinite;
+}
+@keyframes bs-sheen { 0% { background-position: 180% 0; } 60%, 100% { background-position: -80% 0; } }
+.mode-card__icon { transition: transform 0.3s cubic-bezier(0.2,0.7,0.3,1); }
+.mode-card:hover .mode-card__icon { transform: scale(1.14) rotate(-6deg); }
+
+/* ---------- deploy: a button that looks armed ---------- */
+.btn--play { position: relative; overflow: hidden; transition: transform 0.16s, filter 0.16s; }
+.btn--play::after {
+  content: ''; position: absolute; top: 0; left: -60%; width: 45%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.42), transparent);
+  transform: skewX(-18deg); animation: bs-sweep 3.4s ease-in-out infinite;
+}
+@keyframes bs-sweep { 0% { left: -60%; } 55%, 100% { left: 130%; } }
+.btn--play:hover { transform: translateY(-2px) scale(1.025); filter: brightness(1.07); }
+.btn--play:active { transform: translateY(0) scale(0.985); }
+
+/* ---------- every other button ---------- */
+.btn, .stepper__btn, .icon-btn, .topnav__btn {
+  transition: transform 0.14s, background 0.18s, border-color 0.18s, color 0.18s;
+}
+.btn:hover:not(:disabled), .icon-btn:hover { transform: translateY(-1px); }
+.btn:active:not(:disabled), .stepper__btn:active:not(:disabled), .icon-btn:active { transform: translateY(1px) scale(0.97); }
+.stepper__btn:hover:not(:disabled) { transform: scale(1.14); }
+
+/* ---------- top nav: an underline that slides ---------- */
+.topnav__btn { position: relative; }
+.topnav__btn::after {
+  content: ''; position: absolute; left: 50%; right: 50%; bottom: -6px; height: 2px;
+  background: var(--accent); border-radius: 2px; transition: left 0.22s, right 0.22s;
+}
+.topnav__btn:hover::after { left: 18%; right: 18%; }
+.topnav__btn.is-active::after { left: 0; right: 0; }
+
+/* ---------- intel rows: reach toward the pointer ---------- */
+.intel li {
+  transition: transform 0.18s, background 0.18s, border-color 0.18s;
+  cursor: default;
+}
+.intel li:hover {
+  transform: translateX(4px);
+  background: rgba(255,255,255,0.05);
+  border-color: var(--line-strong);
+}
+.intel li:hover .intel__count { color: #fff; }
+.intel__count { transition: color 0.18s; }
+
+/* ---------- stats and career ---------- */
+.stat { transition: transform 0.18s, border-color 0.18s, background 0.18s; }
+.stat:hover { transform: translateY(-3px); border-color: var(--line-strong); background: rgba(0,0,0,0.32); }
+.stat b { font-variant-numeric: tabular-nums; }
+.career__avatar { transition: transform 0.35s cubic-bezier(0.2,0.7,0.3,1); }
+.career:hover .career__avatar { transform: rotate(-8deg) scale(1.07); }
+
+/* a moving highlight along any progress bar that still has somewhere to go */
+.bar { position: relative; overflow: hidden; }
+.bar__fill { position: relative; }
+.bar__fill::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+  animation: bs-shimmer 2.4s linear infinite;
+}
+@keyframes bs-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(220%); } }
+
+/* ---------- leaderboard ---------- */
+.lb tbody tr { transition: background 0.15s, transform 0.15s; }
+.lb tbody tr:hover { transform: translateX(3px); }
+.lb td { font-variant-numeric: tabular-nums; }
+
+/* ---------- the changelog reads as a feed ---------- */
+.changelog li { transition: border-color 0.2s, transform 0.2s; }
+.changelog li:hover { border-left-color: var(--gold); transform: translateX(3px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-card, .btn--play, .btn, .stepper__btn, .icon-btn, .intel li,
+  .stat, .career__avatar, .lb tbody tr, .changelog li { transition: none; }
+  .mode-card.is-selected::before, .btn--play::after, .bar__fill::after { animation: none; }
+  .mode-card:hover, .intel li:hover, .stat:hover, .lb tbody tr:hover,
+  .changelog li:hover { transform: none; }
+}

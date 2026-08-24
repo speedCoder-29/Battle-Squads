@@ -99,8 +99,46 @@ const Terrain = (() => {
       },
     },
   };
+  /* ---------- weather ----------
+     What the sky is doing, and what that costs you. Each climate has its own,
+     rolled from the seed alongside the biome so every client agrees without
+     anything crossing the wire.
+
+       density  particles on screen at once
+       sight    how far you can see, as a fraction of clear conditions
+       tint     a wash over the whole scene
+       drift    how far the fall leans, in px per px of descent
+
+     `sight` is the part that matters. Weather that only looks like weather is
+     scenery; weather that shortens the engagement range changes which gun you
+     want and how close you have to get, and it changes it for everybody on the
+     map at once. */
+  const WEATHER = {
+    clear:   { name: 'Clear',      density: 0,   sight: 1.00, tint: null,                    drift: 0 },
+    rain:    { name: 'Rain',       density: 260, sight: 0.72, tint: 'rgba(30,52,74,0.20)',   drift: 0.32, streak: 16, color: 'rgba(174,206,235,0.55)' },
+    snow:    { name: 'Snowfall',   density: 220, sight: 0.62, tint: 'rgba(190,205,220,0.16)', drift: 0.55, streak: 0,  color: 'rgba(255,255,255,0.80)' },
+    dust:    { name: 'Dust Haze',  density: 150, sight: 0.55, tint: 'rgba(150,120,70,0.22)',  drift: 0.85, streak: 5,  color: 'rgba(214,186,132,0.45)' },
+    ash:     { name: 'Ashfall',    density: 190, sight: 0.66, tint: 'rgba(40,36,34,0.26)',    drift: 0.30, streak: 0,  color: 'rgba(190,186,180,0.50)' },
+  };
+  /* Which climates get which weather, and how often. Clear is always on the
+     table — a map that is always raining is a map with one look. */
+  const BIOME_WEATHER = {
+    temperate: ['clear', 'clear', 'rain'],
+    arid:      ['clear', 'dust', 'dust'],
+    tundra:    ['snow', 'snow', 'clear'],
+    tropic:    ['rain', 'rain', 'clear'],
+    volcanic:  ['ash', 'ash', 'clear'],
+  };
+
   const BIOME_IDS = Object.keys(BIOMES);
   const biomeFor = (seed) => BIOMES[BIOME_IDS[Math.abs((seed || 0) >>> 0) % BIOME_IDS.length]];
+  /* A different shuffle of the seed than the biome uses, so the same island
+     does not always get the same sky. */
+  function weatherFor(seed, biomeId) {
+    const pool = BIOME_WEATHER[biomeId] || ['clear'];
+    const n = Math.abs(((seed || 0) >>> 0) * 2654435761 % 4294967296) >>> 0;
+    return Object.assign({ id: pool[n % pool.length] }, WEATHER[pool[n % pool.length]]);
+  }
 
   function generate(w, h, seed) {
     const rand = rng(seed || 1337);
@@ -111,6 +149,7 @@ const Terrain = (() => {
     const t = {
       w, h, seed: seed || 1337,
       biome, colors: Object.assign({}, COLORS, biome.colors),
+      weather: weatherFor(seed || 1337, BIOME_IDS[Math.abs((seed || 1337) >>> 0) % BIOME_IDS.length]),
       oceanInset: OCEAN_INSET,
       beachInset: BEACH_INSET,
       rivers: [], bridges: [], roads: [], patches: [],
@@ -284,7 +323,7 @@ const Terrain = (() => {
   }
 
   return {
-    COLORS, BIOMES, BIOME_IDS, biomeFor, OCEAN_INSET, BEACH_INSET,
+    COLORS, BIOMES, BIOME_IDS, biomeFor, WEATHER, BIOME_WEATHER, weatherFor, OCEAN_INSET, BEACH_INSET,
     generate, rng, distToPath,
     inOcean, inBeach, inRiver, onBridge, onRoad,
     surfaceAt, isBuildable, isSpawnable,
