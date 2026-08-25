@@ -87,13 +87,13 @@ const Comms = (() => {
       const ix = cx + Math.cos(mid) * (RADIUS - 22), iy = cy + Math.sin(mid) * (RADIUS - 22);
       drawIcon(ctx, it, ix, iy, on ? 17 : 14);
       ctx.fillStyle = on ? '#fff' : 'rgba(220,232,255,0.72)';
-      ctx.font = `${on ? 'bold ' : ''}12px Segoe UI`;
+      ctx.font = `${on ? 'bold ' : ''}12px Outfit, Segoe UI, sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(it.name, cx + Math.cos(mid) * (RADIUS + 12), cy + Math.sin(mid) * (RADIUS + 12));
     });
 
     ctx.fillStyle = 'rgba(220,232,255,0.85)';
-    ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(title, cx, cy);
     ctx.restore();
   }
@@ -217,7 +217,7 @@ const Comms = (() => {
     drawIcon(ctx, def, 0, lift, 8);
     if (m.by) {
       ctx.fillStyle = hexA(def.color, 0.9);
-      ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(m.by, 0, lift - 24);
     }
     ctx.restore();

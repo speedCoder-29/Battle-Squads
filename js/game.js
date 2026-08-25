@@ -91,6 +91,14 @@ const Game = (() => {
      is the only distinction that actually matters in a firefight. It is the
      same answer Valorant and Overwatch reached, and it helps players with
      ordinary colour vision read a twenty-team match too. */
+  /* The two faces the canvas draws in. Outfit carries anything you read as
+     words; Geist Mono carries anything you read as a quantity, because a
+     damage number that changes width as it counts is a number that flickers.
+     Both mirror the families the stylesheet loads, so the HUD and the menus
+     are set in the same type rather than merely similar type. */
+  const UI_FONT = 'Outfit, Segoe UI, sans-serif';
+  const NUM_FONT = 'Azeret Mono, ui-monospace, monospace';
+
   const NEUTRAL_INK = '#9aa3b5';
   const FRIEND_INK = '#39c0ff';
   const teamInk = (t) => {
@@ -157,6 +165,7 @@ const Game = (() => {
      wider view, smaller targets — the trade is the player's to make. */
   const baseZoom = () => BASE_ZOOM * (100 / clamp(view.fov, 70, 130));
   let zoom = BASE_ZOOM, zoomTarget = BASE_ZOOM;
+  let debugZoom = 0;      // non-zero pins the camera scale; see Game.debug.wideView
   let teamScores = [];
   let player = null;
   let matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0 };
@@ -1809,20 +1818,31 @@ const Game = (() => {
   }
 
   /* palms and driftwood along the sand ring */
+  /* Driftwood and palms along the shore. This used to walk four straight
+     bands inset from the map edges, which put every piece of it in a tidy line
+     — and now that the coast bends, would have put much of it in the sea.
+
+     It follows the solved water's edge instead: pick a point on the coastline,
+     step inland along the line to the middle of the island, and keep it only
+     if it actually landed on sand. Wide bays therefore get more of it than
+     narrow headlands do, which is where it would collect anyway. */
   function beachDecor() {
     const out = [];
-    const band = (Terrain.BEACH_INSET + Terrain.OCEAN_INSET) / 2;
+    const T = terrain;
+    if (!T || !T.coastLine) return out;
     const kinds = ['palm', 'rock', 'stump', 'crate'];
-    for (let i = 0; i < 90; i++) {
-      const k = kinds[Math.floor(Math.random() * kinds.length)];
-      const side = Math.floor(Math.random() * 4);
-      const along = rand(band, (side % 2 ? MAP_H : MAP_W) - band);
-      const off = rand(Terrain.OCEAN_INSET + 30, Terrain.BEACH_INSET - 30);
-      const p = side === 0 ? { x: along, y: off }
-        : side === 1 ? { x: MAP_W - off, y: along }
-        : side === 2 ? { x: along, y: MAP_H - off }
-        : { x: off, y: along };
-      out.push({ kind: k, x: p.x, y: p.y, rot: Math.random() * Math.PI * 2, scale: 0.8 + Math.random() * 0.4 });
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    for (let i = 0; i < 140 && out.length < 90; i++) {
+      const p0 = T.coastLine[Math.floor(Math.random() * T.coastLine.length)];
+      const dx = cx - p0.x, dy = cy - p0.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const inland = rand(45, 215);
+      const x = p0.x + (dx / len) * inland, y = p0.y + (dy / len) * inland;
+      if (!Terrain.inBeach(T, x, y)) continue;      // overshot into the grass, or short into the water
+      out.push({
+        kind: kinds[Math.floor(Math.random() * kinds.length)],
+        x, y, rot: Math.random() * Math.PI * 2, scale: 0.8 + Math.random() * 0.4,
+      });
     }
     return out;
   }
@@ -1831,6 +1851,9 @@ const Game = (() => {
   const inTrench = (a) => trenches.some(t => dist2(a.x, a.y, t.x, t.y) < t.r * t.r);
 
   /* Spread the squads evenly around the edge of the map, whatever the team count. */
+  /* How far inside the map edge the deployment ring sits. Has to clear the
+     deepest bay the coastline generator can carve — see terrain.js. */
+  const SPAWN_INSET = 940;
   function spawnPoint(team) {
     const cx = MAP_W / 2, cy = MAP_H / 2;
     const ang = -Math.PI / 2 + (team / Math.max(1, nTeams)) * Math.PI * 2;
@@ -1845,7 +1868,11 @@ const Game = (() => {
        needing a bigger island. */
     const tight = nTeams > 6;
     const band = tight && (team % 2) ? 0.62 : 1;
-    const rx = (MAP_W / 2 - 240) * band, ry = (MAP_H / 2 - 240) * band;
+    /* Pulled in from 240 to SPAWN_INSET. The island's edge is no longer a
+       straight line at a fixed distance — a bay can bite 600px inland — so a
+       ring that used to sit comfortably on grass would now drop half the
+       squads onto sand or into the sea. This clears the deepest bay. */
+    const rx = (MAP_W / 2 - SPAWN_INSET) * band, ry = (MAP_H / 2 - SPAWN_INSET) * band;
     const jitter = tight ? 40 : 70;
     return {
       x: cx + Math.cos(ang) * rx + rand(-jitter, jitter),
@@ -1938,12 +1965,6 @@ const Game = (() => {
     const y = MAP_H / 2;
     player.x = MAP_W * 0.10; player.y = y; player.angle = 0;
 
-    /* Clear the lane. The map generator does not know it is building a range,
-       so whatever it dropped between the firing point and 120 m gets levelled
-       — otherwise half the targets are behind a warehouse. */
-    const far = player.x + RANGE_MARKS[RANGE_MARKS.length - 1] * PX_PER_M;
-    for (let x = player.x - 160; x <= far + 220; x += 150) bulldoze(x, y, 190);
-
     agents.push(player);
     for (const m of RANGE_MARKS) {
       const d = makeAgent(1, false, playerWeapon);
@@ -1953,6 +1974,36 @@ const Game = (() => {
       d.name = m + ' m';
       agents.push(d);
     }
+  }
+
+  /* Level the lane.
+
+     The map generator does not know it is laying out a range, so whatever it
+     dropped between the firing point and 120 m has to go — and not only the
+     walls. Bulldozing the obstacles alone left the *building* standing: its
+     floor, its roof and its interior lighting, which meant the firing point
+     counted as indoors, the roof hid the targets and the sight system dimmed
+     everything past the doorway. So the placements themselves go too, along
+     with the furniture and crates that were dressing rooms which no longer
+     exist.
+
+     Run from start(), after every generator and spawner, so nothing can drop
+     a warehouse back onto the lane afterwards. */
+  function clearRangeLane() {
+    if (mode !== 'range' || !player) return;
+    const y = player.y;
+    const far = player.x + RANGE_MARKS[RANGE_MARKS.length - 1] * PX_PER_M;
+    for (let x = player.x - 200; x <= far + 260; x += 150) bulldoze(x, y, 200);
+    const lane = { x: player.x - 260, y: y - 260, w: (far - player.x) + 560, h: 520 };
+    const hits = (o) => padOverlap(lane, o, 0);
+    const inside = (o) => o.x > lane.x && o.x < lane.x + lane.w && o.y > lane.y && o.y < lane.y + lane.h;
+    buildings = buildings.filter(b => !hits(b));
+    basements = basements.filter(b => !hits(b));
+    upperFloors = upperFloors.filter(b => !hits(b));
+    decor = decor.filter(d => !inside(d));
+    crates = crates.filter(c => !inside(c));
+    trenches = trenches.filter(t => !inside(t));
+    invalidateRects();
   }
 
   /* Stand a knocked-down target back up, where it was, at full health. */
@@ -2022,10 +2073,14 @@ const Game = (() => {
       }
       deployAnchor = null;      // one respawn, one decision
     }
-    // re-roll the drop point a few times rather than landing inside a building
+    /* Re-roll rather than landing inside a building — or, now that the island
+       has a real coastline, in the sea. `isBuildable` is the inland test, so it
+       also keeps a deployment off the sand. */
+    const badSpot = (p) => pointInObstacle(p.x, p.y)
+      || (terrain && !Terrain.isBuildable(terrain, p.x, p.y, 40));
     if (!sp) {
       sp = spawnPoint(a.team);
-      for (let i = 0; i < 12 && pointInObstacle(sp.x, sp.y); i++) sp = spawnPoint(a.team);
+      for (let i = 0; i < 16 && badSpot(sp); i++) sp = spawnPoint(a.team);
     }
     if (a.isPlayer) { deathRecap = null; a.hurtLog = []; }
     a.x = sp.x; a.y = sp.y;
@@ -2081,6 +2136,7 @@ const Game = (() => {
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
     for (const o of objectives) clearObjectiveSite(o);
+    clearRangeLane();    // firing range only: nothing between you and the targets
     stampWorldIds();     // the wall list is final, so it can be named now
     buildNav();          // the world is final now, so the grid matches it
     // starting tactical kit = whatever your class deploys with
@@ -2130,8 +2186,9 @@ const Game = (() => {
       ['MOVE', move, `${k('dash')} dash`],
       ['FIGHT', 'L-click fire', 'R-click aim', `${k('reload')} reload`],
       ['ACTIONS', `${k('tool')} tool`, `${k('grenade')} grenade`, `${k('tactical')} tactical`,
-        `${k('heal')} heal`, `${k('token')} call-in`],
-      ['SQUAD', 'Middle-click ping', `${k('ping')} ping wheel`, `${k('emote')} emote`],
+        `${k('heal')} heal`, `${k('token')} call-in`, `${k('streak')} scorestreak`],
+      ['SQUAD', 'Middle-click ping', `${k('ping')} ping wheel`, `${k('emote')} emote`,
+        `${k('resupply')} give ammo`, `${k('deploy')} deploy on squad (when down)`],
       ['WORLD', `${k('interact')} door/crate/vehicle`, `${k('pause')} pause`],
     ];
     hint.innerHTML = groups.map(([head, ...rest]) =>
@@ -2422,7 +2479,7 @@ const Game = (() => {
       ctx.moveTo(11, 0); ctx.lineTo(-7, -7); ctx.lineTo(-3, 0); ctx.lineTo(-7, 7);
       ctx.closePath(); ctx.fill();
       ctx.rotate(-a); ctx.translate(-px, -py);
-      ctx.font = 'bold 10px Segoe UI'; ctx.textAlign = 'center';
+      ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(0,0,0,0.65)';
       ctx.fillText(`${tiles}`, px + Math.cos(a) * 17 + 1, py + Math.sin(a) * 17 + 1);
       ctx.fillStyle = '#ffe9a8';
@@ -3618,9 +3675,20 @@ const Game = (() => {
     }
     pendingRoomVehicles = [];
     for (let i = 0; i < n; i++) {
-      let x, y, tries = 0;
-      do { x = rand(200, MAP_W - 200); y = rand(200, MAP_H - 200); tries++; }
-      while (tries < 40 && (pointInObstacle(x, y) || !Terrain.isSpawnable(terrain, x, y)));
+      /* Search for dry, unobstructed ground — and if forty tries cannot find
+         any, drop this crate rather than placing it anyway.
+
+         The loop always ran to a `crates.push` regardless of whether the last
+         candidate passed, so a rejected position was used as if it had been
+         accepted. On a rectangular island the odds of forty consecutive misses
+         were slim enough that it never showed; against a coastline with bays
+         cut into it, the occasional crate ended up floating out to sea. */
+      let x = 0, y = 0, placed = false;
+      for (let tries = 0; tries < 40; tries++) {
+        x = rand(420, MAP_W - 420); y = rand(420, MAP_H - 420);
+        if (!pointInObstacle(x, y) && Terrain.isSpawnable(terrain, x, y)) { placed = true; break; }
+      }
+      if (!placed) continue;
       crates.push({ x, y, tier: Items.rollCrateTier(), opened: false });
     }
   }
@@ -4697,7 +4765,9 @@ const Game = (() => {
     // driving pulls the view out a little: you're bigger, faster, and the
     // things that can hurt you are further away
     const bz = baseZoom();
-    if (player.alive && player.riding) zoomTarget = bz * 0.85;
+    // a debug override, for looking at the whole island at once
+    if (debugZoom) { zoomTarget = debugZoom; zoom = debugZoom; }
+    else if (player.alive && player.riding) zoomTarget = bz * 0.85;
     else if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = bz / player.tool.zoom;
     else if (player.alive && input.ads) zoomTarget = bz * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
     else zoomTarget = bz;
@@ -5267,7 +5337,11 @@ const Game = (() => {
     spawnFx(a.x, a.y, teamInk(a.team), 14);
     if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
     pushKill(owner, a, zone);
-    if (a.isPlayer) { matchStats.deaths++; buildRecap(a, owner, zone); }
+    if (a.isPlayer) {
+      matchStats.deaths++;
+      buildRecap(a, owner, zone);
+      streakBank = [];      // a run ends when you do — that is what makes it a run
+    }
     if (a.isDummy && rangeShot) {
       // the number the range exists to tell you: how long that target took
       rangeShot.ttk = a.firstHitAt ? (performance.now() - a.firstHitAt) / 1000 : 0;
@@ -5775,7 +5849,11 @@ const Game = (() => {
     /* Past a handful of squads the pills need to be smaller as well as
        wrapped, or twenty of them push the timer off the top of the screen. */
     if (wrap) wrap.classList.toggle('hud-scores--many', nTeams > 6);
-    if (mode === 'domination') {
+    if (mode === 'range') {
+      // nobody is winning a firing range; the pills would be reporting on
+      // targets, which is not a score
+      wrap.innerHTML = '<div class="score-pill">🎯 Practice</div>';
+    } else if (mode === 'domination') {
       wrap.innerHTML = teamScores.map((s, t) =>
         `<div class="score-pill ${t === 0 ? 'is-you' : ''}"><span class="dot" style="background:${TEAM_COLORS[t]}"></span>${Math.round(s)}</div>`
       ).join('');
@@ -5816,7 +5894,7 @@ const Game = (() => {
          holder's colour with a claimed base ring; a contested one shows the
          attacker's colour bleeding into it. Standing on a letter told you
          where you were, not whose it was. */
-      ctx.fillStyle = col; ctx.font = 'bold 40px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = col; ctx.font = 'bold 40px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.globalAlpha = 0.5; ctx.fillText(obj.name, obj.x, obj.y); ctx.globalAlpha = 1;
 
       if (obj.owner >= 0) {
@@ -5844,7 +5922,7 @@ const Game = (() => {
         ctx.closePath();
         ctx.fillStyle = hexA(col, 0.95); ctx.fill();
         ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.stroke();
-        ctx.fillStyle = '#12161f'; ctx.font = 'bold 15px Segoe UI';
+        ctx.fillStyle = '#12161f'; ctx.font = 'bold 15px Outfit, Segoe UI, sans-serif';
         ctx.fillText(obj.name, obj.x + 22, fy - 13);
       } else if (obj.progress > 0 && obj.capTeam >= 0) {
         // being taken: the attacker's colour creeping in from the edge
@@ -5958,7 +6036,7 @@ const Game = (() => {
           ctx.fillStyle = '#4be08a';
           ctx.fillRect(bx, by, bw * clamp(a.reviveT / REVIVE_SECS, 0, 1), 5);
         }
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Segoe UI'; ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
         ctx.fillText(a.team === (player && player.team) ? 'DOWN' : 'DOWNED', a.x, by - 6);
         ctx.globalAlpha = 1;
         /* `continue`, not `return`. This loop is written inline inside
@@ -6003,7 +6081,7 @@ const Game = (() => {
       ctx.strokeStyle = `rgba(255,120,60,${clamp(a.markedUntil / 3, 0.2, 0.9)})`;
       ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = `rgba(255,150,90,${clamp(a.markedUntil / 3, 0.2, 0.9)})`;
-      ctx.font = 'bold 13px Segoe UI'; ctx.textAlign = 'center';
+      ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
       ctx.fillText('▼', a.x, a.y - a.r - 24);
     }
 
@@ -6017,7 +6095,7 @@ const Game = (() => {
       ctx.globalAlpha = clamp(d.life * 1.6, 0, 1);
       // head = gold and big, limb = dim and small, body = plain
       ctx.fillStyle = d.zone === 'head' ? '#ffcf4a' : d.zone === 'limb' ? '#9aa7bd' : '#fff';
-      ctx.font = `bold ${d.zone === 'head' ? 22 : d.zone === 'limb' ? 13 : 16}px Segoe UI`;
+      ctx.font = `bold ${d.zone === 'head' ? 22 : d.zone === 'limb' ? 13 : 16}px ` + NUM_FONT;
       ctx.textAlign = 'center';
       ctx.fillText(d.zone === 'head' ? d.val + '!' : d.val, d.x, d.y);
     }
@@ -6032,7 +6110,7 @@ const Game = (() => {
     // dead overlay hint
     if (!player.alive && running) {
       ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 34px Segoe UI';
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 34px Outfit, Segoe UI, sans-serif';
       // online the host decides when you're back, so show its count, not ours
       const left = online ? online.respawn : Math.ceil(player.respawnTimer || 0);
       ctx.fillText(
@@ -6076,33 +6154,79 @@ const Game = (() => {
        overrides the colours it changes and inherits the rest. */
     const C = (terrain && terrain.colors) || Terrain.COLORS;
 
-    // ocean fills everything; the bands paint over it
+    // ocean fills everything; the land is laid over it
     ctx.fillStyle = C.oceanDeep;
     ctx.fillRect(-400, -400, MAP_W + 800, MAP_H + 800);
     ctx.fillStyle = C.ocean;
     ctx.fillRect(-200, -200, MAP_W + 400, MAP_H + 400);
 
-    // beach
-    const bi = T.oceanInset;
-    ctx.fillStyle = C.beach;
-    ctx.fillRect(bi, bi, MAP_W - bi * 2, MAP_H - bi * 2);
-    ctx.strokeStyle = C.beachEdge; ctx.lineWidth = 3;
-    ctx.strokeRect(bi, bi, MAP_W - bi * 2, MAP_H - bi * 2);
+    /* The island itself, filled from the outlines Terrain solved out of the
+       same functions the game queries — so the sand you can see is exactly the
+       sand you can stand on. These used to be three nested fillRects. */
+    const poly = (pts) => {
+      ctx.beginPath();
+      pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.closePath();
+    };
+    const coast = T.coastLine, shore = T.shoreLine;
 
-    // grass interior
-    const gi = T.beachInset;
-    ctx.fillStyle = C.grass;
-    ctx.fillRect(gi, gi, MAP_W - gi * 2, MAP_H - gi * 2);
+    /* Shallows. Water shelves as it approaches land, so a band of lighter sea
+       rings the island — the cue that tells you where the ground is before you
+       can see the sand, and the thing that stops the coast being a hard line
+       between two flat blues. */
+    ctx.save();
+    poly(coast);
+    ctx.strokeStyle = hexA(C.riverEdge, 0.30); ctx.lineWidth = 190; ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.strokeStyle = hexA(C.riverEdge, 0.34); ctx.lineWidth = 86;
+    ctx.stroke();
+    ctx.restore();
+
+    // the sand
+    poly(coast);
+    ctx.fillStyle = C.beach; ctx.fill();
+
+    /* The tideline: wet sand darkening toward the water, and a broken line of
+       foam on top of it. A dry beach that meets the sea at a clean edge is the
+       giveaway that the coast is a shape rather than a shore. */
+    ctx.save();
+    poly(coast); ctx.clip();
+    poly(coast);
+    ctx.strokeStyle = hexA(C.beachEdge, 0.85); ctx.lineWidth = 54; ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.34)'; ctx.lineWidth = 7;
+    ctx.setLineDash([70, 46, 26, 38]);        // surf breaks, it does not ring
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // the grass
+    poly(shore);
+    ctx.fillStyle = C.grass; ctx.fill();
 
     // tonal patches so the field isn't a flat slab
     ctx.save();
-    ctx.beginPath(); ctx.rect(gi, gi, MAP_W - gi * 2, MAP_H - gi * 2); ctx.clip();
+    poly(shore); ctx.clip();
     for (const p of T.patches) {
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
       ctx.fillStyle = p.light ? C.grassLight : C.grassAlt;
       ctx.globalAlpha = 0.35; ctx.fill();
     }
     ctx.globalAlpha = 1;
+    /* ...and a texture over the top of them. Tonal blobs vary the colour but
+       leave the surface perfectly smooth, which is what makes open ground read
+       as painted card. The tile is generated once and repeated, so this costs
+       one fill however much of the map is on screen. */
+    const gt = grassTexture(C);
+    if (gt) {
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = gt;
+      poly(shore); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    // the grass meets the sand with a scrubby edge, not a cut line
+    poly(shore);
+    ctx.strokeStyle = hexA(C.grassAlt, 0.75); ctx.lineWidth = 9;
+    ctx.setLineDash([34, 22]); ctx.stroke(); ctx.setLineDash([]);
     ctx.restore();
 
     // river, drawn as a thick stroked polyline with a lighter bank
@@ -6150,6 +6274,48 @@ const Game = (() => {
     ctx.strokeRect(0, 0, MAP_W, MAP_H);
   }
 
+  /* ---- ground texture ----
+     One 128px tile of speckle in the biome's own greens, built once and
+     repeated across the land. Doing it as a pattern rather than as thousands
+     of live paths means the cost does not scale with how much ground is on
+     screen — it is a single fill either way — and the speckle stays put in
+     world space as the camera moves, which is what makes it read as ground
+     rather than as film grain over the lens. */
+  let grassTile = null, grassTileFor = null;
+  function grassTexture(C) {
+    if (grassTile && grassTileFor === C.grass) return grassTile;
+    const S = 128;
+    const off = document.createElement('canvas');
+    off.width = off.height = S;
+    const g = off.getContext('2d');
+    // deterministic, so the tile is the same on every client and every reload
+    let seed = 0x9e3779b9;
+    const rnd = () => {
+      seed ^= seed << 13; seed >>>= 0;
+      seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
+      return seed / 4294967296;
+    };
+    for (let i = 0; i < 340; i++) {
+      const x = rnd() * S, y = rnd() * S, r = 0.7 + rnd() * 2.3;
+      const light = rnd() < 0.45;
+      g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+      g.fillStyle = light ? hexA(C.grassLight, 0.30) : hexA(C.grassAlt, 0.34);
+      g.fill();
+    }
+    // a few longer strokes, so it reads as blades rather than dots
+    for (let i = 0; i < 70; i++) {
+      const x = rnd() * S, y = rnd() * S, a = rnd() * Math.PI;
+      const len = 3 + rnd() * 7;
+      g.strokeStyle = hexA(C.grassAlt, 0.26); g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+      g.stroke();
+    }
+    grassTile = ctx.createPattern(off, 'repeat');
+    grassTileFor = C.grass;
+    return grassTile;
+  }
+
   /* ---------------- terrain & structures ---------------- */
   function drawTerrain() {
     // grass (ghillie cover)
@@ -6192,9 +6358,16 @@ const Game = (() => {
      way and the same distance per unit of height. Before this the buildings
      — the biggest things on the map — cast nothing at all, and round props
      got rectangular shadows while identical props in `decor` got round ones. */
+  /* The sun is up and to the left, so everything is thrown down and right.
+     Sprites.LX/LY put the highlights on the opposite side from the same
+     direction, so a prop and the shadow it casts now agree about where the
+     light is. */
   const SUN = { dx: 0.55, dy: 0.38 };          // direction shadows are thrown
-  const SHADOW = 'rgba(0,0,0,0.34)';
-  const SHADOW_SOFT = 'rgba(0,0,0,0.22)';
+  /* Tinted, not black. Shade is light being blocked, not colour being removed:
+     a pure-black ellipse under a tree on a green field reads as a hole in the
+     ground, while a cool dark reads as the shadow it is meant to be. */
+  const SHADOW = 'rgba(22, 30, 48, 0.34)';
+  const SHADOW_SOFT = 'rgba(22, 30, 48, 0.20)';
   const SHADOW_FLATTEN = 0.58;                 // a low sun squashes a ground shadow
   const LIFT_WALL = 26;                        // px of throw per metre of thickness
   const LIFT_LOW = 6;                          // low cover barely lifts off the floor
@@ -6386,13 +6559,31 @@ const Game = (() => {
          thing you can see — so a hospital reads white, a church slate blue and
          a gas station red long before you are close enough to read a sign. */
       const st = b.style || Structures.styleOf(b.name);
+      /* The roof was a single linear ramp corner to corner — an even 45-degree
+         fade, which is the most machine-looking gradient there is and reads as
+         a flat coloured lid whatever colours you feed it.
+
+         Light does not work that way. It pools where it lands and falls away
+         with distance, so the base ramp still runs with the sun (top-left to
+         bottom-right, the same direction everything else on the map is lit
+         from) and a soft bloom sits over the corner the sun actually strikes.
+         Two fills instead of one, and the surface stops looking printed. */
       const g = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
       g.addColorStop(0, st.roof[0]);
       g.addColorStop(1, st.roof[1]);
       ctx.fillStyle = g;
       ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
-      // ridge lines and a border so it reads as a roof, not a lid
-      ctx.strokeStyle = 'rgba(0,0,0,0.26)'; ctx.lineWidth = 2;
+      const sunPool = ctx.createRadialGradient(
+        b.x + b.w * 0.16, b.y + b.h * 0.14, 0,
+        b.x + b.w * 0.16, b.y + b.h * 0.14, Math.max(b.w, b.h) * 0.72);
+      sunPool.addColorStop(0, 'rgba(255, 244, 224, 0.16)');
+      sunPool.addColorStop(1, 'rgba(255, 244, 224, 0)');
+      ctx.fillStyle = sunPool;
+      ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+      /* Every line on this roof used to be pure black at various opacities.
+         Black seams on a terracotta roof read as cracks; a dark tinted with
+         the roof's own family reads as a joint in the material. */
+      ctx.strokeStyle = 'rgba(26, 22, 30, 0.24)'; ctx.lineWidth = 2;
       ctx.beginPath();
       const ridge = st.pattern === 'metal' ? 24 : st.pattern === 'tile' ? 34 : 46;
       for (let y = b.y; y < b.y + b.h; y += ridge) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
@@ -6406,15 +6597,32 @@ const Game = (() => {
          frame and every client draws the same one. */
       const rr = ((Math.abs(b.x * 7 + b.y * 13) | 0) % 997) / 997;
       const wide = b.w >= b.h;
-      // ridge down the long axis
-      ctx.strokeStyle = 'rgba(0,0,0,0.32)'; ctx.lineWidth = 3;
+      // ridge down the long axis, with the sunlit side of it picked out
+      ctx.strokeStyle = 'rgba(26, 22, 30, 0.30)'; ctx.lineWidth = 3;
       ctx.beginPath();
       if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2); }
       else { ctx.moveTo(b.x + b.w / 2, b.y - 8); ctx.lineTo(b.x + b.w / 2, b.y + b.h + 8); }
       ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 246, 228, 0.16)'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2 - 2.5); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2 - 2.5); }
+      else { ctx.moveTo(b.x + b.w / 2 - 2.5, b.y - 8); ctx.lineTo(b.x + b.w / 2 - 2.5, b.y + b.h + 8); }
+      ctx.stroke();
       // gutter shadow just inside the eaves
-      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 6;
+      ctx.strokeStyle = 'rgba(26, 22, 30, 0.16)'; ctx.lineWidth = 6;
       ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+      /* The eaves. Two edges face the sun and two face away, and drawing that
+         is what turns a coloured rectangle into something with a thickness —
+         the same trick the sprites use, at building scale. */
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255, 246, 228, 0.22)';
+      ctx.beginPath();
+      ctx.moveTo(b.x - 6, b.y + b.h + 6); ctx.lineTo(b.x - 6, b.y - 6); ctx.lineTo(b.x + b.w + 6, b.y - 6);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(18, 15, 22, 0.30)';
+      ctx.beginPath();
+      ctx.moveTo(b.x + b.w + 6, b.y - 6); ctx.lineTo(b.x + b.w + 6, b.y + b.h + 6); ctx.lineTo(b.x - 6, b.y + b.h + 6);
+      ctx.stroke();
       // roof furniture: vents along the ridge, and a skylight on a big span
       const vents = Math.max(1, Math.min(5, Math.floor((wide ? b.w : b.h) / 240)));
       for (let i = 0; i < vents; i++) {
@@ -6423,7 +6631,10 @@ const Game = (() => {
         const vy = wide ? b.y + b.h / 2 + (i % 2 ? 20 : -20) : b.y + b.h * t;
         ctx.fillStyle = hexA(st.trim, 0.55);
         roundRect(vx - 9, vy - 7, 18, 14, 3); ctx.fill();
-        ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.strokeStyle = 'rgba(18, 15, 22, 0.34)'; ctx.lineWidth = 1.5; ctx.stroke();
+        // each vent throws its own little shadow, down and right like everything else
+        ctx.fillStyle = 'rgba(18, 15, 22, 0.20)';
+        roundRect(vx - 6, vy + 7, 16, 4, 2); ctx.fill();
       }
       if (b.w > 340 && b.h > 260) {
         const sw = Math.min(120, b.w * 0.22), sh = Math.min(90, b.h * 0.2);
@@ -6481,7 +6692,7 @@ const Game = (() => {
       ctx.closePath(); ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
       // and the letter, so it reads at a glance
-      ctx.fillStyle = '#12161f'; ctx.font = 'bold 15px Segoe UI';
+      ctx.fillStyle = '#12161f'; ctx.font = 'bold 15px Outfit, Segoe UI, sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(o.label, cx + 15, cy - 36);
     }
@@ -6687,6 +6898,8 @@ const Game = (() => {
   }
 
   function drawSightShadows() {
+    if (debugZoom) return;    // the whole-island debug view is not a sightline
+
     if (!player || !player.alive) return;
     const px = player.x, py = player.y;
     const g = sightIndex();
@@ -6830,7 +7043,7 @@ const Game = (() => {
       ctx.beginPath(); ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
       ctx.fillStyle = k.stroke; ctx.fill();
       if (player && player.alive && near2({ x: c.x, y: c.y }, player, 70)) {
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
         ctx.fillText(s.open ? '[E] Close' : '[E] Open', c.x, c.y - 18);
       }
       return;
@@ -6930,13 +7143,13 @@ const Game = (() => {
       ctx.beginPath(); ctx.arc(d.x, d.y + lift, 14, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(20,28,48,0.8)'; ctx.fill();
       ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(120,200,255,0.6)'; ctx.stroke();
-      ctx.font = '17px Segoe UI'; ctx.fillText(it.icon, d.x, d.y + lift + 1);
+      ctx.font = '17px Outfit, Segoe UI, sans-serif'; ctx.fillText(it.icon, d.x, d.y + lift + 1);
       if (d.n > 1) {
-        ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#fff';
         ctx.fillText('×' + d.n, d.x + 13, d.y + lift - 10);
       }
       if (player && player.alive && near2(d, player, 78)) {
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI';
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
         ctx.fillText(`[E] ${it.name}`, d.x, d.y - 26);
       }
       ctx.globalAlpha = 1;
@@ -7015,7 +7228,7 @@ const Game = (() => {
           ctx.beginPath(); ctx.arc(c.x + m.r * 0.55, c.y - m.r * 0.55, 3.5, 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(255,224,150,0.9)'; ctx.fill();
           if (near2(player, c, 95)) {
-            ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI';
+            ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
             ctx.fillText('[E] Search', c.x, c.y - m.r - 14);
           }
@@ -7028,11 +7241,11 @@ const Game = (() => {
       ctx.fillStyle = c.opened ? '#37456b' : hexA(st.color, 0.95); ctx.fill();
       ctx.lineWidth = c.tier === 'chest' ? 3 : 2; ctx.strokeStyle = st.color; ctx.stroke();
       if (!c.opened) {
-        ctx.font = (c.tier === 'chest' ? '23px' : '18px') + ' Segoe UI';
+        ctx.font = (c.tier === 'chest' ? '23px' : '18px') + ' Outfit, Segoe UI, sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(st.icon, c.x, c.y + 1);
         // interact prompt when player is close
-        if (near2(player, c, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI'; ctx.fillText('[E] ' + st.name, c.x, c.y - half - 11); }
+        if (near2(player, c, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillText('[E] ' + st.name, c.x, c.y - half - 11); }
       }
       ctx.globalAlpha = 1;
     }
@@ -7058,13 +7271,13 @@ const Game = (() => {
         ctx.fillStyle = dp.arm > 0 ? '#7a8699' : '#ff4b5c'; ctx.fill();
         if (dp.arm <= 0) { ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.trigger, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,75,92,0.15)'; ctx.lineWidth = 1; ctx.stroke(); }
       } else if (dp.type === 'ammo') {
-        ctx.font = '22px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('📦', dp.x, dp.y);
-        if (near2(player, dp, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI'; ctx.fillText('[E] Ammo', dp.x, dp.y - 22); }
+        ctx.font = '22px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('📦', dp.x, dp.y);
+        if (near2(player, dp, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillText('[E] Ammo', dp.x, dp.y - 22); }
       } else if (dp.type === 'flag') {
         ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.radius, 0, Math.PI * 2);
         ctx.fillStyle = hexA(TEAM_COLORS[dp.team], 0.06); ctx.fill();
         ctx.strokeStyle = hexA(TEAM_COLORS[dp.team], 0.4); ctx.lineWidth = 2; ctx.stroke();
-        ctx.font = '26px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🚩', dp.x, dp.y);
+        ctx.font = '26px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🚩', dp.x, dp.y);
       }
     }
   }
@@ -7131,7 +7344,7 @@ const Game = (() => {
     ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke();
     ctx.restore();
     // icon + hp
-    ctx.font = '16px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '16px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(def.icon, a.x, a.y);
     const hpw = 46;
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 14, hpw, 5);
@@ -7142,7 +7355,7 @@ const Game = (() => {
       ctx.strokeStyle = 'rgba(53,224,255,0.65)'; ctx.lineWidth = 2; ctx.stroke();
     } else if (a.team === player.team && !a.driver && near2(player, a, 110) && !player.riding) {
       // close enough to climb in
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Segoe UI';
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
       ctx.fillText('[E] ' + def.name, a.x, a.y - a.r - 26);
     }
   }
@@ -7195,7 +7408,7 @@ const Game = (() => {
       const pct = Math.round((mult[k] !== undefined ? mult[k] : 1) * 100);
       return { label: names[k], pct };
     });
-    ctx.font = 'bold 11px Segoe UI';
+    ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
     let px = x;
     for (const p of parts) {
       const txt = `${p.label} ${p.pct}%`;
@@ -7211,21 +7424,21 @@ const Game = (() => {
     const frac = clamp(v.hp / v.maxHp, 0, 1);
     ctx.fillStyle = frac > 0.5 ? '#4be08a' : frac > 0.25 ? '#ffcf4a' : '#ff4b5c';
     roundRect(x, y - 5, bw * frac, 10, 5); ctx.fill();
-    ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = '#cfd8ee';
+    ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#cfd8ee';
     // speed in tiles/s, the unit weapon ranges and blast radii are quoted in
     ctx.fillText(`HULL ${Math.round(v.hp)}/${v.maxHp}  ·  ${(v.vspeed / TILE).toFixed(1)} tiles/s`, x + bw + 10, y);
     y -= HUD.rowH;
 
     // name, gun and the way out
-    ctx.font = 'bold 13px Segoe UI'; ctx.fillStyle = teamInk(v.team);
+    ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = teamInk(v.team);
     const title = `${def.icon} ${def.name}`;
     ctx.fillText(title, x, y);
     const tw = ctx.measureText(title).width;
-    ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#cfd8ee';
+    ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#cfd8ee';
     ctx.fillText(`${v.weapon.icon} ${v.weapon.name}  ·  ${v.ammo}/${v.weapon.mag}   [E] get out`, x + tw + 12, y);
     y -= HUD.rowH;
 
-    ctx.font = '11px Segoe UI'; ctx.fillStyle = 'rgba(207,216,238,0.7)';
+    ctx.font = '11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = 'rgba(207,216,238,0.7)';
     ctx.fillText(def.blurb, x, y);
   }
 
@@ -7245,14 +7458,14 @@ const Game = (() => {
       roundRect(x, y - 4, bw * (adr.amount / 100), 8, 4); ctx.fill();
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       for (const t of [25, 50, 75]) ctx.fillRect(x + bw * (t / 100), y - 4, 1, 8);
-      ctx.font = 'bold 10px Segoe UI'; ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';
+      ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';
       const healing = p.hp < p.maxHp ? ` · +${adr.regen.toFixed(1)} HP/s` : '';
       ctx.fillText(`ADR ${Math.round(adr.amount)} · +${Math.round((adr.speed - 1) * 100)}% · -${Math.round(adr.dr * 100)}% dmg${healing}`, x + bw + 10, y);
       y -= HUD.rowH;
     }
     // armour
     if (p.vest || p.helmet || p.bag) {
-      ctx.font = 'bold 11px Segoe UI'; ctx.fillStyle = '#9fd8ff';
+      ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#9fd8ff';
       const bits = [];
       if (p.vest) bits.push(`🦺 T${p.vest} ${Math.round(Combat.vest(p.vest).body * 100)}% body`);
       if (p.helmet) bits.push(`⛑ T${p.helmet} ${Math.round(Combat.helmet(p.helmet).head * 100)}% head`);
@@ -7261,9 +7474,9 @@ const Game = (() => {
       y -= HUD.rowH;
     }
     // class + tool
-    ctx.font = 'bold 12px Segoe UI'; ctx.fillStyle = p.cls.color;
+    ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = p.cls.color;
     ctx.fillText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`, x, y);
-    ctx.font = '11px Segoe UI'; ctx.fillStyle = '#8ea0c9';
+    ctx.font = '11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#8ea0c9';
     ctx.fillText(`${p.cls.speed}× · ${p.tool.name}`, x + ctx.measureText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`).width + 44, y);
   }
 
@@ -7311,18 +7524,18 @@ const Game = (() => {
     }
 
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '23px Segoe UI';
+    ctx.font = '23px Outfit, Segoe UI, sans-serif';
     ctx.globalAlpha = usable ? 1 : 0.45;
     ctx.fillStyle = s.empty ? '#3b4666' : '#fff';
     ctx.fillText(s.icon, x + sw / 2, y + 27);
     ctx.globalAlpha = 1;
 
-    ctx.font = 'bold 9px Segoe UI'; ctx.fillStyle = s.empty ? '#3b4666' : '#8ea0c9';
+    ctx.font = 'bold 9px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = s.empty ? '#3b4666' : '#8ea0c9';
     const label = s.label.length > 14 ? s.label.slice(0, 13) + '…' : s.label;
     ctx.fillText(label, x + sw / 2, y + 50);
 
     // keybind top-left, count top-right
-    ctx.textAlign = 'left'; ctx.font = 'bold 10px Segoe UI';
+    ctx.textAlign = 'left'; ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif';
     ctx.fillStyle = usable ? '#ffcf4a' : '#6a789c';
     ctx.fillText(s.key, x + 7, y + 11);
     if (s.n) {
@@ -7344,7 +7557,7 @@ const Game = (() => {
     ctx.beginPath();
     ctx.arc(cx, cy, rad, -Math.PI / 2, -Math.PI / 2 + (1 - p.channel.t / p.channel.total) * Math.PI * 2);
     ctx.strokeStyle = '#4be08a'; ctx.lineWidth = 6; ctx.stroke();
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Segoe UI';
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(p.channel.label, cx, cy + rad + 16);
   }
@@ -7435,16 +7648,16 @@ const Game = (() => {
       // who, in their own colour
       ctx.fillStyle = teamInk(t.team);
       ctx.beginPath(); ctx.arc(x + 26, y + 28, 9, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Segoe UI';
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Outfit, Segoe UI, sans-serif';
       ctx.fillText(nameOf(t, 'Teammate'), x + 46, y + 27);
-      ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '11px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '11px Outfit, Segoe UI, sans-serif';
       ctx.fillText('SPECTATING', x + 46 + ctx.measureText(nameOf(t, 'Teammate')).width + 74, y + 27);
 
       // what they are holding, and how much of it is left
       const sub = t.riding || t;
-      ctx.fillStyle = '#e9f0ff'; ctx.font = 'bold 13px Segoe UI';
+      ctx.fillStyle = '#e9f0ff'; ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
       ctx.fillText(sub.weapon ? sub.weapon.name : '—', x + 46, y + 52);
-      ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '13px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '13px Outfit, Segoe UI, sans-serif';
       const ammo = sub.reloading ? 'reloading' : (sub.ammo + '/' + (sub.weapon ? sub.weapon.mag : 0));
       ctx.fillText(ammo, x + 46 + 190, y + 52);
       // their health, as a bar rather than a number
@@ -7452,7 +7665,7 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, 8);
       ctx.fillStyle = t.hp / t.maxHp > 0.35 ? '#4be08a' : '#ff4b5c';
       ctx.fillRect(bx, by, bw * clamp(t.hp / t.maxHp, 0, 1), 8);
-      ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '10px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '10px Outfit, Segoe UI, sans-serif';
       ctx.fillText('HP', bx - 20, by + 4);
       /* Whether you can come back on top of them, and why not if not. The
          person you are already watching is the person you would deploy on, so
@@ -7460,7 +7673,7 @@ const Game = (() => {
       ctx.textAlign = 'center';
       if (mode === 'domination' || mode === 'range') {
         const ok = deployTargetOk(t);
-        ctx.font = 'bold 11px Segoe UI';
+        ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
         ctx.fillStyle = deployAnchor === t ? '#7ff2c1' : ok ? '#ffcf4a' : 'rgba(255,120,120,0.75)';
         ctx.fillText(deployAnchor === t
           ? '✔  DEPLOYING HERE — ' + Controls.labelFor('deploy') + ' to cancel'
@@ -7469,12 +7682,12 @@ const Game = (() => {
           x + w / 2, y + h - 30);
       }
       // and how to look at somebody else
-      ctx.fillStyle = 'rgba(200,212,232,0.6)'; ctx.font = '11px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.6)'; ctx.font = '11px Outfit, Segoe UI, sans-serif';
       ctx.fillText('[A] / [D] or click — change view'
         + (list.length > 1 ? '   ·   ' + (list.indexOf(t) + 1) + ' of ' + list.length : ''),
         x + w / 2, y + h - 13);
     } else {
-      ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '14px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '14px Outfit, Segoe UI, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('No one left to watch', x + w / 2, y + 24);
     }
@@ -7579,7 +7792,7 @@ const Game = (() => {
     if (streakBanner) {
       const k = Math.min(1, streakBanner.t / 0.4);
       ctx.globalAlpha = k;
-      ctx.font = 'bold 34px Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 34px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = '#ffcf4a';
       ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 5;
       const yy = cy - Math.min(W, H) * 0.22 + (1 - k) * 14;
@@ -7592,9 +7805,13 @@ const Game = (() => {
   function drawHudMessage() {
     if (hudMessageT <= 0) return;
     ctx.globalAlpha = clamp(hudMessageT, 0, 1);
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 15px Segoe UI';
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 15px Outfit, Segoe UI, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(hudMessage, W / 2, hudBarY() - 24);
+    /* Normally just above the action bar. Dead, the spectator panel occupies
+       that strip, so the message lifts clear of it rather than printing itself
+       across the deploy prompt. */
+    const y = player && !player.alive ? H - 222 : hudBarY() - 24;
+    ctx.fillText(hudMessage, W / 2, y);
     ctx.globalAlpha = 1;
   }
 
@@ -7609,7 +7826,7 @@ const Game = (() => {
 
     ctx.save();
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 13px Segoe UI';
+    ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
     for (const k of killFeed) {
       const fade = clamp(k.t, 0, 1);               // last second fades out
       ctx.globalAlpha = fade;
@@ -7660,13 +7877,13 @@ const Game = (() => {
     ctx.save();
     ctx.globalAlpha = fade;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = 'bold 30px Segoe UI';
+    ctx.font = 'bold 30px Outfit, Segoe UI, sans-serif';
     ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(6,12,26,0.75)';
     ctx.strokeText(b.text, W / 2, cy);
     ctx.fillStyle = b.good ? '#4be08a' : '#ff6b78';
     ctx.fillText(b.text, W / 2, cy);
     if (b.sub) {
-      ctx.font = 'bold 16px Segoe UI';
+      ctx.font = 'bold 16px Outfit, Segoe UI, sans-serif';
       ctx.lineWidth = 4;
       ctx.strokeText(b.sub, W / 2, cy + 28);
       ctx.fillStyle = '#ffcf4a';
@@ -7727,7 +7944,7 @@ const Game = (() => {
     for (const c of CARDINALS) {
       const px = at(c.a);
       if (px === null) continue;
-      ctx.font = c.s.length === 1 ? 'bold 13px Segoe UI' : 'bold 10px Segoe UI';
+      ctx.font = c.s.length === 1 ? 'bold 13px Outfit, Segoe UI, sans-serif' : 'bold 10px Outfit, Segoe UI, sans-serif';
       ctx.fillStyle = c.s === 'N' ? '#ff8a6a' : 'rgba(226,236,255,0.85)';
       ctx.fillText(c.s, px, y + 10);
     }
@@ -7741,7 +7958,7 @@ const Game = (() => {
       ctx.beginPath();
       ctx.moveTo(px, y + h - 2); ctx.lineTo(px - 5, y + h - 9); ctx.lineTo(px + 5, y + h - 9);
       ctx.closePath(); ctx.fill();
-      ctx.fillStyle = '#0b1020'; ctx.font = 'bold 8px Segoe UI';
+      ctx.fillStyle = '#0b1020'; ctx.font = 'bold 8px Outfit, Segoe UI, sans-serif';
       ctx.fillText(o.name, px, y + h - 6);
     }
     for (const m of marks) {
@@ -7773,7 +7990,15 @@ const Game = (() => {
     const sub = hudSubject();
     if (!sub || !running) return;
     const cx = W / 2, cy = H / 2;
-    const mx = W / 2 - 74, my = H / 2 - 74;          // how far out the arrows sit
+    /* The band the arrows are allowed to live in. Pinned to a rectangle rather
+       than pushed out along a circle: a circle bunches everything into the
+       corners of a wide screen, and its bottom arc lands squarely on the action
+       bar and the key legend. The insets are the HUD's own furniture — the
+       compass above, the item slots and hint text below. */
+    const bandL = 74, bandR = W - 74, bandT = 138;
+    // dead, the spectator bar takes the bottom of the screen, so the arrows
+    // have to give it more room than the action bar needs
+    const bandB = H - (player && !player.alive ? 260 : 160);
 
     const items = [];
     for (const a of agents) {
@@ -7795,16 +8020,36 @@ const Game = (() => {
         label: o.name, urgent: false, ring: true,
       });
     }
+    /* On the range the targets are the point, and at this zoom only the first
+       two are ever on screen. Pointing at the rest is what makes the far marks
+       usable rather than decorative. */
+    if (mode === 'range') {
+      for (const d of agents) {
+        if (!d.isDummy || !d.alive) continue;
+        // no label: the distance the arrow already carries is the useful number,
+        // and it stays right as you walk up the lane
+        items.push({ x: d.x, y: d.y, color: '#ff8a6a', label: null, urgent: false });
+      }
+    }
 
     ctx.save();
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    /* Two squadmates on a similar bearing put their distance labels on top of
+       each other and neither is readable. Anything landing near a label that
+       is already down gets pushed onto the next line. */
+    const placed = [];
     for (const it of items) {
       if (onScreen(it.x, it.y, 60)) continue;
       const ang = Math.atan2(it.y - sub.y, it.x - sub.x);
-      /* Pushed out to the edge of an ellipse rather than a circle, so the
-         arrows follow the shape of the screen instead of bunching into the
-         corners of a wide one. */
-      const px = cx + Math.cos(ang) * mx, py = cy + Math.sin(ang) * my;
+      // walk out along the bearing until the first edge of the band is met
+      const dx = Math.cos(ang), dy = Math.sin(ang);
+      let t = Infinity;
+      if (dx > 0.001) t = Math.min(t, (bandR - cx) / dx);
+      else if (dx < -0.001) t = Math.min(t, (bandL - cx) / dx);
+      if (dy > 0.001) t = Math.min(t, (bandB - cy) / dy);
+      else if (dy < -0.001) t = Math.min(t, (bandT - cy) / dy);
+      if (!isFinite(t)) continue;
+      const px = cx + dx * t, py = cy + dy * t;
       const metres = Math.round(Math.hypot(it.x - sub.x, it.y - sub.y) / PX_PER_M);
       const pulse = it.urgent ? 0.72 + 0.28 * Math.sin(performance.now() / 130) : 1;
       ctx.globalAlpha = 0.9 * pulse;
@@ -7816,13 +8061,16 @@ const Game = (() => {
       ctx.closePath(); ctx.fill();
       ctx.restore();
       ctx.globalAlpha = 1;
-      ctx.font = 'bold 10px Segoe UI';
-      ctx.fillStyle = 'rgba(6,10,20,0.75)';
+      ctx.font = 'bold 10px ' + NUM_FONT;
       const txt = (it.label ? it.label + ' · ' : '') + metres + 'm';
       const tw = ctx.measureText(txt).width + 10;
-      roundRect(px - tw / 2, py + 12, tw, 14, 4); ctx.fill();
+      let ly = py + 12;
+      while (placed.some(q => Math.abs(q.y - ly) < 15 && Math.abs(q.x - px) < (q.w + tw) / 2)) ly += 16;
+      placed.push({ x: px, y: ly, w: tw });
+      ctx.fillStyle = 'rgba(6,10,20,0.75)';
+      roundRect(px - tw / 2, ly, tw, 14, 4); ctx.fill();
       ctx.fillStyle = it.color;
-      ctx.fillText(txt, px, py + 19);
+      ctx.fillText(txt, px, ly + 7);
     }
     ctx.restore();
   }
@@ -7868,22 +8116,25 @@ const Game = (() => {
     const key = Controls.labelFor('streak');
     ctx.save();
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    let y = hudBarY() - 44;
+    /* Top left, which is the only quarter of the screen nothing else claims:
+       the scores are centred, the minimap and kill feed own the right, and the
+       status stack, action bar and key legend fill the bottom. */
+    let y = 96;
     for (let i = streakBank.length - 1; i >= 0; i--) {
       const def = STREAKS.find(s => s.id === streakBank[i]);
       if (!def) continue;
       const txt = `${def.icon}  ${def.name}`;
-      ctx.font = 'bold 13px Segoe UI';
+      ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
       const w = ctx.measureText(txt).width + 76;
-      const x = W - w - 22;
+      const x = 22;
       ctx.fillStyle = 'rgba(10,14,24,0.78)';
       roundRect(x, y, w, 28, 8); ctx.fill();
       ctx.strokeStyle = 'rgba(255,207,74,0.55)'; ctx.lineWidth = 1.4; ctx.stroke();
       ctx.fillStyle = '#ffcf4a';
       ctx.fillText(txt, x + 12, y + 15);
-      ctx.font = '11px Segoe UI'; ctx.fillStyle = 'rgba(210,222,244,0.7)';
+      ctx.font = '11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = 'rgba(210,222,244,0.7)';
       ctx.fillText('[' + key + ']', x + w - 46, y + 15);
-      y -= 34;
+      y += 34;
     }
     ctx.restore();
   }
@@ -7902,17 +8153,17 @@ const Game = (() => {
     ctx.strokeStyle = 'rgba(255,75,92,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
 
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(200,212,232,0.65)'; ctx.font = 'bold 11px Segoe UI';
+    ctx.fillStyle = 'rgba(200,212,232,0.65)'; ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
     ctx.fillText('DEATH RECAP', x + 18, y + 22);
 
     // who, in their colour
     ctx.fillStyle = teamInk(r.team);
     ctx.beginPath(); ctx.arc(x + 26, y + 50, 8, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 17px Segoe UI';
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 17px Outfit, Segoe UI, sans-serif';
     ctx.fillText(r.killer, x + 42, y + 49);
 
     // what with, and from how far
-    ctx.fillStyle = 'rgba(220,230,248,0.9)'; ctx.font = '13px Segoe UI';
+    ctx.fillStyle = 'rgba(220,230,248,0.9)'; ctx.font = '13px Outfit, Segoe UI, sans-serif';
     ctx.fillText(`${r.weapon}  ·  ${r.dist} m${r.zone === 'head' ? '  ·  headshot' : ''}`, x + 42, y + 70);
 
     /* What they had left. This is the line that changes how you play: dying to
@@ -7924,13 +8175,13 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, 7);
       ctx.fillStyle = frac > 0.35 ? '#4be08a' : '#ffcf4a';
       ctx.fillRect(bx, by, bw * frac, 7);
-      ctx.fillStyle = 'rgba(200,212,232,0.75)'; ctx.font = '11px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.75)'; ctx.font = '11px Outfit, Segoe UI, sans-serif';
       ctx.fillText(`they finished on ${r.killerHp} HP`, bx, by + 18);
     }
 
     // and the shots that put you here
     let ry = y + 118;
-    ctx.font = '12px Segoe UI';
+    ctx.font = '12px ' + NUM_FONT;
     for (let i = 0; i < rows; i++) {
       const hitRow = r.hits[i];
       ctx.fillStyle = 'rgba(200,212,232,0.55)';
@@ -7954,7 +8205,7 @@ const Game = (() => {
       if (!d.isDummy || !onScreen(d.x, d.y, 90)) continue;
       const sx = (d.x - camX) * zoom, sy = (d.y - camY) * zoom;
       ctx.fillStyle = d.alive ? 'rgba(226,236,255,0.75)' : 'rgba(140,152,176,0.6)';
-      ctx.font = 'bold 12px Segoe UI';
+      ctx.font = 'bold 12px ' + NUM_FONT;
       ctx.fillText(d.rangeM + ' m', sx, sy - 44 * zoom);
     }
     // and what the last round actually did
@@ -7966,16 +8217,16 @@ const Game = (() => {
       roundRect(x, y, w, h, 10); ctx.fill();
       ctx.strokeStyle = 'rgba(127,242,193,0.45)'; ctx.lineWidth = 1.4; ctx.stroke();
       ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(200,212,232,0.6)'; ctx.font = 'bold 10px Segoe UI';
+      ctx.fillStyle = 'rgba(200,212,232,0.6)'; ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif';
       ctx.fillText('LAST SHOT', x + 16, y + 18);
       ctx.fillStyle = r.zone === 'head' ? '#ffcf4a' : '#fff';
-      ctx.font = 'bold 24px Segoe UI';
+      ctx.font = 'bold 24px ' + NUM_FONT;
       ctx.fillText(String(r.dmg), x + 16, y + 42);
-      ctx.fillStyle = 'rgba(220,230,248,0.85)'; ctx.font = '12px Segoe UI';
+      ctx.fillStyle = 'rgba(220,230,248,0.85)'; ctx.font = '12px Outfit, Segoe UI, sans-serif';
       ctx.fillText(`${r.zone}  ·  ${r.m} m  ·  ${r.shots} shot${r.shots > 1 ? 's' : ''}  ·  ${r.dealt} total`,
         x + 74, y + 42);
       if (r.ttk !== null) {
-        ctx.fillStyle = '#7ff2c1'; ctx.font = 'bold 14px Segoe UI';
+        ctx.fillStyle = '#7ff2c1'; ctx.font = 'bold 14px ' + NUM_FONT;
         ctx.fillText(`DOWN in ${r.ttk.toFixed(2)}s over ${r.shots} shots`, x + 16, y + 68);
       }
       ctx.globalAlpha = 1;
@@ -8111,10 +8362,10 @@ const Game = (() => {
     ctx.strokeStyle = 'rgba(175,210,255,0.45)'; ctx.lineWidth = 1; ctx.stroke();
 
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#dce8ff'; ctx.font = 'bold 15px Segoe UI'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#dce8ff'; ctx.font = 'bold 15px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'left';
     ctx.fillText(mode === 'domination' ? 'DOMINATION' : 'ELIMINATION', x + 16, y + 20);
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#9fb4d8'; ctx.font = '12px Segoe UI';
+    ctx.fillStyle = '#9fb4d8'; ctx.font = '12px Outfit, Segoe UI, sans-serif';
     ctx.fillText(online ? `${online.ping}ms · ${rows.length} players` : `${rows.length} operators`, x + w - 16, y + 20);
 
     // team scores across the top
@@ -8122,7 +8373,7 @@ const Game = (() => {
     let tx = x + 16;
     for (let t = 0; t < teamScores.length; t++) {
       ctx.fillStyle = TEAM_COLORS[t];
-      ctx.font = 'bold 13px Segoe UI';
+      ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
       const label = `${TEAM_NAMES[t]} ${Math.round(teamScores[t])}`;
       ctx.fillText(label, tx, y + 42);
       tx += ctx.measureText(label).width + 18;
@@ -8130,7 +8381,7 @@ const Game = (() => {
 
     ctx.fillStyle = 'rgba(175,210,255,0.25)';
     ctx.fillRect(x + 14, y + headH - 8, w - 28, 1);
-    ctx.font = '11px Segoe UI'; ctx.fillStyle = '#9fb4d8';
+    ctx.font = '11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#9fb4d8';
     ctx.fillText('OPERATOR', x + 34, y + headH + 4);
     ctx.textAlign = 'right';
     ctx.fillText('K', x + w - 92, y + headH + 4);
@@ -8148,9 +8399,9 @@ const Game = (() => {
       ctx.fillStyle = TEAM_COLORS[r.team % TEAM_COLORS.length]; ctx.fill();
       ctx.textAlign = 'left';
       ctx.fillStyle = r.you ? '#fff' : '#dce8ff';
-      ctx.font = `${r.you ? 'bold ' : ''}13px Segoe UI`;
+      ctx.font = `${r.you ? 'bold ' : ''}13px Outfit, Segoe UI, sans-serif`;
       ctx.fillText(r.name, x + 38, ry);
-      ctx.textAlign = 'right'; ctx.fillStyle = '#dce8ff'; ctx.font = '13px Segoe UI';
+      ctx.textAlign = 'right'; ctx.fillStyle = '#dce8ff'; ctx.font = '13px Outfit, Segoe UI, sans-serif';
       ctx.fillText(r.kills, x + w - 92, ry);
       ctx.fillText(r.deaths, x + w - 52, ry);
       ctx.fillStyle = '#9fb4d8';
@@ -9114,7 +9365,7 @@ const Game = (() => {
       ctx.fillRect(a.x - hpw / 2, a.y - BODY_R - 12, hpw * clamp(a.hp / 100, 0, 1), 5);
       // name tag, so you can tell your squad apart
       ctx.fillStyle = a.team === player.team ? '#9fe8b4' : '#ffd0d4';
-      ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center';
+      ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
       ctx.fillText(a.name || '', a.x, a.y - BODY_R - 20);
     }
   }
@@ -9330,6 +9581,64 @@ const Game = (() => {
       names: objectives.map(o => o.name + ':' + (o.owner >= 0 ? 'T' + o.owner : '-')),
     }),
     captureAll() { for (const o of objectives) { o.owner = 0; o.progress = 100; } return true; },
+
+    /* ---- the coastline ----
+       Nothing the map generator places may end up in the sea, and the coast
+       has to actually bend. Both are things the old rectangular island made
+       impossible to get wrong and the new one does not. */
+    coastReport() {
+      const T = terrain;
+      if (!T) return { missing: true };
+      const wet = (x, y) => Terrain.inOcean(T, x, y) || Terrain.inRiver(T, x, y);
+      const sandy = (x, y) => Terrain.inBeach(T, x, y);
+      let coastMin = Infinity, coastMax = -Infinity, beachMin = Infinity, beachMax = -Infinity;
+      for (let i = 0; i < 220; i++) {
+        const u = i / 220;
+        const o = Terrain.oceanAt(T, u), b = Terrain.beachAt(T, u);
+        coastMin = Math.min(coastMin, o); coastMax = Math.max(coastMax, o);
+        beachMin = Math.min(beachMin, b - o); beachMax = Math.max(beachMax, b - o);
+      }
+      return {
+        biome: T.biome.name,
+        buildingsWet: buildings.filter(b =>
+          wet(b.x + b.w / 2, b.y + b.h / 2) || sandy(b.x + b.w / 2, b.y + b.h / 2)).length,
+        buildings: buildings.length,
+        cratesWet: crates.filter(c => wet(c.x, c.y)).length,
+        cratesWetDetail: crates.filter(c => wet(c.x, c.y)).map(c => ({
+          indoors: !!c.indoors, tier: c.tier,
+          sea: Terrain.inOcean(T, c.x, c.y), river: Terrain.inRiver(T, c.x, c.y),
+          x: Math.round(c.x), y: Math.round(c.y),
+        })),
+        propsWet: decor.filter(d => !d.indoors && wet(d.x, d.y)).length,
+        // being in the river is ordinary — people wade across it. Being out at
+        // sea means a spawn ring dropped somebody off the edge of the island.
+        agentsAtSea: agents.filter(a => a.alive && !a.isVehicle && Terrain.inOcean(T, a.x, a.y)).length,
+        agentsInRiver: agents.filter(a => a.alive && !a.isVehicle && Terrain.inRiver(T, a.x, a.y)).length,
+        beachDecor: decor.filter(d => sandy(d.x, d.y)).length,
+        coastSpread: Math.round(coastMax - coastMin),
+        beachSpread: Math.round(beachMax - beachMin),
+      };
+    },
+    /* Pull the camera right out to take in the whole island at once. The
+       update loop rewrites zoomTarget every frame from the FOV setting, so
+       this has to be an override it checks rather than a one-off assignment. */
+    wideView(on) {
+      debugZoom = on ? Math.min(W / MAP_W, H / MAP_H) * 0.96 : 0;
+      return debugZoom;
+    },
+    /* Stand the player on the nearest piece of shore, to look at it. */
+    gotoShore() {
+      const T = terrain; if (!T || !T.coastLine) return null;
+      const p0 = T.coastLine[Math.floor(T.coastLine.length * 0.13)];
+      const dx = MAP_W / 2 - p0.x, dy = MAP_H / 2 - p0.y, len = Math.hypot(dx, dy) || 1;
+      player.x = p0.x + (dx / len) * 150;
+      player.y = p0.y + (dy / len) * 150;
+      camSnap = true;
+      return { x: Math.round(player.x), y: Math.round(player.y) };
+    },
+    /* Finish the match now, so the results screen can be checked without
+       sitting through eight minutes of it. */
+    endNow(won) { endMatch(!!won); return true; },
     /* Reproduce the teleport: blow up a bot-driven hull while the player is
        riding a different one, and see whether the player gets thrown out of
        their own vehicle by an explosion they were nowhere near. */
@@ -9388,6 +9697,69 @@ const Game = (() => {
     },
     teamColor: (t) => teamInk(t),
     nanRescues: () => nanRescues,
+
+    /* ---- the systems added on top of the base game ----
+       One reader for all of them, so a harness can check the state rather
+       than reading pixels off a canvas. */
+    extras: () => ({
+      mode,
+      recap: deathRecap && {
+        killer: deathRecap.killer, weapon: deathRecap.weapon,
+        dist: deathRecap.dist, hits: deathRecap.hits.length, hp: deathRecap.killerHp,
+      },
+      bank: streakBank.slice(),
+      earned: streakEarned,
+      anchor: deployAnchor ? nameOf(deployAnchor, '?') : null,
+      dummies: agents.filter(a => a.isDummy).length,
+      dummyRanges: agents.filter(a => a.isDummy).map(a => a.rangeM),
+      lastShot: rangeShot && { dmg: rangeShot.dmg, m: rangeShot.m, ttk: rangeShot.ttk, shots: rangeShot.shots },
+      view: Object.assign({}, view),
+      zoom: +zoom.toFixed(3),
+      stats: Object.assign({}, matchStats),
+    }),
+    /* Walk a streak up to n and see what it paid out. */
+    giveStreak(n) {
+      if (!player) return [];
+      for (let i = 1; i <= n; i++) { player.streak = i; earnStreaks(i); }
+      return streakBank.slice();
+    },
+    fireStreak() { useStreak(); return streakBank.slice(); },
+    /* Die to an actual opponent, so the recap has someone to name. */
+    dieToEnemy() {
+      const foe = agents.find(a => a.alive && !a.isVehicle && a.team !== player.team);
+      if (!foe) return 'no enemy';
+      foe.x = player.x + 400; foe.y = player.y; foe.hp = foe.maxHp * 0.4;
+      // realistic hits, so the recap shows the numbers a real burst would
+      applyDamage(player, 26, foe, 'normal', 'body');
+      applyDamage(player, 31, foe, 'normal', 'body');
+      for (let i = 0; i < 12 && player.alive; i++) applyDamage(player, 34, foe, 'normal', 'body');
+      return deathRecap ? deathRecap.killer : 'no recap';
+    },
+    /* Pick a squadmate to come back on, the way the spectator bar does. */
+    tryDeploy(safe = true) {
+      const list = spectatable();
+      if (!list.length) return 'nobody to watch';
+      camTarget = list[0];
+      camTarget.hurtT = safe ? 99 : 0;
+      toggleDeployAnchor();
+      return deployAnchor ? 'anchored:' + nameOf(deployAnchor, '?') : 'refused';
+    },
+    deployedNear() {
+      if (!deployAnchor) return null;
+      const mate = deployAnchor;
+      respawnAgent(player);
+      return Math.round(Math.hypot(player.x - mate.x, player.y - mate.y));
+    },
+    /* Hand a squadmate a magazine and report whether it landed. */
+    resupplyProbe() {
+      const mate = agents.find(a => a.alive && !a.isVehicle && !a.isPlayer && a.team === player.team);
+      if (!mate) return 'no mate';
+      mate.x = player.x + 60; mate.y = player.y;
+      mate.ammo = 1; mate.hp = mate.maxHp * 0.4;
+      player.resupplyCd = 0;
+      resupplyMate();
+      return { ammo: mate.ammo, mag: mate.weapon.mag, hp: Math.round(mate.hp), cd: +player.resupplyCd.toFixed(1) };
+    },
     weather: () => {
       const w = weatherNow();
       return { id: w.id || 'clear', name: w.name || 'Clear', density: w.density || 0,
@@ -9893,6 +10265,9 @@ const Game = (() => {
   return {
     start, startOnline, isOnline, netDebug, debug,
     setupFor,
+    /* Called by the settings panel when it closes, so a change to the sight
+       options lands on the very next frame instead of the next match. */
+    refreshView,
     TEAM_LIMITS,
     // the map, as the simulation needs to see it (see netWorld above)
     netWorld, netObjectives, netCrates, netVehicles,

@@ -223,6 +223,7 @@ const Screens = (() => {
     renderKit(p);
     renderSetup();
     renderIntel();
+    renderHistory(p);
     // season strip mirrors the battle-pass numbers rather than inventing its own
     const st = document.getElementById('season-tier');
     if (st) {
@@ -241,6 +242,44 @@ const Screens = (() => {
   }
 
   const shortHost = (url) => String(url).replace(/^wss?:\/\//, '').split('/')[0];
+
+  /* ---- the last few matches ----
+     Written by game.js at the end of every match. Newest first, with the
+     numbers that say how the game went rather than only whether you won it. */
+  const MODE_LABEL = { domination: 'Domination', elimination: 'Elimination', range: 'Firing Range' };
+  function agoText(ms) {
+    const mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.round(hrs / 24) + 'd ago';
+  }
+  function renderHistory(p) {
+    const host = document.getElementById('history-list');
+    if (!host) return;
+    const rows = (p.history || []).filter(h => h.mode !== 'range').slice(0, 6);
+    const best = p.best || {};
+    const hint = document.getElementById('history-best');
+    if (hint) {
+      hint.textContent = best.kills
+        ? `best ${best.kills} elims · ${best.streak} streak`
+        : '';
+    }
+    if (!rows.length) {
+      host.innerHTML = '<li class="history__empty">No matches yet — deploy and this fills in.</li>';
+      return;
+    }
+    host.innerHTML = rows.map(h => {
+      const kd = h.deaths ? (h.kills / h.deaths).toFixed(2) : h.kills.toFixed(2);
+      return `<li class="history__row ${h.won ? 'is-win' : 'is-loss'}">
+        <span class="history__res">${h.won ? 'W' : 'L'}</span>
+        <span class="history__mode">${MODE_LABEL[h.mode] || h.mode}<i>${agoText(h.at)}</i></span>
+        <span class="history__kd"><b>${h.kills}</b> / ${h.deaths}<i>${kd} K/D</i></span>
+        <span class="history__streak">${h.streak > 1 ? h.streak + '×' : '—'}<i>streak</i></span>
+      </li>`;
+    }).join('');
+  }
 
   /* ---- who you are, and how far along ---- */
   const RANKS = ['Recruit', 'Trooper', 'Corporal', 'Sergeant', 'Lieutenant', 'Captain', 'Major', 'Colonel', 'Commander'];
@@ -668,7 +707,73 @@ const Screens = (() => {
     });
   }
 
+  /* ---- saved kits ----
+     Create-a-class, in three slots. A preset holds the two things that
+     actually define how you play — the gun (which picks your class, tool and
+     consumable) and the passive. Attachments, ammo and skins are already
+     stored against the weapon itself, so they come along with it.
+
+     Saving overwrites the slot you press, which is what a save button should
+     do; loading equips it and re-renders. */
+  const PRESET_SLOTS = 3;
+  function presetLabel(slot) {
+    if (!slot) return 'Empty';
+    const w = Weapons.byId[slot.weapon];
+    return w ? w.name : 'Unknown';
+  }
+  function renderPresets() {
+    const host = document.getElementById('presets');
+    if (!host) return;
+    const p = DB.getProfile();
+    if (!Array.isArray(p.presets)) p.presets = [null, null, null];
+    while (p.presets.length < PRESET_SLOTS) p.presets.push(null);
+    host.innerHTML = '';
+    for (let i = 0; i < PRESET_SLOTS; i++) {
+      const slot = p.presets[i];
+      const w = slot && Weapons.byId[slot.weapon];
+      const perk = slot && typeof Perks !== 'undefined' && Perks.byId(slot.perk);
+      // "live" = the current loadout already matches this slot
+      const live = !!(slot && slot.weapon === p.weapon && (slot.perk || 'none') === (p.perk || 'none'));
+      const card = document.createElement('div');
+      card.className = 'preset' + (slot ? '' : ' is-empty') + (live ? ' is-live' : '');
+      card.innerHTML = `
+        <div class="preset__head"><span class="preset__n">KIT ${String.fromCharCode(65 + i)}</span>
+          ${live ? '<span class="preset__live">EQUIPPED</span>' : ''}</div>
+        <div class="preset__name">${w ? `${w.icon} ${w.name}` : 'Empty slot'}</div>
+        <div class="preset__sub">${w ? `${w.type} · ${perk ? perk.name : 'No perk'}` : 'Save your current loadout here'}</div>
+        <div class="preset__btns">
+          <button class="btn btn--ghost btn--tiny" data-preset-load="${i}"${slot ? '' : ' disabled'}>Equip</button>
+          <button class="btn btn--ghost btn--tiny" data-preset-save="${i}">Save current</button>
+        </div>`;
+      host.appendChild(card);
+    }
+    host.querySelectorAll('[data-preset-save]').forEach(b => b.addEventListener('click', () => {
+      const i = +b.dataset.presetSave;
+      const prof = DB.getProfile();
+      prof.presets[i] = { weapon: prof.weapon, perk: prof.perk || 'none' };
+      DB.saveProfile(prof);
+      SFX.click();
+      Toast.show(`Kit ${String.fromCharCode(65 + i)} saved.`);
+      renderPresets();
+    }));
+    host.querySelectorAll('[data-preset-load]').forEach(b => b.addEventListener('click', () => {
+      const i = +b.dataset.presetLoad;
+      const prof = DB.getProfile();
+      const slot = prof.presets[i];
+      if (!slot) return;
+      prof.weapon = slot.weapon;
+      prof.perk = slot.perk || 'none';
+      prof.activePreset = i;
+      DB.saveProfile(prof);
+      SFX.click();
+      Toast.show(`Kit ${String.fromCharCode(65 + i)} equipped.`);
+      renderLoadout();
+      renderKit(DB.getProfile());
+    }));
+  }
+
   function renderLoadout() {
+    renderPresets();
     renderGunsmith();
     const p = DB.getProfile();
     const host = document.getElementById('loadout-grid');
@@ -746,6 +851,16 @@ const Screens = (() => {
     document.getElementById('val-sens').textContent = (s.sensitivity / 100).toFixed(1) + '×';
     document.getElementById('set-quality').value = s.quality;
     document.getElementById('set-dmgnum').checked = s.dmgNumbers;
+    // sight options
+    document.getElementById('set-fov').value = s.fov;
+    document.getElementById('val-fov').textContent = s.fov;
+    document.getElementById('set-teamcolors').value = s.teamColors;
+    document.getElementById('set-foecolor').value = s.foeColor;
+    document.getElementById('set-crosshair').value = s.crosshair;
+    document.getElementById('set-chsize').value = s.crosshairSize;
+    document.getElementById('val-chsize').textContent = s.crosshairSize;
+    document.getElementById('set-chcolor').value = s.crosshairColor;
+    syncSightRows();
     document.getElementById('set-botlevel').value = s.botLevel || BotAI.DEFAULT;
     renderBotLevel(s.botLevel || BotAI.DEFAULT);
     renderKeybinds();
@@ -861,6 +976,14 @@ const Screens = (() => {
       : `${Controls.label(e.code)} bound to “${Controls.byId[actionId].name}”`);
   }
 
+  /* The enemy-colour row only means anything in friend/foe mode. */
+  function syncSightRows() {
+    const row = document.getElementById('row-foecolor');
+    if (row) row.hidden = document.getElementById('set-teamcolors').value !== 'friendfoe';
+    const sizeRow = document.getElementById('set-chsize');
+    if (sizeRow) sizeRow.disabled = document.getElementById('set-crosshair').value === 'system';
+  }
+
   function persistSettings() {
     const s = DB.getSettings();
     s.botLevel = +document.getElementById('set-botlevel').value;
@@ -869,7 +992,18 @@ const Screens = (() => {
     s.sensitivity = +document.getElementById('set-sens').value;
     s.quality = document.getElementById('set-quality').value;
     s.dmgNumbers = document.getElementById('set-dmgnum').checked;
+    s.fov = +document.getElementById('set-fov').value;
+    s.teamColors = document.getElementById('set-teamcolors').value;
+    s.foeColor = document.getElementById('set-foecolor').value;
+    s.crosshair = document.getElementById('set-crosshair').value;
+    s.crosshairSize = +document.getElementById('set-chsize').value;
+    s.crosshairColor = document.getElementById('set-chcolor').value;
     DB.saveSettings(s);
+    syncSightRows();
+    /* The sight settings are cached inside the game loop, so tell it to re-read
+       them. Without this, changing your crosshair mid-match does nothing until
+       the next one. */
+    if (typeof Game !== 'undefined' && Game.refreshView) Game.refreshView();
   }
 
   function init() {
@@ -899,8 +1033,18 @@ const Screens = (() => {
     document.getElementById('set-botlevel').addEventListener('input', e => {
       renderBotLevel(e.target.value); persistSettings();
     });
-    ['set-sfx', 'set-quality', 'set-dmgnum'].forEach(id =>
+    document.getElementById('set-fov').addEventListener('input', e => {
+      document.getElementById('val-fov').textContent = e.target.value; persistSettings();
+    });
+    document.getElementById('set-chsize').addEventListener('input', e => {
+      document.getElementById('val-chsize').textContent = e.target.value; persistSettings();
+    });
+    ['set-sfx', 'set-quality', 'set-dmgnum',
+      'set-teamcolors', 'set-foecolor', 'set-crosshair', 'set-chcolor'].forEach(id =>
       document.getElementById(id).addEventListener('change', persistSettings));
+    // the firing range starts immediately — there is nothing to queue for
+    const range = document.getElementById('btn-range');
+    if (range) range.addEventListener('click', () => { SFX.click(); Game.start('range'); });
     document.getElementById('btn-keys-reset').addEventListener('click', () => {
       cancelCapture(); Controls.reset(); renderKeybinds();
       keyHint('Back to the defaults.'); Toast.show('Keybinds reset.');

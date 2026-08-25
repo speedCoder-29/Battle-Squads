@@ -2758,8 +2758,8 @@ const Structures = (() => {
   const STYLE = {
     /* ---- residential: warm timber, terracotta and slate ---- */
     house:       { ...S_RESIDENTIAL, floor: '#7d6349', roof: ['#a4553c', '#7c3d2b'], trim: '#5a3526' },
-    mansion:     { ...S_RESIDENTIAL, floor: '#8a6f4e', roof: ['#8a6aa8', '#5f4779'], trim: '#4a3560' },
-    resort:      { ...S_RESIDENTIAL, floor: '#94795a', roof: ['#43a9a0', '#2b7570'], trim: '#215c58' },
+    mansion:     { ...S_RESIDENTIAL, floor: '#8a6f4e', roof: ['#6b6480', '#463f57'], trim: '#c9a54e' },
+    resort:      { ...S_RESIDENTIAL, floor: '#94795a', roof: ['#4f938c', '#316662'], trim: '#e0d2ad' },
     shanty:      { ...S_RESIDENTIAL, floor: '#6b5a45', roof: ['#8a7f6a', '#5f5747'], trim: '#48412f' },
     apartments:  { ...S_RESIDENTIAL, floor: '#75655a', roof: ['#9a6a52', '#6d4838'], trim: '#4d3327' },
     camp:        { ...S_RESIDENTIAL, floor: '#5f6a46', roof: ['#6f8a4e', '#4c6236'], trim: '#3a4d29', pattern: 'dirt' },
@@ -2772,7 +2772,7 @@ const Structures = (() => {
     workshop:    { ...S_INDUSTRIAL, floor: '#565f6b', roof: ['#7a6a52', '#55483a'], trim: '#3c332a' },
     dock:        { ...S_INDUSTRIAL, floor: '#5d6154', roof: ['#4e7d92', '#345665'], trim: '#26424e' },
     harbor:      { ...S_INDUSTRIAL, floor: '#525c68', roof: ['#3f7a90', '#2a5364'], trim: '#1f3f4c' },
-    'power-plant': { ...S_INDUSTRIAL, floor: '#4a5260', roof: ['#8a8a52', '#5f5f38'], trim: '#45452a' },
+    'power-plant': { ...S_INDUSTRIAL, floor: '#4a5260', roof: ['#7a7a5c', '#54543f'], trim: '#e8bb52' },
     silos:       { ...S_INDUSTRIAL, floor: '#6a6250', roof: ['#c2a45c', '#8a7442'], trim: '#5f5030' },
     depot:       { ...S_INDUSTRIAL, floor: '#5a5b52', roof: ['#6f7358', '#4d503c'], trim: '#383a2b' },
     hangar:      { ...S_INDUSTRIAL, floor: '#4f5866', roof: ['#8592a4', '#5c667a'], trim: '#414b5c' },
@@ -2782,7 +2782,7 @@ const Structures = (() => {
     /* ---- institutional: pale stone, and an accent you can name ---- */
     hospital:    { ...S_INSTITUTIONAL, floor: '#c8d4d2', roof: ['#e8f0ee', '#b9c9c6'], trim: '#d1443f' },
     school:      { ...S_INSTITUTIONAL, floor: '#9d8f74', roof: ['#b06a3e', '#7f4629'], trim: '#5f3320' },
-    church:      { ...S_INSTITUTIONAL, floor: '#a2937c', roof: ['#5a6ea8', '#3c4a76'], trim: '#caa04a' },
+    church:      { ...S_INSTITUTIONAL, floor: '#a2937c', roof: ['#556391', '#3a4462'], trim: '#caa04a' },
     museum:      { ...S_INSTITUTIONAL, floor: '#b3ada0', roof: ['#a8a29a', '#7c766d'], trim: '#c9a54e' },
     prison:      { ...S_INSTITUTIONAL, floor: '#767c84', roof: ['#5f666f', '#42474e'], trim: '#2f3339' },
     bank:        { ...S_INSTITUTIONAL, floor: '#a89b7e', roof: ['#4f6656', '#33463a'], trim: '#c9b25a' },

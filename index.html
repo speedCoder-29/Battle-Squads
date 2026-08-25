@@ -3,9 +3,28 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Battle Squads — a fast-paced 2D team shooter. Capture objectives or eliminate every squad." />
+  <meta name="description" content="Battle Squads — a top-down team shooter. Capture objectives or outlast every other squad on a freshly generated island." />
   <title>Battle Squads</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23ff6a2b'/%3E%3Ctext x='50' y='68' font-size='52' font-weight='900' text-anchor='middle' fill='%231a0e04' font-family='Arial'%3EBS%3C/text%3E%3C/svg%3E" />
+  <!-- Social preview. The card is drawn from the same SVG mark as the favicon,
+       so a shared link carries the game's identity rather than a blank box. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Battle Squads" />
+  <meta property="og:description" content="A top-down team shooter. Capture objectives or outlast every other squad on a freshly generated island." />
+  <meta property="og:image" content="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 630'%3E%3Crect width='1200' height='630' fill='%23141b30'/%3E%3Ctext x='600' y='340' font-size='120' font-weight='800' text-anchor='middle' fill='%23f4f8ff' font-family='sans-serif'%3EBATTLE SQUADS%3C/text%3E%3C/svg%3E" />
+  <meta name="theme-color" content="#141b30" />
+  <!-- Type. Outfit carries the interface, Azeret Mono every number in it —
+       a HUD is a data display, and proportional digits jitter as they count.
+       Both degrade to the old system stack if the network is unavailable. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- The figures took three tries to get right, so the reasoning is worth
+       recording: Geist Mono draws a slashed zero and IBM Plex a dotted one,
+       and at 30px in the stat row both read as a glyph that is not a zero.
+       Azeret draws it plain. The 700 weight is requested explicitly because
+       those figures sit in <b> — without it the engine falls through to
+       Consolas, which is slashed again. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Azeret+Mono:wght@400;500;600;700&display=swap" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23e8763f'/%3E%3Ctext x='50' y='68' font-size='52' font-weight='900' text-anchor='middle' fill='%23161009' font-family='Arial'%3EBS%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -15,6 +34,7 @@
     <div class="bg__grid"></div>
     <canvas id="bg-particles"></canvas>
     <div class="bg__vignette"></div>
+    <div class="bg__grain"></div>
   </div>
 
   <!-- ============ LOGIN / SIGN-UP SCREEN ============ -->
@@ -126,7 +146,7 @@
           <div class="stat"><b id="stat-matches">0</b><span>Matches</span></div>
           <div class="stat"><b id="stat-kills">0</b><span>Eliminations</span></div>
         </div>
-        <h2 class="panel__title">Latest Drop</h2>
+        <h2 class="panel__title">Latest drop</h2>
         <div class="news-card">
           <div class="news-card__banner news-card__banner--season">
             <span class="tag">SEASON 1</span>
@@ -147,7 +167,7 @@
           <button class="btn btn--ghost btn--tiny" data-nav="battlepass">View rewards</button>
         </div>
 
-        <h2 class="panel__title">What's New</h2>
+        <h2 class="panel__title">What&rsquo;s new</h2>
         <ul class="changelog">
           <li><b>Tunnels &amp; bunker complexes</b><span>Drop in one end, come up at the other.</span></li>
           <li><b>Chests</b><span>Three rolls, behind the reinforced doors.</span></li>
@@ -200,6 +220,17 @@
             <span class="btn--play__label">DEPLOY</span>
             <span class="btn--play__timer" id="queue-timer"></span>
           </button>
+        </div>
+
+        <!-- Somewhere to try a gun before you take it into a match. Not a
+             queue: it starts straight away, alone, with targets at known
+             distances. -->
+        <div class="rangebar">
+          <div class="rangebar__text">
+            <b>🎯 Firing Range</b>
+            <span>Targets at 10–120 m, live damage and time-to-kill readout.</span>
+          </div>
+          <button class="btn btn--ghost" id="btn-range">Enter Range</button>
         </div>
 
         <!-- How big a match you want. Applies to games you start yourself;
@@ -280,13 +311,13 @@
       <!-- RIGHT: daily missions preview -->
       <div class="rail" data-panelgroup="play">
       <aside class="panel panel--missions">
-        <h2 class="panel__title">Daily Missions <span class="panel__hint">resets in <b id="missions-reset">—</b></span></h2>
+        <h2 class="panel__title">Daily missions <span class="panel__hint">resets in <b id="missions-reset">—</b></span></h2>
         <ul class="mini-mission-list" id="mini-mission-list"></ul>
       </aside>
 
       <!-- ===== MISSIONS FULL PANEL ===== -->
       <aside class="panel panel--intel">
-        <h2 class="panel__title">On The Map</h2>
+        <h2 class="panel__title">On the map</h2>
         <p class="panel__lede">Every match generates a fresh island. This is what
           is out there to find.</p>
         <ul class="intel" id="intel-list"></ul>
@@ -294,11 +325,18 @@
           <span class="intel__tip" id="intel-tip"></span>
         </div>
       </aside>
+
+      <!-- The last few matches. A results screen tells you how one game went;
+           this is the only place that tells you whether you are improving. -->
+      <aside class="panel panel--history">
+        <h2 class="panel__title">Recent matches <span class="panel__hint" id="history-best"></span></h2>
+        <ul class="history" id="history-list"></ul>
+      </aside>
       </div>
 
       <div class="subpage" data-panelgroup="missions">
         <div class="subpage__head">
-          <h1>Daily & Weekly Missions</h1>
+          <h1>Daily and weekly missions</h1>
           <p>Complete missions to earn Credits and Battle Pass XP.</p>
         </div>
         <div class="mission-columns">
@@ -317,7 +355,7 @@
       <div class="subpage" data-panelgroup="battlepass">
         <div class="subpage__head bp-head">
           <div>
-            <h1>Season 1 Battle Pass <span class="tag">FREE + PREMIUM</span></h1>
+            <h1>Season 1 battle pass <span class="tag">FREE + PREMIUM</span></h1>
             <p>Earn XP from matches and missions to unlock rewards.</p>
           </div>
           <div class="bp-progress">
@@ -335,6 +373,12 @@
           <h1>Loadout</h1>
           <p>Pick the weapon your operator deploys with — it sets your class, tool and consumables. More unlocks via the Battle Pass.</p>
         </div>
+
+        <!-- Three saved kits, the create-a-class idea: build a set once, name
+             it, and switch to it in one click instead of rebuilding it.
+             Rendered by screens.js renderPresets(). -->
+        <div class="presets" id="presets"></div>
+
         <div class="gunsmith" id="loadout-smith"></div>
         <div class="loadout-grid" id="loadout-grid"></div>
       </div>
@@ -403,6 +447,52 @@
         <div class="setting">
           <label>Show Damage Numbers</label>
           <label class="switch"><input type="checkbox" id="set-dmgnum" checked /><span></span></label>
+        </div>
+        <!-- Sight. Twenty squads cannot all have a colour you can tell apart,
+             so there is a mode that only distinguishes your side from
+             everybody else's — which is the distinction that matters. -->
+        <div class="setting">
+          <label>Field of View <span class="setting__val" id="val-fov">100</span></label>
+          <input type="range" id="set-fov" min="70" max="130" step="5" value="100" />
+        </div>
+        <div class="setting">
+          <label>Team Colours</label>
+          <select id="set-teamcolors">
+            <option value="teams">Per squad (default)</option>
+            <option value="friendfoe">Friend / foe only</option>
+          </select>
+        </div>
+        <div class="setting" id="row-foecolor">
+          <label>Enemy Colour</label>
+          <select id="set-foecolor">
+            <option value="#ff9d2e">Orange</option>
+            <option value="#ffe14a">Yellow</option>
+            <option value="#ff4bd6">Magenta</option>
+            <option value="#ffffff">White</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label>Crosshair</label>
+          <select id="set-crosshair">
+            <option value="dynamic">Dynamic (opens with spread)</option>
+            <option value="cross">Static cross</option>
+            <option value="dot">Dot</option>
+            <option value="system">System cursor</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label>Crosshair Size <span class="setting__val" id="val-chsize">10</span></label>
+          <input type="range" id="set-chsize" min="4" max="24" value="10" />
+        </div>
+        <div class="setting">
+          <label>Crosshair Colour</label>
+          <select id="set-chcolor">
+            <option value="#7ff2c1">Mint</option>
+            <option value="#ffffff">White</option>
+            <option value="#ffe14a">Yellow</option>
+            <option value="#ff4b5c">Red</option>
+            <option value="#39c0ff">Cyan</option>
+          </select>
         </div>
         <!-- Keybinds. Rows are generated by js/screens.js from Controls.ACTIONS
              so the panel can never drift from the table the game reads. -->
@@ -514,6 +604,11 @@
           <div class="result-stat"><b id="res-xp">0</b><span>Battle Pass XP</span></div>
           <div class="result-stat"><b id="res-credits">0</b><span>Credits</span></div>
         </div>
+
+        <!-- After-action: the numbers the four tiles above leave out, with a
+             callout on anything that is now a personal best. Filled in by
+             game.js renderAfterAction(). -->
+        <div class="aar" id="res-aar"></div>
 
         <!-- Final scoreboard, filled in by game.js endMatch() -->
         <div class="board">

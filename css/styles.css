@@ -5,28 +5,58 @@
    made panels and text sit in a very narrow band. Everything is lifted a few
    stops — lighter grounds, stronger panel contrast, brighter body and muted
    text — while keeping the same blue/orange identity. */
+/* ---------- tokens ----------
+
+   Two rules govern this palette, and everything below follows from them.
+
+   ONE CHROME ACCENT. The interface used to be painted in orange *and* cyan
+   *and* blue, so nothing led: three colours competing for the same job is the
+   same as none. Orange is the only colour the chrome is allowed to use — it
+   means "act on this". Everything else here is a *data* colour: red is damage,
+   green is health, gold is a reward, and the team hues belong to squads. They
+   appear where the game has something to say, never as decoration.
+
+   ONE GREY FAMILY. Every neutral is tinted with the same cool hue, so panels,
+   rules and text read as one material lit from one direction rather than a
+   pile of unrelated greys. Shadows carry that hue too — a black shadow on a
+   navy ground looks like a hole cut in the page. */
 :root {
-  --bg-0: #16203c;
-  --bg-1: #1e2a4c;
-  --bg-2: #33436e;
-  --panel: rgba(44, 60, 100, 0.78);
-  --panel-solid: #26345c;
-  --line: rgba(150, 190, 255, 0.24);
-  --line-strong: rgba(150, 190, 255, 0.46);
-  --text: #f4f8ff;
-  --muted: #b6c6ea;
-  --dim: #8496c0;
-  --accent: #ff6a2b;      /* orange — energy / deploy */
-  --accent-2: #35e0ff;    /* cyan — team blue */
-  --blue: #3d7bff;
-  --red: #ff4b5c;
-  --green: #4be08a;
-  --gold: #ffcf4a;
-  --danger: #ff4b5c;
-  --radius: 16px;
+  --bg-0: #141b30;        /* the ground: off-black, tinted cool, never #000 */
+  --bg-1: #1b2440;
+  --bg-2: #2c3a60;
+  --panel: rgba(40, 55, 94, 0.76);
+  --panel-solid: #222f52;
+  --line: rgba(150, 190, 255, 0.20);
+  --line-strong: rgba(150, 190, 255, 0.42);
+  --text: #f2f6ff;
+  --muted: #a9b9dd;
+  --dim: #7e8fb8;
+
+  /* the one accent, held under 80% saturation so it sits in the palette
+     instead of shouting over it */
+  --accent: #e8763f;
+  --accent-soft: rgba(232, 118, 63, 0.16);
+
+  /* data colours — meaning, not decoration */
+  --accent-2: #5fc0d8;    /* your own squad, on pills and markers */
+  --blue: #4c82e8;
+  --red: #e8556a;
+  --green: #4fcb8a;
+  --gold: #e8bb52;
+  --danger: #e8556a;
+
+  /* radius steps: containers soft, inner elements tighter, chips tighter still */
+  --radius: 18px;
   --radius-sm: 10px;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-  --font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --radius-xs: 6px;
+
+  /* shadows tinted with the ground's own hue, cast from a single light above */
+  --shadow: 0 18px 50px rgba(8, 13, 30, 0.58);
+  --shadow-sm: 0 6px 18px rgba(8, 13, 30, 0.42);
+  --shadow-accent: 0 12px 30px rgba(232, 118, 63, 0.30);
+
+  --font: 'Outfit', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Azeret Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', monospace;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,15 +72,56 @@ body {
 button { font-family: inherit; cursor: pointer; color: inherit; }
 input, select { font-family: inherit; }
 
+/* ---------- type scale ----------
+   Headlines get presence from size and tight tracking, not from being bold and
+   nothing else. Large text takes negative tracking; small labels take positive
+   tracking, which is the only thing that makes 10px caps legible. */
+h1, h2, h3 { text-wrap: balance; }
+h1 { font-size: clamp(28px, 3.2vw, 44px); font-weight: 800; letter-spacing: -0.025em; line-height: 1.05; }
+h2 { font-weight: 700; letter-spacing: -0.015em; line-height: 1.15; }
+h3 { font-weight: 600; letter-spacing: -0.01em; }
+p  { text-wrap: pretty; }
+/* body copy stops at a readable measure instead of running the panel's width */
+.panel__lede, .subpage__head p, .mode-card__body p, .news-card p { max-width: 62ch; line-height: 1.55; }
+
+/* Every number in the interface is a number in a data display: counters,
+   scores, timers, prices, distances. Proportional digits shift width as they
+   change, so a counting stat visibly jitters. Monospace figures do not. */
+.stat b, .career__level, .career__xptext, .season__xp, .wallet__item b,
+.setupbar b, .aar__cell b, .result-stat b, .lb td, .history__kd, .history__streak,
+.bp-progress__xp, #bp-xp, #bp-xpmax, .hud__ammo, .hud__timer, .board__num,
+.intel__count, .shop-card__price, .weapon-card__nums, .gs-stat__v {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ---------- focus ----------
+   Keyboard users need to see where they are. The default ring is removed by
+   almost every reset in existence, including the one at the top of this file,
+   so it has to be put back deliberately. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+:focus:not(:focus-visible) { outline: none; }
+
 /* ---------- Animated background ---------- */
 .bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+/* The old background was three coloured radial blooms — blue, orange and cyan
+   — over a diagonal fade. That mesh-of-accents is the single most recognisable
+   AI design fingerprint, and it also put a wash of every accent behind an
+   interface that is trying to use one of them to mean something.
+
+   What replaces it is one warm bloom, low and off-centre, on a cool ground:
+   a single light source, which is the same rule the sprites are drawn to. */
 .bg__gradient {
   position: absolute; inset: -20%;
   background:
-    radial-gradient(60% 50% at 20% 10%, rgba(61, 123, 255, 0.22), transparent 60%),
-    radial-gradient(50% 50% at 85% 20%, rgba(255, 106, 43, 0.18), transparent 60%),
-    radial-gradient(60% 60% at 60% 100%, rgba(53, 224, 255, 0.14), transparent 60%),
-    linear-gradient(160deg, var(--bg-1), var(--bg-0) 60%);
+    radial-gradient(70% 55% at 26% 8%, rgba(232, 118, 63, 0.13), transparent 62%),
+    radial-gradient(90% 70% at 70% 108%, rgba(20, 27, 48, 0.85), transparent 70%),
+    linear-gradient(168deg, var(--bg-1), var(--bg-0) 62%);
   animation: drift 24s ease-in-out infinite alternate;
 }
 @keyframes drift {
@@ -69,8 +140,19 @@ input, select { font-family: inherit; }
 #bg-particles { position: absolute; inset: 0; width: 100%; height: 100%; }
 .bg__vignette {
   position: absolute; inset: 0;
-  box-shadow: inset 0 0 240px rgba(0, 0, 0, 0.7);
+  /* tinted with the ground's own hue rather than pure black */
+  box-shadow: inset 0 0 260px rgba(8, 13, 30, 0.72);
   pointer-events: none;
+}
+/* ---------- grain ----------
+   A flat vector surface reads as sterile no matter how good the colours are;
+   real materials have noise in them. This is one inline SVG turbulence tile,
+   fixed and non-interactive, at an opacity low enough that you notice its
+   absence rather than its presence. No image request, no library. */
+.bg__grain {
+  position: absolute; inset: 0; pointer-events: none;
+  opacity: 0.16; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
 }
 
 /* ---------- Screen system ---------- */
@@ -90,7 +172,7 @@ input, select { font-family: inherit; }
   font-weight: 900; font-size: 26px; letter-spacing: 1px;
   background: linear-gradient(135deg, var(--accent), #ff9d3b);
   color: #1a0e04; border-radius: 16px;
-  box-shadow: 0 10px 30px rgba(255, 106, 43, 0.4);
+  box-shadow: 0 10px 30px rgba(232, 118, 63, 0.4);
 }
 .brand__mark--sm { width: 38px; height: 38px; font-size: 15px; border-radius: 10px; }
 .brand__name { font-weight: 900; letter-spacing: 3px; font-size: 30px; }
@@ -111,9 +193,9 @@ input, select { font-family: inherit; }
 .btn--primary {
   background: linear-gradient(135deg, var(--accent), #ff9d3b);
   color: #1a0e04; border-color: transparent;
-  box-shadow: 0 10px 26px rgba(255, 106, 43, 0.35);
+  box-shadow: 0 10px 26px rgba(232, 118, 63, 0.35);
 }
-.btn--primary:hover { box-shadow: 0 14px 32px rgba(255, 106, 43, 0.5); }
+.btn--primary:hover { box-shadow: 0 14px 32px rgba(232, 118, 63, 0.5); }
 .btn--ghost { background: transparent; }
 .btn--full { width: 100%; }
 .btn--play {
@@ -122,7 +204,7 @@ input, select { font-family: inherit; }
   font-size: 22px; font-weight: 900; letter-spacing: 3px;
   background: linear-gradient(135deg, var(--accent), #ff8f3b);
   color: #1a0e04; border: none; border-radius: 14px;
-  box-shadow: 0 14px 34px rgba(255, 106, 43, 0.45);
+  box-shadow: 0 14px 34px rgba(232, 118, 63, 0.45);
 }
 .btn--play:hover { transform: translateY(-3px) scale(1.02); }
 .btn--play.is-queuing { background: linear-gradient(135deg, #2a3a63, #1c2748); color: var(--text); box-shadow: none; }
@@ -146,7 +228,7 @@ input, select { font-family: inherit; }
   flex: 1; padding: 10px; border: none; background: transparent;
   color: var(--muted); font-weight: 700; border-radius: 8px; transition: 0.2s;
 }
-.auth-tab.is-active { background: rgba(255, 106, 43, 0.16); color: var(--text); }
+.auth-tab.is-active { background: rgba(232, 118, 63, 0.16); color: var(--text); }
 .auth-form { display: none; flex-direction: column; gap: 14px; text-align: left; }
 .auth-form.is-active { display: flex; }
 .field { display: flex; flex-direction: column; gap: 6px; }
@@ -177,7 +259,7 @@ input, select { font-family: inherit; }
   transition: 0.18s; position: relative;
 }
 .topnav__btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
-.topnav__btn.is-active { color: var(--text); background: rgba(255, 106, 43, 0.14); }
+.topnav__btn.is-active { color: var(--text); background: rgba(232, 118, 63, 0.14); }
 .topnav__btn.is-active::after {
   content: ''; position: absolute; left: 16px; right: 16px; bottom: -15px; height: 2px;
   background: var(--accent); border-radius: 2px;
@@ -218,10 +300,18 @@ input, select { font-family: inherit; }
   align-items: stretch;
   gap: 18px; padding: 20px 24px; overflow: hidden;
 }
+/* Glass, properly. `backdrop-filter: blur()` on its own gives you a frosted
+   rectangle; what makes a pane read as glass is its edge — a bright hairline
+   catching the light along the top, a dark one where it meets the surface
+   below, and the panel's own shadow tinted with the ground it sits on. */
 .panel {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 18px; overflow-y: auto;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px) saturate(120%);
+  box-shadow:
+    inset 0 1px 0 rgba(190, 215, 255, 0.14),
+    inset 0 -1px 0 rgba(8, 13, 30, 0.35),
+    var(--shadow-sm);
   display: flex; flex-direction: column; min-height: 0;
 }
 .panel__lede { font-size: 12px; color: var(--muted); line-height: 1.5; margin: -6px 0 12px; }
@@ -238,7 +328,7 @@ input, select { font-family: inherit; }
 .career__avatar {
   width: 46px; height: 46px; flex: none; border-radius: 12px;
   display: grid; place-items: center; font-size: 24px;
-  background: linear-gradient(135deg, rgba(61,123,255,0.45), rgba(255,106,43,0.45));
+  background: linear-gradient(150deg, rgba(232,118,63,0.42), rgba(232,118,63,0.10) 62%, transparent);
   border: 1px solid var(--line-strong);
 }
 .career__who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
@@ -296,7 +386,13 @@ input, select { font-family: inherit; }
 .kitstrip__item { display: flex; flex-direction: column; gap: 2px; padding-right: 12px; flex: 1; min-width: 88px; }
 .kitstrip__k { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
 .kitstrip__item b { font-size: 13px; }
-.panel__title { font-size: 15px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 14px; color: var(--text); display: flex; justify-content: space-between; align-items: baseline; }
+/* Panel headings were uppercase, tracked out, at body size — the same
+   treatment on every heading on the page, which flattens hierarchy instead of
+   creating it. Sentence case at a larger size with negative tracking reads as
+   a heading because of its weight and scale, not because it is shouting.
+   Micro-labels further down this file stay uppercase: at 8-11px, caps with
+   tracking genuinely are more legible. */
+.panel__title { font-size: 17px; font-weight: 600; letter-spacing: -0.012em; margin-bottom: 14px; color: var(--text); display: flex; justify-content: space-between; align-items: baseline; }
 .panel__hint { font-size: 11px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
 /* subpage panels take the whole home area */
@@ -318,7 +414,7 @@ input, select { font-family: inherit; }
 .news-card { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
 .news-card__banner {
   padding: 26px 16px; position: relative;
-  background: linear-gradient(135deg, rgba(61,123,255,0.5), rgba(255,106,43,0.5));
+  background: linear-gradient(150deg, rgba(232,118,63,0.46), rgba(232,118,63,0.12) 62%, transparent);
 }
 .news-card__banner h3 { font-size: 20px; margin-top: 6px; }
 .news-card p { padding: 12px 14px; font-size: 13px; color: var(--muted); line-height: 1.5; }
@@ -326,13 +422,19 @@ input, select { font-family: inherit; }
   display: inline-block; font-size: 10px; letter-spacing: 1.5px; font-weight: 800;
   padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,0.35); color: var(--gold);
 }
-.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+/* Three identical columns is the most generic layout there is, and it also
+   implies the three numbers matter equally. They do not — wins is the one
+   people care about, so it gets the room and the others sit beside it. */
+.stat-row { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 8px; }
+.stat:first-child { background: var(--accent-soft); border-color: rgba(232,118,63,0.34); }
+.stat:first-child b { font-size: 30px; color: var(--accent); }
 .stat {
-  background: rgba(0,0,0,0.22); border: 1px solid var(--line); border-radius: 10px;
-  padding: 12px 6px; text-align: center;
+  background: rgba(0,0,0,0.22); border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px 8px; text-align: left;
 }
 .stat b { display: block; font-size: 22px; }
-.stat span { font-size: 11px; color: var(--muted); }
+.stat span { font-size: 11px; color: var(--muted); letter-spacing: 0.02em; }
 
 /* PLAY HUB (center) */
 /* The centre column starts at the top and works down, rather than centring
@@ -343,7 +445,10 @@ input, select { font-family: inherit; }
 }
 .play-hub > * { flex: none; }
 .play-hub__head { text-align: center; }
-.play-hub__title { font-size: 25px; font-weight: 900; letter-spacing: 3px; }
+/* 3px of tracking at 25px made the hero read as a label rather than a
+   headline. Presence comes from scale and weight; caps need only a hair of
+   positive tracking to stay even. */
+.play-hub__title { font-size: clamp(30px, 3vw, 42px); font-weight: 800; letter-spacing: 0.01em; line-height: 1.02; }
 .play-hub__sub { color: var(--muted); margin-top: 6px; }
 .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; width: 100%; max-width: 640px; }
 .mode-card {
@@ -354,10 +459,10 @@ input, select { font-family: inherit; }
 }
 .mode-card::before {
   content: ''; position: absolute; inset: 0; opacity: 0; transition: 0.25s;
-  background: radial-gradient(120% 100% at 50% 0%, rgba(255,106,43,0.18), transparent 70%);
+  background: radial-gradient(120% 100% at 50% 0%, rgba(232,118,63,0.18), transparent 70%);
 }
 .mode-card:hover { transform: translateY(-4px); border-color: var(--line-strong); }
-.mode-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 14px 30px rgba(255,106,43,0.2); }
+.mode-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 14px 30px rgba(232,118,63,0.2); }
 .mode-card.is-selected::before { opacity: 1; }
 .mode-card__icon { font-size: 40px; }
 .mode-card__body h3 { font-size: 20px; }
@@ -393,10 +498,10 @@ input, select { font-family: inherit; }
 
 /* ---------- SUBPAGES (missions / bp / loadout) ---------- */
 .subpage__head { margin-bottom: 22px; }
-.subpage__head h1 { font-size: 26px; font-weight: 900; letter-spacing: 1px; }
+.subpage__head h1 { font-size: clamp(26px, 2.4vw, 34px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.06; }
 .subpage__head p { color: var(--muted); margin-top: 6px; }
 .mission-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
-.col-title { margin-bottom: 12px; font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.col-title { margin-bottom: 12px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
 .mission-list .mini-mission { padding: 16px; }
 
 /* battle pass */
@@ -486,7 +591,7 @@ input, select { font-family: inherit; }
   padding: 9px 16px; border-radius: 999px; font-weight: 700; font-size: 13px; transition: 0.16s;
 }
 .shop-tab:hover { color: var(--text); border-color: var(--line-strong); }
-.shop-tab.is-active { background: rgba(255,106,43,0.16); color: var(--text); border-color: var(--accent); }
+.shop-tab.is-active { background: rgba(232,118,63,0.16); color: var(--text); border-color: var(--accent); }
 .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
 .shop-empty { color: var(--dim); font-size: 13px; }
 .shop-card {
@@ -565,7 +670,7 @@ input, select { font-family: inherit; }
   padding: 10px 12px; width: 232px; transition: 0.16s;
 }
 .gs-mod:hover { transform: translateY(-2px); border-color: var(--line-strong); }
-.gs-mod.is-on { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2); background: rgba(53,224,255,0.07); }
+.gs-mod.is-on { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2); background: rgba(95,192,216,0.07); }
 .gs-mod-head { font-size: 12px; font-weight: 800; }
 .gs-mod-buff { font-size: 10px; color: var(--green); line-height: 1.5; }
 .gs-mod-debuff { font-size: 10px; color: var(--red); line-height: 1.5; }
@@ -579,7 +684,7 @@ input, select { font-family: inherit; }
 }
 .wclass { border-left: 2px solid transparent; padding-left: 14px; transition: 0.16s; }
 .wclass.is-active { border-left-color: var(--accent); }
-.wclass__title { font-size: 15px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.wclass__title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .wclass__tag { font-size: 9px; letter-spacing: 1px; padding: 2px 7px; border-radius: 999px; background: var(--accent); color: #1a0e04; font-weight: 800; }
 .wclass__desc { font-size: 12px; color: var(--dim); max-width: 720px; margin-bottom: 8px; line-height: 1.5; }
 .wclass__kit { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
@@ -615,7 +720,7 @@ input, select { font-family: inherit; }
 .rbadge--pos { background: rgba(75,224,138,0.14); color: var(--green); }
 .rbadge--neg { background: rgba(255,75,92,0.14); color: var(--red); }
 .weapon-card__badge { display: inline-block; margin-top: 4px; font-size: 11px; padding: 4px 8px; border-radius: 6px; background: rgba(0,0,0,0.3); color: var(--muted); text-align: center; font-weight: 700; }
-.weapon-card.is-equipped .weapon-card__badge { color: var(--accent); background: rgba(255,106,43,0.14); }
+.weapon-card.is-equipped .weapon-card__badge { color: var(--accent); background: rgba(232,118,63,0.14); }
 
 /* ---------- MODAL ---------- */
 .modal { position: fixed; inset: 0; z-index: 30; display: none; align-items: center; justify-content: center; background: rgba(4, 7, 16, 0.72); backdrop-filter: blur(4px); }
@@ -643,7 +748,7 @@ input, select { font-family: inherit; }
 .switch input { display: none; }
 .switch span { position: absolute; inset: 0; background: rgba(0,0,0,0.4); border-radius: 30px; transition: 0.2s; border: 1px solid var(--line); }
 .switch span::before { content: ''; position: absolute; width: 18px; height: 18px; left: 4px; top: 3px; background: var(--muted); border-radius: 50%; transition: 0.2s; }
-.switch input:checked + span { background: rgba(255,106,43,0.4); }
+.switch input:checked + span { background: rgba(232,118,63,0.4); }
 .switch input:checked + span::before { transform: translateX(20px); background: var(--accent); }
 
 /* ---------- MATCH FOUND OVERLAY ---------- */
@@ -791,7 +896,7 @@ input, select { font-family: inherit; }
 .board__rows { max-height: 232px; overflow-y: auto; }
 .board__row { border-radius: 8px; font-size: 13px; }
 .board__row:nth-child(odd) { background: rgba(0,0,0,0.22); }
-.board__row.is-you { background: rgba(53,224,255,0.16); box-shadow: inset 0 0 0 1px rgba(53,224,255,0.5); font-weight: 700; }
+.board__row.is-you { background: rgba(95,192,216,0.16); box-shadow: inset 0 0 0 1px rgba(95,192,216,0.5); font-weight: 700; }
 .board__row.is-you em { font-style: normal; color: var(--accent); font-size: 11px; }
 .board__rank { color: var(--muted); font-variant-numeric: tabular-nums; }
 .board__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -840,7 +945,7 @@ input, select { font-family: inherit; }
 .lb td { padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .lb tbody tr { transition: background 0.15s; }
 .lb tbody tr:hover { background: rgba(255,255,255,0.04); }
-.lb tbody tr.is-you { background: rgba(255,106,43,0.12); }
+.lb tbody tr.is-you { background: rgba(232,118,63,0.12); }
 .lb tbody tr.is-you td:first-child { border-left: 2px solid var(--accent); }
 .lb__rank { font-weight: 900; color: var(--muted); width: 42px; }
 .lb__rank--1 { color: var(--gold); }
@@ -880,7 +985,7 @@ input, select { font-family: inherit; }
 .intel li:nth-child(7) { animation-delay: 0.24s; }
 .lb tbody tr { animation: bs-fade 0.22s ease backwards; }
 /* the deploy button breathes, so the eye lands on it */
-@keyframes bs-pulse { 0%, 100% { box-shadow: 0 0 24px rgba(255,106,43,0.35); } 50% { box-shadow: 0 0 38px rgba(255,106,43,0.6); } }
+@keyframes bs-pulse { 0%, 100% { box-shadow: 0 0 24px rgba(232,118,63,0.35); } 50% { box-shadow: 0 0 38px rgba(232,118,63,0.6); } }
 .btn--play { animation: bs-pulse 2.6s ease-in-out infinite; }
 .btn--play:hover { animation-duration: 1.2s; }
 /* progress bars fill rather than snap */
@@ -967,7 +1072,7 @@ input, select { font-family: inherit; }
 .mode-card:active { transform: translateY(-2px) scale(0.996); }
 .mode-card.is-selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), 0 14px 42px rgba(255,106,43,0.22);
+  box-shadow: 0 0 0 1px var(--accent), 0 14px 42px rgba(232,118,63,0.22);
 }
 /* a slow sheen across whichever mode is armed */
 .mode-card.is-selected::before {
@@ -1053,4 +1158,99 @@ input, select { font-family: inherit; }
   .mode-card.is-selected::before, .btn--play::after, .bar__fill::after { animation: none; }
   .mode-card:hover, .intel li:hover, .stat:hover, .lb tbody tr:hover,
   .changelog li:hover { transform: none; }
+}
+
+/* ============================================================
+   NEW SYSTEMS — the screens the ten additions needed.
+
+   Firing range entry, the after-action card, match history, and
+   the three saved kits. Each borrows the panel language already
+   in this file rather than inventing a fourth kind of box.
+   ============================================================ */
+
+/* ---------- firing range entry ---------- */
+.rangebar {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  margin-top: 12px; padding: 12px 18px;
+  background: rgba(0,0,0,0.28); border: 1px solid var(--line); border-radius: 12px;
+  border-left: 3px solid var(--accent-2, #7ff2c1);
+}
+.rangebar__text { display: flex; flex-direction: column; gap: 3px; text-align: left; }
+.rangebar__text b { font-size: 15px; }
+.rangebar__text span { color: var(--muted); font-size: 12px; }
+
+/* ---------- after-action report ---------- */
+/* Deliberately lighter than the four headline tiles above it: this is the
+   detail behind the result, not four more results. */
+.aar {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 6px; margin: 16px 0 4px; padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.aar::before {
+  content: 'AFTER ACTION'; grid-column: 1 / -1;
+  font-size: 10px; font-weight: 900; letter-spacing: 2px; color: var(--muted);
+  text-align: left; margin-bottom: 2px;
+}
+@media (max-width: 720px) { .aar { grid-template-columns: repeat(3, 1fr); } }
+.aar__cell {
+  position: relative; padding: 8px 6px; border-radius: 8px; text-align: center;
+  background: rgba(0,0,0,0.22); border: 1px solid var(--line);
+}
+.aar__cell b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+.aar__cell span { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.aar__cell.is-best { border-color: var(--gold, #ffcf4a); background: rgba(255,207,74,0.10); }
+.aar__pb {
+  position: absolute; top: -7px; right: 6px; font-style: normal; font-size: 9px;
+  font-weight: 900; letter-spacing: 1px; padding: 1px 6px; border-radius: 999px;
+  background: var(--gold, #ffcf4a); color: #1a1206;
+}
+
+/* ---------- recent matches ---------- */
+.history { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.history__empty { color: var(--muted); font-size: 12px; padding: 8px 2px; }
+.history__row {
+  display: grid; grid-template-columns: 26px 1fr auto auto; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 9px;
+  background: rgba(0,0,0,0.26); border: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  transition: transform 0.16s, border-color 0.16s;
+}
+.history__row:hover { transform: translateX(3px); border-color: var(--line-strong); }
+.history__row.is-win { border-left-color: var(--green, #4be08a); }
+.history__row.is-loss { border-left-color: #ff4b5c; }
+.history__res { font-weight: 900; text-align: center; }
+.is-win .history__res { color: var(--green, #4be08a); }
+.is-loss .history__res { color: #ff4b5c; }
+.history__mode, .history__kd, .history__streak { display: flex; flex-direction: column; font-size: 13px; }
+.history__kd, .history__streak { text-align: right; font-variant-numeric: tabular-nums; }
+.history i { font-style: normal; font-size: 10px; color: var(--muted); }
+
+/* ---------- saved kits ---------- */
+.presets {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin-bottom: 18px;
+}
+.preset {
+  padding: 14px; border-radius: 12px; text-align: left;
+  background: rgba(0,0,0,0.28); border: 1px solid var(--line);
+  transition: border-color 0.18s, transform 0.18s;
+}
+.preset:hover { transform: translateY(-2px); border-color: var(--line-strong); }
+.preset.is-empty { opacity: 0.7; }
+.preset.is-live { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.preset__head { display: flex; align-items: center; justify-content: space-between; }
+.preset__n { font-size: 10px; font-weight: 900; letter-spacing: 2px; color: var(--muted); }
+.preset__live {
+  font-size: 9px; font-weight: 900; letter-spacing: 1px; padding: 2px 7px;
+  border-radius: 999px; background: var(--accent); color: #14100a;
+}
+.preset__name { margin-top: 8px; font-size: 15px; font-weight: 800; }
+.preset__sub { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.preset__btns { display: flex; gap: 6px; margin-top: 12px; }
+.preset__btns .btn { flex: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .history__row, .preset { transition: none; }
+  .history__row:hover, .preset:hover { transform: none; }
 }

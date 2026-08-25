@@ -34,9 +34,112 @@ const Terrain = (() => {
     bridgeEdge: '#5e4629',
   };
 
-  /* how far in from the edge each band sits */
+  /* how far in from the edge each band sits, on average */
   const OCEAN_INSET = 150;      // water all the way round
   const BEACH_INSET = 300;      // sand between water and grass
+
+  /* ============================================================
+     THE COASTLINE
+
+     The island used to be three nested rectangles: a square of ocean, a
+     square of sand inside it, a square of grass inside that. Every shore on
+     the map ran dead straight for four thousand pixels and turned ninety
+     degrees at the corner. Nothing else on the map mattered as much to whether
+     it read as a place — you can draw beautiful grass and it is still a
+     rectangle of it.
+
+     What replaces it is the standard approach for this: a base shape with
+     octaves of noise displacing the water's edge — a few big lobes for bays
+     and headlands, then finer detail for inlets and points. The base is a
+     rounded rectangle rather than a circle so the playable area stays close
+     to the square the rest of the generator assumes.
+
+     Two rules make it hold together:
+
+     • ONE SOURCE OF TRUTH. `edgeDist` and `oceanAt` decide where the water is,
+       and the drawn polygons are solved from those same functions rather than
+       drawn to look similar. Otherwise you get sand you cannot stand on and
+       water you can walk over.
+
+     • SAND COLLECTS IN BAYS. A beach is not a constant-width ribbon: where the
+       coast is bitten inland the beach is broad, and on an exposed headland it
+       is a thin strip below the grass. So the beach edge is derived from the
+       water's edge rather than wobbling independently.
+     ============================================================ */
+  /* Wavelengths around the island and how far each one pushes the shore.
+     Low k = a few big bays; high k = the detail you see standing on it. */
+  const COAST_OCTAVES = [
+    { k: 1, amp: 0.44 },
+    { k: 2, amp: 0.27 },
+    { k: 3, amp: 0.15 },
+    { k: 5, amp: 0.11 },
+    { k: 9, amp: 0.07 },
+    { k: 17, amp: 0.04 },
+  ];
+  const COAST_AMP = 215;        // px the water's edge swings either way
+  const BEACH_MIN = 120;        // narrowest strip of sand, on a headland
+  const BEACH_SWING = 210;      // extra sand that gathers in a bay
+  const CORNER_R = 1650;        // how much the island's corners are rounded off
+
+  /* Where a point sits on the way round the island, 0..1. Taken from the angle
+     about the centre, which wraps continuously and so cannot seam. */
+  const coastU = (t, x, y) => {
+    const a = Math.atan2(y - t.h / 2, x - t.w / 2);
+    return a / (Math.PI * 2) + 0.5;
+  };
+
+  /* Signed distance inward from the island's base outline — positive on land,
+     negative out to sea. Standard rounded-rectangle SDF, negated. */
+  function edgeDist(t, x, y) {
+    const R = Math.min(CORNER_R, t.w / 2, t.h / 2);
+    const qx = Math.abs(x - t.w / 2) - (t.w / 2 - R);
+    const qy = Math.abs(y - t.h / 2) - (t.h / 2 - R);
+    const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+    return -(Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - R);
+  }
+
+  /* The summed octaves at a point on the way round, roughly -1..1. */
+  function coastNoise(t, u) {
+    let s = 0;
+    for (let i = 0; i < COAST_OCTAVES.length; i++) {
+      const o = COAST_OCTAVES[i];
+      s += Math.sin(u * Math.PI * 2 * o.k + t.coastPhase[i]) * o.amp;
+    }
+    return s;
+  }
+
+  /* How far in from the base outline the water reaches here. */
+  const oceanAt = (t, u) => t.oceanInset + coastNoise(t, u) * COAST_AMP;
+  /* ...and where the sand gives way to grass. Broad where the sea has bitten
+     inland, narrow where the land pushes out. */
+  const beachAt = (t, u) => {
+    const bay = (coastNoise(t, u) + 1) / 2;      // 0 on a headland, 1 in a bay
+    return oceanAt(t, u) + BEACH_MIN + bay * BEACH_SWING;
+  };
+
+  /* Solve the outline for drawing, so the picture is derived from the same
+     functions the game queries rather than drawn to match by eye. For each of
+     `n` bearings, bisect along the ray from the centre for the point where the
+     inward distance equals the band's inset. */
+  function boundaryPolygon(t, insetAt, n) {
+    const cx = t.w / 2, cy = t.h / 2;
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const u = i / n;
+      const ang = (u - 0.5) * Math.PI * 2;
+      const dx = Math.cos(ang), dy = Math.sin(ang);
+      const want = insetAt(t, u);
+      // outside the island for sure, and inside for sure
+      let lo = 0, hi = Math.hypot(t.w, t.h) * 0.6;
+      for (let k = 0; k < 24; k++) {
+        const mid = (lo + hi) / 2;
+        // edgeDist falls as we head outward, so the land side is the low half
+        if (edgeDist(t, cx + dx * mid, cy + dy * mid) > want) lo = mid; else hi = mid;
+      }
+      pts.push({ x: cx + dx * lo, y: cy + dy * lo });
+    }
+    return pts;
+  }
 
   /* tiny seeded RNG so a seed always rebuilds the same island */
   function rng(seed) {
@@ -68,7 +171,11 @@ const Terrain = (() => {
       colors: {
         grass: '#b9a05e', grassAlt: '#a8904f', grassLight: '#cbb573',
         beach: '#e8d3a0', beachEdge: '#d8c08a',
-        river: '#3f93b8', riverEdge: '#63b0d0', road: '#b0a храм'.replace(' храм', '18c'),
+        /* This read `'#b0a храм'.replace(' храм', '18c')` — a hex colour with a
+           Cyrillic word spliced into it and patched back out at runtime. It
+           evaluated to the right string, so nothing ever failed; it was still
+           garbage that survived into the source. */
+        river: '#3f93b8', riverEdge: '#63b0d0', road: '#b0a18c',
       },
     },
     tundra: {
@@ -156,6 +263,15 @@ const Terrain = (() => {
       obstacles: [],  // structured obstacle zones
     };
 
+    /* This island's coastline. One phase per octave, drawn from the same seed
+       as everything else, so every client carves the same bays. */
+    t.coastPhase = COAST_OCTAVES.map(() => rand() * Math.PI * 2);
+    /* Solved once, here, rather than every frame: the water's edge and the
+       top of the beach, as closed outlines the renderer can fill. 220 points
+       is enough that the finest octave still reads as a curve. */
+    t.coastLine = boundaryPolygon(t, oceanAt, 220);
+    t.shoreLine = boundaryPolygon(t, beachAt, 220);
+
     // --- river: a polyline wandering top-to-bottom or left-to-right ---
     const vertical = rand() < 0.5;
     const width = 120 + rand() * 70;
@@ -178,14 +294,44 @@ const Terrain = (() => {
        area, a cross through the middle, and spurs out to the three landmark
        sites, so the places worth going to are actually connected. Junctions are
        recorded because bridges are placed where a road meets the river. */
+    /* Roads are laid as straight lines between a handful of corners, which at
+       any distance reads as a rectangle drawn on the ground with a ruler —
+       and once the coast started bending, it was the most obviously
+       manufactured thing left on the map.
+
+       `wander` subdivides a run and pushes each new point sideways, so a road
+       leans around what it is passing the way a real one does. The corners it
+       was given are kept exactly, so junctions, spurs and bridge crossings all
+       still meet. */
+    const wander = (pts, amp, seg) => {
+      const out = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const n = Math.max(1, Math.round(len / seg));
+        // unit normal to the run, which is the direction a road can drift in
+        const nx = -dy / len, ny = dx / len;
+        for (let k = 1; k < n; k++) {
+          const p = k / n;
+          // zero at both ends so the given corners are not moved
+          const fall = Math.sin(p * Math.PI);
+          const push = (rand() * 2 - 1) * amp * fall;
+          out.push({ x: a.x + dx * p + nx * push, y: a.y + dy * p + ny * push });
+        }
+        out.push(b);
+      }
+      return out;
+    };
+
     const inset = BEACH_INSET + 180;
     const ring = [
       { x: inset, y: inset }, { x: w - inset, y: inset },
       { x: w - inset, y: h - inset }, { x: inset, y: h - inset }, { x: inset, y: inset },
     ];
-    t.roads.push({ pts: ring, width: 84, kind: 'ring' });
-    t.roads.push({ pts: [{ x: inset, y: h * 0.5 }, { x: w - inset, y: h * 0.5 }], width: 70, kind: 'trunk' });
-    t.roads.push({ pts: [{ x: w * 0.5, y: inset }, { x: w * 0.5, y: h - inset }], width: 70, kind: 'trunk' });
+    t.roads.push({ pts: wander(ring, 150, 760), width: 84, kind: 'ring' });
+    t.roads.push({ pts: wander([{ x: inset, y: h * 0.5 }, { x: w - inset, y: h * 0.5 }], 175, 820), width: 70, kind: 'trunk' });
+    t.roads.push({ pts: wander([{ x: w * 0.5, y: inset }, { x: w * 0.5, y: h - inset }], 175, 820), width: 70, kind: 'trunk' });
 
     // spurs to the landmark anchors, matching game.js's placement
     t.landmarkAnchors = [
@@ -199,7 +345,7 @@ const Terrain = (() => {
       const bend = toTrunkY
         ? { x: a.x, y: h * 0.5 }
         : { x: w * 0.5, y: a.y };
-      t.roads.push({ pts: [{ x: a.x, y: a.y }, bend], width: 58, kind: 'spur' });
+      t.roads.push({ pts: wander([{ x: a.x, y: a.y }, bend], 90, 520), width: 58, kind: 'spur' });
     }
 
     // --- structured obstacle zones: clearings, dense clusters, perimeter fortifications ---
@@ -275,11 +421,18 @@ const Terrain = (() => {
     return best;
   }
 
-  const inOcean = (t, x, y) =>
-    x < t.oceanInset || y < t.oceanInset || x > t.w - t.oceanInset || y > t.h - t.oceanInset;
-  const inBeach = (t, x, y) =>
-    !inOcean(t, x, y) &&
-    (x < t.beachInset || y < t.beachInset || x > t.w - t.beachInset || y > t.h - t.beachInset);
+  /* Where the water is. These were four comparisons against the map edge —
+     which is exactly why the island was a rectangle. They now ask the
+     coastline, and so does the renderer, so what you see is what you can walk
+     on. Both are cheap: one atan2, one hypot and five sines. */
+  const inOcean = (t, x, y) => edgeDist(t, x, y) < oceanAt(t, coastU(t, x, y));
+  const inBeach = (t, x, y) => {
+    const d = edgeDist(t, x, y), u = coastU(t, x, y);
+    return d >= oceanAt(t, u) && d < beachAt(t, u);
+  };
+  /* How far inside the water's edge a point is, negative out at sea. What the
+     renderer uses to lay wet sand and foam along the tideline. */
+  const shoreDepth = (t, x, y) => edgeDist(t, x, y) - oceanAt(t, coastU(t, x, y));
 
   function onBridge(t, x, y) {
     for (const b of t.bridges) {
@@ -310,8 +463,10 @@ const Terrain = (() => {
   /* somewhere sensible to put a building or a crate: dry, inland, off the road */
   function isBuildable(t, x, y, pad) {
     const p = pad || 0;
-    if (x < t.beachInset + p || y < t.beachInset + p) return false;
-    if (x > t.w - t.beachInset - p || y > t.h - t.beachInset - p) return false;
+    /* Inland of the grass line by at least the building's own reach, measured
+       against the real coast. The old rectangular test let a warehouse sit on
+       what is now a beach, or half in a bay. */
+    if (edgeDist(t, x, y) < beachAt(t, coastU(t, x, y)) + p) return false;
     for (const r of t.rivers) if (distToPath(r.pts, x, y) < r.width / 2 + p + 60) return false;
     return true;
   }
@@ -326,6 +481,8 @@ const Terrain = (() => {
     COLORS, BIOMES, BIOME_IDS, biomeFor, WEATHER, BIOME_WEATHER, weatherFor, OCEAN_INSET, BEACH_INSET,
     generate, rng, distToPath,
     inOcean, inBeach, inRiver, onBridge, onRoad,
+    // the coastline, for anything that needs to draw or reason about the shore
+    edgeDist, coastU, oceanAt, beachAt, shoreDepth, boundaryPolygon, CORNER_R,
     surfaceAt, isBuildable, isSpawnable,
   };
 })();

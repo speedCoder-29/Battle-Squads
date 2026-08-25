@@ -15,6 +15,37 @@
    ============================================================ */
 const Sprites = (() => {
 
+  /* ---------- the light ----------
+     The header above has always claimed "one light source", but the set did
+     not actually obey it: the tree put its shadowed mass up and to the left
+     and its highlight in the same place, the boulder had a rim light on the
+     side facing away from the sun, and the crate wore a bright diagonal
+     straight across its face. Read together, the props looked lit from
+     everywhere, which is the same as looking lit from nowhere — it is why the
+     world read flat however carefully any single sprite was drawn.
+
+     So the direction is written down here and every sprite is drawn to it.
+     The sun is high and behind the player's left shoulder: highlights up and
+     to the left, shadow down and to the right, always.
+
+     LX/LY are in units of the sprite's own radius, so they scale with it.
+
+     There is a catch, and it is the reason fixing the sprites one by one was
+     not enough. Props are drawn rotated — a tree, a bush and a boulder each
+     get a random angle so that a row of them does not look stamped — and a
+     highlight drawn inside a rotated sprite rotates with it. Every tree on the
+     map was therefore lit from a different direction, which is exactly the
+     "lit from everywhere" problem, arriving through the back door.
+
+     `lit()` runs a drawing pass with the sprite's own rotation undone. The
+     silhouette keeps its random angle; the light does not. */
+  const LX = -0.38, LY = -0.34;
+  let curRot = 0;
+  function lit(ctx, fn) {
+    if (!curRot) { fn(); return; }
+    ctx.save(); ctx.rotate(-curRot); fn(); ctx.restore();
+  }
+
   /* shared palette so everything feels like one set (survev.io-inspired) */
   const P = {
     /* wood: warm, readable, slightly worn */
@@ -33,8 +64,11 @@ const Sprites = (() => {
     cloth: '#5a7190', clothDark: '#2f4052',
     /* fire/hot: bright warning color */
     hot: '#ff6b35', hotDark: '#cc4422',
-    /* shadows: subtle depth */
-    dark: 'rgba(0,0,0,0.40)',
+    /* Shadows carry the hue of the ground they fall on. Pure black on a green
+       field reads as a hole punched through the world rather than shade; a
+       cool, slightly blue dark reads as an absence of sunlight, which is what
+       a shadow actually is. */
+    dark: 'rgba(22, 30, 48, 0.38)',
   };
 
   /* helper: filled path with a darker outline, the look of the whole set */
@@ -60,13 +94,21 @@ const Sprites = (() => {
   /* ---------- the sprites ----------
      Signature is always (ctx, r) with the transform already applied. */
   const DRAW = {
-    /* a tree from above: dense canopy with dark shadow base for depth */
+    /* A tree from above. The shadowed mass sits away from the sun — down and
+       right — with the lit crown up and left over it, and the trunk showing
+       through the middle where the canopy parts. Two offset clumps keep the
+       outline from being a plain circle without costing another fill. */
     tree(ctx, r) {
-      circle(ctx, 0, 0, r * 0.35, P.woodDark, null);        // trunk
-      circle(ctx, -r * 0.18, -r * 0.14, r * 0.78, P.leafDark, null);   // back shadow
-      circle(ctx, r * 0.16, r * 0.12, r * 0.70, P.leaf, P.leafDark, 2.5);  // main canopy
-      circle(ctx, -r * 0.20, -r * 0.26, r * 0.32, P.leafLight, null);  // highlight
-      circle(ctx, r * 0.24, r * 0.20, r * 0.18, P.leafLight, null);    // rim light
+      // the silhouette turns with the prop...
+      circle(ctx, -r * 0.46, r * 0.34, r * 0.26, P.leafDark, null);       // clump, breaks the circle
+      circle(ctx, r * 0.10, -r * 0.40, r * 0.24, P.leafDark, null);
+      // ...the light does not
+      lit(ctx, () => {
+        circle(ctx, r * 0.17, r * 0.16, r * 0.80, P.leafDark, null);      // mass in shade
+        circle(ctx, LX * r * 0.30, LY * r * 0.30, r * 0.72, P.leaf, P.leafDark, 2.5);
+        circle(ctx, LX * r * 0.78, LY * r * 0.80, r * 0.30, P.leafLight, null);  // lit crown
+        circle(ctx, 0, 0, r * 0.15, P.woodDark, null);                    // trunk through the gap
+      });
     },
     /* palm: a starburst of fronds */
     palm(ctx, r) {
@@ -79,14 +121,19 @@ const Sprites = (() => {
         shape(ctx, i % 2 ? P.leaf : P.leafDark, P.leafDark, 1.5);
         ctx.restore();
       }
-      circle(ctx, 0, 0, r * 0.20, P.woodLight, P.woodDark, 1.5);
+      lit(ctx, () => {
+        circle(ctx, 0, 0, r * 0.20, P.woodLight, P.woodDark, 1.5);
+        circle(ctx, LX * r * 0.16, LY * r * 0.16, r * 0.10, '#d8b98a', null);
+      });
     },
     /* low scrub: a cluster of small blobs */
     bush(ctx, r) {
       circle(ctx, -r * 0.30, r * 0.10, r * 0.52, P.leafDark, null);
       circle(ctx, r * 0.28, r * 0.16, r * 0.46, P.leafDark, null);
-      circle(ctx, 0, -r * 0.16, r * 0.60, P.leaf, P.leafDark, 2);
-      circle(ctx, -r * 0.18, -r * 0.30, r * 0.22, P.leafLight, null);
+      lit(ctx, () => {
+        circle(ctx, LX * r * 0.12, LY * r * 0.12, r * 0.60, P.leaf, P.leafDark, 2);
+        circle(ctx, LX * r * 0.62, LY * r * 0.70, r * 0.22, P.leafLight, null);
+      });
     },
     /* boulder: irregular polygon with strong shading for tactical clarity */
     rock(ctx, r) {
@@ -96,13 +143,19 @@ const Sprites = (() => {
       pts.forEach(([px, py], i) => (i ? ctx.lineTo(px * r, py * r) : ctx.moveTo(px * r, py * r)));
       ctx.closePath();
       shape(ctx, P.stone, P.stoneDark, 3);  // thicker outline for visibility
-      // large highlight on top-left for depth perception
-      ctx.beginPath();
-      ctx.moveTo(-r * 0.35, -r * 0.40); ctx.lineTo(r * 0.15, -r * 0.60); ctx.lineTo(r * 0.30, -r * 0.05);
-      ctx.closePath();
-      shape(ctx, P.stoneLight, null);
-      // smaller rim light
-      circle(ctx, r * 0.45, r * 0.35, r * 0.12, P.stoneLight, null);
+      lit(ctx, () => {
+        // the sunlit face, up and to the left
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.35, -r * 0.40); ctx.lineTo(r * 0.15, -r * 0.58); ctx.lineTo(r * 0.28, -r * 0.05);
+        ctx.closePath();
+        shape(ctx, P.stoneLight, null);
+        /* ...and the face turned away from it. This used to be a second
+           highlight, which lit the boulder from both sides at once. */
+        ctx.beginPath();
+        ctx.moveTo(r * 0.28, r * 0.05); ctx.lineTo(r * 0.30, r * 0.72); ctx.lineTo(-r * 0.40, r * 0.66);
+        ctx.closePath();
+        shape(ctx, P.stoneDark, null);
+      });
     },
     /* wooden crate: planks and a cross brace */
     crate(ctx, r) {
@@ -112,8 +165,13 @@ const Sprites = (() => {
       ctx.moveTo(-r, -r * 0.33); ctx.lineTo(r, -r * 0.33);
       ctx.moveTo(-r, r * 0.33); ctx.lineTo(r, r * 0.33);
       ctx.stroke();
-      ctx.strokeStyle = P.woodLight; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(-r * 0.8, -r * 0.8); ctx.lineTo(r * 0.8, r * 0.8); ctx.stroke();
+      /* The lit edges, along the two sides facing the sun. This was a bright
+         diagonal drawn corner to corner, which is not something light does to
+         a box — it read as a scratch. */
+      ctx.strokeStyle = P.woodLight; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.86, r * 0.86); ctx.lineTo(-r * 0.86, -r * 0.86); ctx.lineTo(r * 0.86, -r * 0.86);
+      ctx.stroke();
     },
     /* oil drum: survev-style explosive hazard, immediately recognizable */
     barrel(ctx, r) {
@@ -193,6 +251,10 @@ const Sprites = (() => {
         ctx.beginPath();
         ctx.moveTo(i * r * 0.36, -r * 0.75); ctx.lineTo(i * r * 0.36, r * 0.75); ctx.stroke();
       }
+      // the corrugation catches the sun along its upper edge
+      ctx.strokeStyle = 'rgba(190, 224, 245, 0.30)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-r * 1.24, -r * 0.72); ctx.lineTo(r * 1.24, -r * 0.72); ctx.stroke();
     },
     /* ---------- interior furniture ---------- */
     table(ctx, r) {
@@ -374,10 +436,12 @@ const Sprites = (() => {
     const m = META[kind];
     ctx.save();
     ctx.translate(x, y);
-    if (rot) ctx.rotate(rot);
+    curRot = rot || 0;              // remembered so lit() can undo it
+    if (curRot) ctx.rotate(curRot);
     ctx.lineJoin = 'round';
     fn(ctx, m.r * (scale || 1));
     ctx.restore();
+    curRot = 0;
   }
 
   return { DRAW, META, PROP_BOX, P, kinds, has, draw, circle, box };
