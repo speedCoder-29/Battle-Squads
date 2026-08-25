@@ -1577,6 +1577,12 @@ const Structures = (() => {
       out.push(seg('metal', ox + 620, oy + 400, 4, 'v', 0.5));
       out.push(seg('metal', ox + 900, oy + 300, 5, 'v', 0.35));
       out.push(seg('metal', ox + 940, oy + 300, 5, 'v', 0.35));
+      /* The terminal and the hangar. Everything between them is apron and
+         runway — open ground, and it was being roofed. */
+      out.shape = [
+        { x: ox, y: oy, w: 460, h: 300 },
+        { x: ox + 1180, y: oy + 40, w: 340, h: 280 },
+      ];
       out.rooms = [
         room('lobby',      ox + 20,   oy + 20,  200, 260),
         room('gate',       ox + 260,  oy + 20,  180, 260),
@@ -1629,6 +1635,15 @@ const Structures = (() => {
       out.push(...shell(ox + 1370, oy + 40, 100, 100, 'wood', 0.2, [{ side: 's', at: 50 }]));
       rooms.push(room('portapotty', ox + 1254, oy + 54, 72, 72));
       rooms.push(room('portapotty', ox + 1384, oy + 54, 72, 72));
+      /* A compound, not one building — see the note on `farm`. The bounding
+         box here is the whole site; these are the blocks with a roof on. */
+      out.shape = [
+        { x: ox, y: oy, w: 340, h: 240 },
+        { x: ox + 400, y: oy, w: 380, h: 260 },
+        { x: ox + 820, y: oy, w: 380, h: 260 },
+        { x: ox + 1240, y: oy + 40, w: 100, h: 100 },
+        { x: ox + 1370, y: oy + 40, w: 100, h: 100 },
+      ];
       out.rooms = rooms;
       return out;
     },
@@ -1662,6 +1677,12 @@ const Structures = (() => {
       rooms.push(room('lodge',      ox + 960,  oy + 60,  340, 240));
       rooms.push(room('washroom',   ox + 955,  oy + 415, 170, 110));
       rooms.push(room('parkingLot', ox + 950,  oy + 640, 380, 190));
+      /* The lodge and the washblock. The tents, the pitches and the car park
+         are outdoors — see the note on `farm`. */
+      out.shape = [
+        { x: ox + 940, y: oy + 40, w: 380, h: 280 },
+        { x: ox + 940, y: oy + 400, w: 200, h: 140 },
+      ];
       out.rooms = rooms;
       return out;
     },
@@ -2004,6 +2025,13 @@ const Structures = (() => {
       const store = basement('storeroom', ox + RUN - 240, oy + 376, 230, 170,
         { wall: 'rwall', thickness: 0.5, hatchAt: 115 });
       out.push(...store.parts);
+      /* Two blockhouses with a tunnel between them. The tunnel is underground,
+         so the ground above it is open — roofing the bounding box put a shed
+         over the whole run of it. */
+      out.shape = [
+        { x: ox, y: oy, w: 200, h: 190 },
+        { x: ox + RUN - 40, y: oy, w: 200, h: 190 },
+      ];
       out.rooms = [
         room('guardRoom', ox + 22, oy + 22, 156, 146),
         room('guardRoom', ox + RUN - 18, oy + 22, 156, 146),
@@ -2125,6 +2153,16 @@ const Structures = (() => {
       // barn behind the yard fence, and the coop nobody thinks to check
       out.push(...shell(ox + 560, oy + 60, 320, 260, 'wood', 0.35, [{ side: 'w', at: 120, type: 'door', len: 2 }]));
       out.push(...shell(ox + 580, oy + 400, 150, 120, 'wood', 0.2, [{ side: 'n', at: 60, len: 1.5 }]));
+      /* A compound, not one building. Its bounding box spans the whole site —
+         the yard, the fences, the ground between the sheds — and the roof was
+         being painted over all of it, so from outside the entire plot looked
+         like one enormous shed and the roof lifted the moment you stepped into
+         the open. `shape` lists the blocks that actually have a roof on them. */
+      out.shape = [
+        { x: ox, y: oy, w: 480, h: 340 },              // the farmhouse
+        { x: ox + 560, y: oy + 60, w: 320, h: 260 },   // the barn
+        { x: ox + 580, y: oy + 400, w: 150, h: 120 },  // the coop
+      ];
       out.rooms = [
         ...plan.rooms,
         room('wheatField',  ox - 40,  oy + 400, 360, 220),
@@ -2222,6 +2260,17 @@ const Structures = (() => {
       // inner hold
       out.push(...shell(ox + 250, oy + 250, 320, 260, 'rwall', 0.5, [{ side: 'w', at: 90, type: 'rdoor' }]));
       out.push(seg('wire', ox - 60, oy - 60, 22, 'h', 0.4));
+      /* A curtain wall around a courtyard, with towers at the corners and a
+         hold in the middle. The bailey is open sky — roofing the bounding box
+         put a lid over the whole castle, which is the one shape a castle
+         definitely is not. */
+      out.shape = [
+        { x: ox, y: oy, w: 130, h: 130 },
+        { x: ox + w - 130, y: oy, w: 130, h: 130 },
+        { x: ox, y: oy + h - 130, w: 130, h: 130 },
+        { x: ox + w - 130, y: oy + h - 130, w: 130, h: 130 },
+        { x: ox + 250, y: oy + 250, w: 320, h: 260 },
+      ];
       return out;
     },
 
@@ -2776,6 +2825,15 @@ const Structures = (() => {
         { side: 's', at: 20, type: 'garage-door', len: 5 },
         { side: 'n', at: 100, type: 'door', len: 1.5 },
       ]));
+      /* A compound, not one building. Its bounding box spans the whole site —
+         the yard, the forecourt, the ground between the blocks — and the roof
+         was painted over all of it, so from outside the plot looked like one
+         enormous shed and the roof lifted the moment you stepped into the
+         open. `shape` lists the blocks that actually have a roof on them. */
+      out.shape = [
+        { x: ox + 280, y: oy - 20, w: 240, h: 200 },   // the shop
+        { x: ox + 280, y: oy + 220, w: 240, h: 210 },  // the service bay
+      ];
       out.rooms = [
         room('stall',  ox + 300, oy + 0,   200, 160),
         room('garage', ox + 300, oy + 240, 200, 170),
