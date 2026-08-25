@@ -269,8 +269,19 @@ const Terrain = (() => {
     /* Solved once, here, rather than every frame: the water's edge and the
        top of the beach, as closed outlines the renderer can fill. 220 points
        is enough that the finest octave still reads as a curve. */
-    t.coastLine = boundaryPolygon(t, oceanAt, 220);
-    t.shoreLine = boundaryPolygon(t, beachAt, 220);
+    /* Four outlines, not two, and the renderer paints them largest first so
+       each band is the gap between consecutive fills.
+
+       This is a performance decision as much as a drawing one. The bands were
+       being painted as very wide strokes — 190px of shallows, 54px of wet sand
+       — around a 220-point closed path, and then clipped to that same path.
+       Both are slow raster paths, and together they cost more than the whole
+       rest of the frame. Four plain polygon fills draw the identical picture
+       and rasterise as ordinary convex-ish shapes. */
+    t.shallowLine = boundaryPolygon(t, (tt, u) => oceanAt(tt, u) - 200, 220);   // out to sea
+    t.coastLine = boundaryPolygon(t, oceanAt, 220);                            // the water's edge
+    t.wetLine = boundaryPolygon(t, (tt, u) => oceanAt(tt, u) + 52, 220);       // top of the wet sand
+    t.shoreLine = boundaryPolygon(t, beachAt, 220);                            // sand gives way to grass
 
     // --- river: a polyline wandering top-to-bottom or left-to-right ---
     const vertical = rand() < 0.5;
@@ -393,6 +404,11 @@ const Terrain = (() => {
       }
     }
 
+    /* Box every road and river now the network is final, so the per-frame
+       surface lookups can reject most of them without walking a polyline. */
+    for (const r of t.roads) r.box = boundsOfPath(r.pts, r.width / 2 + 2);
+    for (const r of t.rivers) r.box = boundsOfPath(r.pts, r.width / 2 + 2);
+
     // --- grass patches: subtle tone variation so the field isn't flat ---
     for (let i = 0; i < 90; i++) {
       t.patches.push({
@@ -405,6 +421,27 @@ const Terrain = (() => {
   }
 
   /* ---------- queries ---------- */
+  /* A box round a polyline, plus the margin the feature is wide.
+
+     `onRoad` walks every segment of every road, and it is asked for every
+     agent on every frame. That was affordable while a road was four points;
+     once they were subdivided so they could bend, the ring alone became
+     thirty-odd segments and the whole network about seven times the work —
+     which showed up as the simulation, not the renderer, missing frame time.
+
+     Almost every one of those tests is against a road nowhere near the point,
+     so each feature carries a bounding box and the polyline walk only happens
+     for the one or two it could possibly be inside. */
+  function boundsOfPath(pts, margin) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of pts) {
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    }
+    return { x0: x0 - margin, y0: y0 - margin, x1: x1 + margin, y1: y1 + margin };
+  }
+  const inBounds = (b, x, y) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
+
   /* distance from a point to a polyline, used for rivers and roads */
   function distToPath(pts, x, y) {
     let best = Infinity;
@@ -444,11 +481,19 @@ const Terrain = (() => {
     return false;
   }
   function inRiver(t, x, y) {
-    if (onBridge(t, x, y)) return false;
-    for (const r of t.rivers) if (distToPath(r.pts, x, y) < r.width / 2) return true;
+    for (const r of t.rivers) {
+      if (r.box && !inBounds(r.box, x, y)) continue;
+      if (distToPath(r.pts, x, y) < r.width / 2) return !onBridge(t, x, y);
+    }
     return false;
   }
-  const onRoad = (t, x, y) => t.roads.some(r => distToPath(r.pts, x, y) < r.width / 2);
+  const onRoad = (t, x, y) => {
+    for (const r of t.roads) {
+      if (r.box && !inBounds(r.box, x, y)) continue;
+      if (distToPath(r.pts, x, y) < r.width / 2) return true;
+    }
+    return false;
+  };
 
   /* what you're standing on, and what it does to you */
   function surfaceAt(t, x, y) {

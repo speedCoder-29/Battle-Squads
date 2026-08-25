@@ -271,7 +271,7 @@ const Game = (() => {
           obstacles.push(...parts);
           invalidateRects();
           const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms };
+          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms, shape: parts.shape };
           landmarks.push(rec);
           buildings.push(rec);
           furnish(name, bb, parts.rooms);
@@ -1291,8 +1291,20 @@ const Game = (() => {
   let pendingIndoorCrates = [];
 
   /* is anyone inside this building? the roof lifts when they are */
+/* The blocks a building is actually made of.
+
+   A building used to be one rectangle, so its bounding box was its footprint
+   and every pass could use `b.x/y/w/h` directly. Now that a blueprint can bolt
+   a wing onto its side, the bounding box includes the notch in the L — ground
+   that is outside the building. Drawing the roof there would roof the garden;
+   testing "am I indoors" there would say yes while you stood on grass.
+
+   Blueprints that declare `shape` list their blocks. Everything else is a
+   rectangle and gets a one-element list, so no older blueprint changes. */
+  const blocksOf = (b) => b.shape || (b._blocks || (b._blocks = [{ x: b.x, y: b.y, w: b.w, h: b.h }]));
+  const inRectXY = (r, x, y) => x > r.x && x < r.x + r.w && y > r.y && y < r.y + r.h;
   const insideBuilding = (b, a) =>
-    a && a.alive && a.x > b.x && a.x < b.x + b.w && a.y > b.y && a.y < b.y + b.h;
+    !!(a && a.alive && blocksOf(b).some(r => inRectXY(r, a.x, a.y)));
 
   /* ---------------- what the building you're in does for you ----------------
      A few buildings are worth holding rather than just looting: a hospital
@@ -1377,7 +1389,7 @@ const Game = (() => {
         obstacles.push(...parts);
         invalidateRects();
         const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
-        const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms };
+        const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms, shape: parts.shape };
         buildings.push(rec);
         requiredPlacements.push(bb);
         furnish('base', bb, parts.rooms);
@@ -1438,7 +1450,7 @@ const Game = (() => {
           invalidateRects();
           const conf = FURNISH[name];
           const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
+      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
           furnish(name, bb, parts.rooms);
           placedOne = true;
         }
@@ -1481,7 +1493,7 @@ const Game = (() => {
     obstacles.push(...parts);
     invalidateRects();
     const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-    buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
+    buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
     furnish(name, bb, parts.rooms);
     return true;
   }
@@ -1612,7 +1624,7 @@ const Game = (() => {
       invalidateRects();
       const conf = FURNISH[name];
       const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms });
+      buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
       furnish(name, bb, parts.rooms);
     }
   }
@@ -5874,7 +5886,7 @@ const Game = (() => {
     ctx.translate(-camX, -camY);
 
     updateViewBounds();
-    drawIsland();      // ocean, beach, grass, river, bridges, roads
+    perfMark('island', drawIsland);   // ocean, beach, grass, river, bridges, roads
     drawTerrain();     // grass patches the ghillie uses, and dug trenches
 
     // objectives
@@ -6169,58 +6181,52 @@ const Game = (() => {
       ctx.closePath();
     };
     const coast = T.coastLine, shore = T.shoreLine;
+    const vx = viewX0, vy = viewY0, vw = viewX1 - viewX0, vh = viewY1 - viewY0;
 
-    /* Shallows. Water shelves as it approaches land, so a band of lighter sea
-       rings the island — the cue that tells you where the ground is before you
-       can see the sand, and the thing that stops the coast being a hard line
-       between two flat blues. */
-    ctx.save();
-    poly(coast);
-    ctx.strokeStyle = hexA(C.riverEdge, 0.30); ctx.lineWidth = 190; ctx.lineJoin = 'round';
-    ctx.stroke();
-    ctx.strokeStyle = hexA(C.riverEdge, 0.34); ctx.lineWidth = 86;
-    ctx.stroke();
-    ctx.restore();
+    /* The island, painted outward band inward: shallows, wet sand, dry sand,
+       grass. Each band is simply the gap left by the next fill on top of it.
 
-    // the sand
-    poly(coast);
-    ctx.fillStyle = C.beach; ctx.fill();
+       Written this way for speed as much as for clarity. The first attempt
+       drew the bands as very wide strokes around the coast path and clipped
+       the fills to it, which looked identical and cost about half the frame:
+       a 190px stroke and a clip against a 220-point polygon are both slow
+       raster paths, and there were several of each. Four flat fills are not.
 
-    /* The tideline: wet sand darkening toward the water, and a broken line of
-       foam on top of it. A dry beach that meets the sea at a clean edge is the
-       giveaway that the coast is a shape rather than a shore. */
-    ctx.save();
-    poly(coast); ctx.clip();
+       Painting order matters and there is no clipping anywhere in it. */
+    poly(T.shallowLine); ctx.fillStyle = hexA(C.riverEdge, 0.34); ctx.fill();
+    poly(coast); ctx.fillStyle = hexA(C.beachEdge, 0.92); ctx.fill();   // wet sand
+    poly(T.wetLine); ctx.fillStyle = C.beach; ctx.fill();               // dry sand
+    poly(shore); ctx.fillStyle = C.grass; ctx.fill();
+
+    /* Foam. A thin dashed line is cheap, and it is what stops the water's edge
+       reading as the boundary between two flat colours. */
     poly(coast);
-    ctx.strokeStyle = hexA(C.beachEdge, 0.85); ctx.lineWidth = 54; ctx.stroke();
     ctx.strokeStyle = 'rgba(255,255,255,0.34)'; ctx.lineWidth = 7;
     ctx.setLineDash([70, 46, 26, 38]);        // surf breaks, it does not ring
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.restore();
 
-    // the grass
-    poly(shore);
-    ctx.fillStyle = C.grass; ctx.fill();
-
-    // tonal patches so the field isn't a flat slab
+    // the grass dressing, clipped once to the shore
     ctx.save();
     poly(shore); ctx.clip();
+    // tonal patches so the field isn't a flat slab
     for (const p of T.patches) {
+      if (p.x + p.r < vx || p.x - p.r > vx + vw || p.y + p.r < vy || p.y - p.r > vy + vh) continue;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
       ctx.fillStyle = p.light ? C.grassLight : C.grassAlt;
       ctx.globalAlpha = 0.35; ctx.fill();
     }
     ctx.globalAlpha = 1;
+    const fillSeen = () => ctx.fillRect(vx, vy, vw, vh);
     /* ...and a texture over the top of them. Tonal blobs vary the colour but
        leave the surface perfectly smooth, which is what makes open ground read
        as painted card. The tile is generated once and repeated, so this costs
        one fill however much of the map is on screen. */
-    const gt = grassTexture(C);
+    const gt = texOff ? null : grassTexture(C);
     if (gt) {
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.72;
       ctx.fillStyle = gt;
-      poly(shore); ctx.fill();
+      fillSeen();
       ctx.globalAlpha = 1;
     }
     // the grass meets the sand with a scrubby edge, not a cut line
@@ -6282,6 +6288,7 @@ const Game = (() => {
      world space as the camera moves, which is what makes it read as ground
      rather than as film grain over the lens. */
   let grassTile = null, grassTileFor = null;
+  let texOff = false;       // debug toggle, to price the ground texture
   function grassTexture(C) {
     if (grassTile && grassTileFor === C.grass) return grassTile;
     const S = 128;
@@ -6295,18 +6302,18 @@ const Game = (() => {
       seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
       return seed / 4294967296;
     };
-    for (let i = 0; i < 340; i++) {
+    for (let i = 0; i < 430; i++) {
       const x = rnd() * S, y = rnd() * S, r = 0.7 + rnd() * 2.3;
       const light = rnd() < 0.45;
       g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
-      g.fillStyle = light ? hexA(C.grassLight, 0.30) : hexA(C.grassAlt, 0.34);
+      g.fillStyle = light ? hexA(C.grassLight, 0.46) : hexA(C.grassAlt, 0.50);
       g.fill();
     }
     // a few longer strokes, so it reads as blades rather than dots
     for (let i = 0; i < 70; i++) {
       const x = rnd() * S, y = rnd() * S, a = rnd() * Math.PI;
       const len = 3 + rnd() * 7;
-      g.strokeStyle = hexA(C.grassAlt, 0.26); g.lineWidth = 1;
+      g.strokeStyle = hexA(C.grassAlt, 0.38); g.lineWidth = 1;
       g.beginPath();
       g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
       g.stroke();
@@ -6439,9 +6446,11 @@ const Game = (() => {
       const a2 = b.roofAlpha === undefined ? 1 : b.roofAlpha;
       if (a2 < 0.03) continue;
       ctx.globalAlpha = a2;
-      roundRect(b.x - 8 + SUN.dx * LIFT_BUILDING, b.y - 8 + SUN.dy * LIFT_BUILDING,
-        b.w + 16, b.h + 16, 6);
-      ctx.fill();
+      for (const blk of blocksOf(b)) {
+        roundRect(blk.x - 8 + SUN.dx * LIFT_BUILDING, blk.y - 8 + SUN.dy * LIFT_BUILDING,
+          blk.w + 16, blk.h + 16, 6);
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -6515,8 +6524,10 @@ const Game = (() => {
       if (!b.floor || !rectOnScreen(b)) continue;
       const st = b.style || Structures.styleOf(b.name);
       ctx.fillStyle = b.floor;
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-      drawFloorPattern(b, st);
+      for (const blk of blocksOf(b)) {
+        ctx.fillRect(blk.x, blk.y, blk.w, blk.h);
+        drawFloorPattern(blk, st);
+      }
       /* Then each room lays its own floor on top. A building used to be one
          slab of colour wall to wall, so from inside you could not see where
          the kitchen stopped and the hallway began — the rooms were in the
@@ -6536,9 +6547,9 @@ const Game = (() => {
         ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.lineWidth = 2;
         ctx.strokeRect(rx, ry, rw, rh);
       }
-      // the building's own accent runs round the whole slab
+      // the building's own accent runs round each block of the slab
       ctx.strokeStyle = hexA(st.trim, 0.55); ctx.lineWidth = 2;
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      for (const blk of blocksOf(b)) ctx.strokeRect(blk.x, blk.y, blk.w, blk.h);
     }
   }
 
@@ -6559,93 +6570,101 @@ const Game = (() => {
          thing you can see — so a hospital reads white, a church slate blue and
          a gas station red long before you are close enough to read a sign. */
       const st = b.style || Structures.styleOf(b.name);
-      /* The roof was a single linear ramp corner to corner — an even 45-degree
-         fade, which is the most machine-looking gradient there is and reads as
-         a flat coloured lid whatever colours you feed it.
-
-         Light does not work that way. It pools where it lands and falls away
-         with distance, so the base ramp still runs with the sun (top-left to
-         bottom-right, the same direction everything else on the map is lit
-         from) and a soft bloom sits over the corner the sun actually strikes.
-         Two fills instead of one, and the surface stops looking printed. */
-      const g = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
-      g.addColorStop(0, st.roof[0]);
-      g.addColorStop(1, st.roof[1]);
-      ctx.fillStyle = g;
-      ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
-      const sunPool = ctx.createRadialGradient(
-        b.x + b.w * 0.16, b.y + b.h * 0.14, 0,
-        b.x + b.w * 0.16, b.y + b.h * 0.14, Math.max(b.w, b.h) * 0.72);
-      sunPool.addColorStop(0, 'rgba(255, 244, 224, 0.16)');
-      sunPool.addColorStop(1, 'rgba(255, 244, 224, 0)');
-      ctx.fillStyle = sunPool;
-      ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
-      /* Every line on this roof used to be pure black at various opacities.
-         Black seams on a terracotta roof read as cracks; a dark tinted with
-         the roof's own family reads as a joint in the material. */
-      ctx.strokeStyle = 'rgba(26, 22, 30, 0.24)'; ctx.lineWidth = 2;
-      ctx.beginPath();
-      const ridge = st.pattern === 'metal' ? 24 : st.pattern === 'tile' ? 34 : 46;
-      for (let y = b.y; y < b.y + b.h; y += ridge) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
-      ctx.stroke();
-      /* Things that actually sit on a roof. A flat coloured slab with lines
-         across it reads as a lid; what makes it a building from above is the
-         clutter — a ridge down the spine, vents, a skylight over the middle of
-         a big span, and a gutter shadow inside the eaves.
-
-         Seeded off the building's own position, so a roof looks the same every
-         frame and every client draws the same one. */
-      const rr = ((Math.abs(b.x * 7 + b.y * 13) | 0) % 997) / 997;
-      const wide = b.w >= b.h;
-      // ridge down the long axis, with the sunlit side of it picked out
-      ctx.strokeStyle = 'rgba(26, 22, 30, 0.30)'; ctx.lineWidth = 3;
-      ctx.beginPath();
-      if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2); }
-      else { ctx.moveTo(b.x + b.w / 2, b.y - 8); ctx.lineTo(b.x + b.w / 2, b.y + b.h + 8); }
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 246, 228, 0.16)'; ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2 - 2.5); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2 - 2.5); }
-      else { ctx.moveTo(b.x + b.w / 2 - 2.5, b.y - 8); ctx.lineTo(b.x + b.w / 2 - 2.5, b.y + b.h + 8); }
-      ctx.stroke();
-      // gutter shadow just inside the eaves
-      ctx.strokeStyle = 'rgba(26, 22, 30, 0.16)'; ctx.lineWidth = 6;
-      ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
-      /* The eaves. Two edges face the sun and two face away, and drawing that
-         is what turns a coloured rectangle into something with a thickness —
-         the same trick the sprites use, at building scale. */
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(255, 246, 228, 0.22)';
-      ctx.beginPath();
-      ctx.moveTo(b.x - 6, b.y + b.h + 6); ctx.lineTo(b.x - 6, b.y - 6); ctx.lineTo(b.x + b.w + 6, b.y - 6);
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(18, 15, 22, 0.30)';
-      ctx.beginPath();
-      ctx.moveTo(b.x + b.w + 6, b.y - 6); ctx.lineTo(b.x + b.w + 6, b.y + b.h + 6); ctx.lineTo(b.x - 6, b.y + b.h + 6);
-      ctx.stroke();
-      // roof furniture: vents along the ridge, and a skylight on a big span
-      const vents = Math.max(1, Math.min(5, Math.floor((wide ? b.w : b.h) / 240)));
-      for (let i = 0; i < vents; i++) {
-        const t = (i + 0.5 + rr * 0.3) / vents;
-        const vx = wide ? b.x + b.w * t : b.x + b.w / 2 + (i % 2 ? 22 : -22);
-        const vy = wide ? b.y + b.h / 2 + (i % 2 ? 20 : -20) : b.y + b.h * t;
-        ctx.fillStyle = hexA(st.trim, 0.55);
-        roundRect(vx - 9, vy - 7, 18, 14, 3); ctx.fill();
-        ctx.strokeStyle = 'rgba(18, 15, 22, 0.34)'; ctx.lineWidth = 1.5; ctx.stroke();
-        // each vent throws its own little shadow, down and right like everything else
-        ctx.fillStyle = 'rgba(18, 15, 22, 0.20)';
-        roundRect(vx - 6, vy + 7, 16, 4, 2); ctx.fill();
-      }
-      if (b.w > 340 && b.h > 260) {
-        const sw = Math.min(120, b.w * 0.22), sh = Math.min(90, b.h * 0.2);
-        ctx.fillStyle = 'rgba(180,220,255,0.20)';
-        roundRect(b.x + b.w * 0.5 - sw / 2, b.y + b.h * 0.28 - sh / 2, sw, sh, 4); ctx.fill();
-        ctx.strokeStyle = hexA(st.trim, 0.7); ctx.lineWidth = 2; ctx.stroke();
-      }
-      ctx.strokeStyle = hexA(st.trim, 0.9); ctx.lineWidth = 4;
-      ctx.strokeRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+      /* One roof per block. A wing is a lower, separate roof in real life —
+         it has its own ridge, its own eaves and its own gutter — so painting
+         the bounding box would both roof the empty corner of an L and give a
+         two-part building one implausible slab. */
+      for (const blk of blocksOf(b)) roofBlock(blk, st);
       ctx.restore();
     }
+  }
+
+  /* One rectangular roof: the surface, its ridge, what sits on it, and its
+     edges. Split out of drawRoofs so a building made of several blocks paints
+     each of them as the roof it would actually have. */
+  function roofBlock(b, st) {
+    /* The roof was a single linear ramp corner to corner — an even 45-degree
+       fade, which is the most machine-looking gradient there is and reads as a
+       flat coloured lid whatever colours you feed it.
+
+       Light does not work that way. It pools where it lands and falls away
+       with distance, so the base ramp still runs with the sun (top-left to
+       bottom-right, the same direction everything else on the map is lit from)
+       and a soft bloom sits over the corner the sun actually strikes. */
+    const g = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
+    g.addColorStop(0, st.roof[0]);
+    g.addColorStop(1, st.roof[1]);
+    ctx.fillStyle = g;
+    ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+    const sunPool = ctx.createRadialGradient(
+      b.x + b.w * 0.16, b.y + b.h * 0.14, 0,
+      b.x + b.w * 0.16, b.y + b.h * 0.14, Math.max(b.w, b.h) * 0.72);
+    sunPool.addColorStop(0, 'rgba(255, 244, 224, 0.16)');
+    sunPool.addColorStop(1, 'rgba(255, 244, 224, 0)');
+    ctx.fillStyle = sunPool;
+    ctx.fillRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+    /* Every line on this roof used to be pure black at various opacities.
+       Black seams on a terracotta roof read as cracks; a dark tinted with the
+       roof's own family reads as a joint in the material. */
+    ctx.strokeStyle = 'rgba(26, 22, 30, 0.24)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    const ridge = st.pattern === 'metal' ? 24 : st.pattern === 'tile' ? 34 : 46;
+    for (let y = b.y; y < b.y + b.h; y += ridge) { ctx.moveTo(b.x - 8, y); ctx.lineTo(b.x + b.w + 8, y); }
+    ctx.stroke();
+    /* Things that actually sit on a roof. A flat coloured slab with lines
+       across it reads as a lid; what makes it a building from above is the
+       clutter — a ridge down the spine, vents, a skylight over a big span, and
+       a gutter shadow inside the eaves. Seeded off the block's own position,
+       so it looks the same every frame and on every client. */
+    const rr = ((Math.abs(b.x * 7 + b.y * 13) | 0) % 997) / 997;
+    const wide = b.w >= b.h;
+    // ridge down the long axis, with the sunlit side of it picked out
+    ctx.strokeStyle = 'rgba(26, 22, 30, 0.30)'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2); }
+    else { ctx.moveTo(b.x + b.w / 2, b.y - 8); ctx.lineTo(b.x + b.w / 2, b.y + b.h + 8); }
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 246, 228, 0.16)'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (wide) { ctx.moveTo(b.x - 8, b.y + b.h / 2 - 2.5); ctx.lineTo(b.x + b.w + 8, b.y + b.h / 2 - 2.5); }
+    else { ctx.moveTo(b.x + b.w / 2 - 2.5, b.y - 8); ctx.lineTo(b.x + b.w / 2 - 2.5, b.y + b.h + 8); }
+    ctx.stroke();
+    // gutter shadow just inside the eaves
+    ctx.strokeStyle = 'rgba(26, 22, 30, 0.16)'; ctx.lineWidth = 6;
+    ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+    /* The eaves. Two edges face the sun and two face away, and drawing that is
+       what turns a coloured rectangle into something with a thickness — the
+       same trick the sprites use, at building scale. */
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(255, 246, 228, 0.22)';
+    ctx.beginPath();
+    ctx.moveTo(b.x - 6, b.y + b.h + 6); ctx.lineTo(b.x - 6, b.y - 6); ctx.lineTo(b.x + b.w + 6, b.y - 6);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(18, 15, 22, 0.30)';
+    ctx.beginPath();
+    ctx.moveTo(b.x + b.w + 6, b.y - 6); ctx.lineTo(b.x + b.w + 6, b.y + b.h + 6); ctx.lineTo(b.x - 6, b.y + b.h + 6);
+    ctx.stroke();
+    // roof furniture: vents along the ridge, and a skylight on a big span
+    const vents = Math.max(1, Math.min(5, Math.floor((wide ? b.w : b.h) / 240)));
+    for (let i = 0; i < vents; i++) {
+      const t = (i + 0.5 + rr * 0.3) / vents;
+      const vx = wide ? b.x + b.w * t : b.x + b.w / 2 + (i % 2 ? 22 : -22);
+      const vy = wide ? b.y + b.h / 2 + (i % 2 ? 20 : -20) : b.y + b.h * t;
+      ctx.fillStyle = hexA(st.trim, 0.55);
+      roundRect(vx - 9, vy - 7, 18, 14, 3); ctx.fill();
+      ctx.strokeStyle = 'rgba(18, 15, 22, 0.34)'; ctx.lineWidth = 1.5; ctx.stroke();
+      // each vent throws its own little shadow, down and right like everything else
+      ctx.fillStyle = 'rgba(18, 15, 22, 0.20)';
+      roundRect(vx - 6, vy + 7, 16, 4, 2); ctx.fill();
+    }
+    if (b.w > 340 && b.h > 260) {
+      const sw = Math.min(120, b.w * 0.22), sh = Math.min(90, b.h * 0.2);
+      ctx.fillStyle = 'rgba(180,220,255,0.20)';
+      roundRect(b.x + b.w * 0.5 - sw / 2, b.y + b.h * 0.28 - sh / 2, sw, sh, 4); ctx.fill();
+      ctx.strokeStyle = hexA(st.trim, 0.7); ctx.lineWidth = 2; ctx.stroke();
+    }
+    ctx.strokeStyle = hexA(st.trim, 0.9); ctx.lineWidth = 4;
+    ctx.strokeRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
   }
 
   /* ---------------- interior lighting ----------------
@@ -8443,8 +8462,8 @@ const Game = (() => {
     lastTime = now;
     dt = Math.min(dt, 0.05);
     lastDt = dt;               // render() needs it for the weather layer
-    update(dt);
-    render();
+    perfMark('update', () => update(dt));
+    perfMark('render', render);
     requestAnimationFrame(loop);
   }
 
@@ -9580,6 +9599,7 @@ const Game = (() => {
       owned: objectives.filter(o => o.owner >= 0).length,
       names: objectives.map(o => o.name + ':' + (o.owner >= 0 ? 'T' + o.owner : '-')),
     }),
+    noTexture(on) { texOff = !!on; return texOff; },
     captureAll() { for (const o of objectives) { o.owner = 0; o.progress = 100; } return true; },
 
     /* ---- the coastline ----
@@ -9626,6 +9646,22 @@ const Game = (() => {
       debugZoom = on ? Math.min(W / MAP_W, H / MAP_H) * 0.96 : 0;
       return debugZoom;
     },
+    /* Stand the player outside a named building, to look at its shape. */
+    gotoBuilding(name, zoomOut) {
+      const b = buildings.find(q => q.name === name);
+      if (!b) return null;
+      // frame the first block, which is the main one, not the bounding box —
+      // that can include a cellar hanging off the back
+      const blk = (b.shape && b.shape[0]) || b;
+      player.x = blk.x + blk.w / 2; player.y = blk.y + blk.h / 2;
+      debugZoom = zoomOut ? Math.min(W / (b.w + 400), H / (b.h + 400)) : 0;
+      camSnap = true;
+      return { name: b.name, x: Math.round(b.x), y: Math.round(b.y),
+        w: Math.round(b.w), h: Math.round(b.h), blocks: (b.shape || []).length };
+    },
+    /* Every building's footprint, for checking which are no longer boxes. */
+    footprints: () => buildings.map(b => ({ name: b.name, blocks: (b.shape || []).length || 1 })),
+
     /* Stand the player on the nearest piece of shore, to look at it. */
     gotoShore() {
       const T = terrain; if (!T || !T.coastLine) return null;

@@ -400,13 +400,64 @@ const Structures = (() => {
       let cursor = 0;
       for (const g of gaps) {
         if (g.at - cursor > 4) out.push(runSeg(type, sd, cursor, (g.at - cursor) * M, thickness));
-        out.push(runSeg(g.type, sd, g.at, g.len * M, undefined));
+        /* `open` leaves the run empty rather than filling it with a door or a
+           window. It is what lets two rectangular shells be joined into one
+           L- or T-shaped building: where the blocks meet, both sides leave the
+           join open and the two interiors become a single space. Without it
+           every footprint on the map is a rectangle, because a shell can only
+           ever be a closed ring. */
+        if (g.type !== 'open') out.push(runSeg(g.type, sd, g.at, g.len * M, undefined));
         cursor = g.at + g.len;
       }
       if (sd.len - cursor > 4) out.push(runSeg(type, sd, cursor, (sd.len - cursor) * M, thickness));
     }
     return out;
   }
+  /* ============================================================
+     WINGS — buildings that are not rectangles.
+
+     Every building on the map was a rectangle, because `shell` draws a closed
+     ring and that is the only shape a ring can be. Thirty-four rectangles of
+     varying size read as a spreadsheet however carefully the insides are laid
+     out, and it is the one thing you notice from any distance.
+
+     `annex` bolts a second block onto one side of a main one and opens the
+     wall where they meet, giving an L. Two annexes on opposite sides give a U;
+     one in the middle of a long side gives a T. The blocks stay rectangular —
+     so the room engine, the collision rects and the loot tables all still
+     work — but the *building* no longer is.
+
+       main   {x, y, w, h}
+       side   which face of `main` the wing hangs off
+       at     px along that face where the wing starts
+       len    px of the face the wing spans
+       depth  px the wing projects outward
+
+     Returns the wing's rect, the walls for both the join and the wing, and
+     the door list the caller should hand to the main block's own shell. */
+  function annex(type, thickness, main, spec) {
+    const { side, at, len, depth } = spec;
+    const wing = side === 'e' ? { x: main.x + main.w, y: main.y + at, w: depth, h: len }
+      : side === 'w' ? { x: main.x - depth, y: main.y + at, w: depth, h: len }
+        : side === 's' ? { x: main.x + at, y: main.y + main.h, w: len, h: depth }
+          : { x: main.x + at, y: main.y - depth, w: len, h: depth };
+
+    /* The join is left open on both sides, inset a little at each end so the
+       main block keeps a stub of wall to carry its own corner. */
+    const inset = 12;
+    const joinAt = at + inset;
+    const joinLen = Math.max(24, len - inset * 2);
+    const openMain = { side, at: joinAt, len: joinLen / PX_PER_M, type: 'open' };
+    /* The wing's opening is on the face pointing back at the main block. Its
+       offset is measured from the wing's own origin, and the wing starts at
+       exactly `at` along the shared face — so the two openings line up at the
+       same inset whichever side the wing is on. */
+    const back = { e: 'w', w: 'e', n: 's', s: 'n' }[side];
+    const parts = shell(wing.x, wing.y, wing.w, wing.h, type, thickness,
+      [{ side: back, at: inset, len: joinLen / PX_PER_M, type: 'open' }, ...(spec.doors || [])]);
+    return { wing, parts, openMain };
+  }
+
   function runSeg(type, sd, offsetPx, lengthM, thickness) {
     return sd.axis === 'h'
       ? seg(type, sd.x + offsetPx, sd.y, lengthM, 'h', thickness)
@@ -1355,6 +1406,13 @@ const Structures = (() => {
       r.y = oy + (r.y - oy) * k;
       r.w *= k; r.h *= k;
     }
+    /* The footprint blocks too, or an L-shaped building's roof would be drawn
+       at the unscaled size while its walls moved. */
+    for (const r of parts.shape || []) {
+      r.x = ox + (r.x - ox) * k;
+      r.y = oy + (r.y - oy) * k;
+      r.w *= k; r.h *= k;
+    }
     return parts;
   }
 
@@ -1371,21 +1429,29 @@ const Structures = (() => {
        rooms cannot disagree. They used to: the living room and one bedroom
        were declared at the same rectangle, and the foyer overlapped the
        bathroom. */
+    /* The house is now an L: the living space in the main block, the garage in
+       a wing off the back. That is how a house with a garage is actually
+       built — you do not give over a third of the floor plan to it and keep
+       the outline a perfect rectangle — and it gives the plot a sheltered
+       corner rather than four blank elevations. */
     house(ox, oy) {
-      const w = 530, h = 360;
+      const w = 470, h = 360;
       const plan = floorPlan('wood', ox, oy, w, h, {
         corridor: { axis: 'h', at: 0.52, width: 78 },
         a: ['bedroom', 'bedroom', 'bathroom'],
-        b: ['living', 'kitchen', 'garage'],
+        b: ['living', 'kitchen'],
         fillA: 'study', fillB: 'pantry',
         thickness: 0.2,
       });
+      // the garage wing, off the east face, with its roller door facing out
+      const gw = annex('wood', WALL_T.exterior, { x: ox, y: oy, w, h },
+        { side: 'e', at: 186, len: 168, depth: 210, doors: [{ side: 'e', at: 30, type: 'garage-door' }] });
       const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
         { side: 'w', at: h * 0.52 - 30 },              // front door, onto the hall
         { side: 'e', at: h * 0.52 - 30 },              // back door, same hall
-        ...plan.garages,                                // the roller door
+        gw.openMain,                                    // where the wing joins on
       ]);
-      out.push(...plan.parts);
+      out.push(...plan.parts, ...gw.parts);
       // windows down the bedroom side, and one over the kitchen
       out.push(seg('window', ox + 90, oy, 1.2, 'h', 0.15));
       out.push(seg('window', ox + 300, oy, 1.2, 'h', 0.15));
@@ -1394,7 +1460,9 @@ const Structures = (() => {
       const cellar = basement('storeroom', ox + 80, oy + h + 46, 300, 180,
         { wall: 'wood', thickness: 0.35, hatchAt: 150 });
       out.push(...cellar.parts);
-      out.rooms = [cellar.room, ...plan.rooms];
+      out.rooms = [cellar.room, ...plan.rooms,
+        { kind: 'garage', x: gw.wing.x + 10, y: gw.wing.y + 10, w: gw.wing.w - 20, h: gw.wing.h - 20 }];
+      out.shape = [{ x: ox, y: oy, w, h }, gw.wing];
       return out;
     },
 
@@ -1759,12 +1827,21 @@ const Structures = (() => {
        Ricochet city — think twice before spraying inside it. */
     /* warehouse: two rows of racking with a loading aisle down the middle.
        Every sightline is an aisle, so it fights as a set of parallel lanes. */
+    /* A shed with an office block on the front — the standard industrial
+       arrangement, and the reason a real warehouse is never a plain box: the
+       people and the paperwork sit in a low annex at one end, away from the
+       forklifts. The office is a second way in and somewhere worth searching
+       that is not another rack of pallets. */
     warehouse(ox, oy) {
       const w = 700, h = 460;
+      const office = annex('metal', 0.4, { x: ox, y: oy, w, h },
+        { side: 'n', at: 430, len: 230, depth: 150, doors: [{ side: 'n', at: 96 }] });
       const out = shell(ox, oy, w, h, 'metal', 0.55, [
         { side: 'n', at: 280, type: 'rdoor', len: 3 },
         { side: 's', at: 140 }, { side: 'e', at: 200, type: 'rdoor' },
+        office.openMain,
       ]);
+      out.push(...office.parts);
       // racking: four bays a side, open onto the central aisle
       const top = roomGrid('metal', ox + 14, oy + 14, w - 28, 176, 4, 1, { access: 's', doorType: null, thickness: 0.3 });
       const bot = roomGrid('metal', ox + 14, oy + h - 190, w - 28, 176, 4, 1, { access: 'n', doorType: null, thickness: 0.3 });
@@ -1773,7 +1850,9 @@ const Structures = (() => {
       out.push(seg('barricade', ox + 460, oy + h / 2 - 10, 4, 'h', 0.3));
       // the frame the shed hangs on, at industrial bay spacing
       out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
-      out.rooms = [...cellRooms(top.cells, 'storeroom'), ...cellRooms(bot.cells, 'storeroom')];
+      out.rooms = [...cellRooms(top.cells, 'storeroom'), ...cellRooms(bot.cells, 'storeroom'),
+        { kind: 'office', x: office.wing.x + 12, y: office.wing.y + 12, w: office.wing.w - 24, h: office.wing.h - 24 }];
+      out.shape = [{ x: ox, y: oy, w, h }, office.wing];
       return out;
     },
 
@@ -3240,7 +3319,7 @@ const Structures = (() => {
     BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, courtyardPlan, ROOM_SIZE, tunnel, upper, flagMast, columnGrid, splitLong, WALL_T, ZONE, zoneOf, BAY,
     PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement, DECOR, decorFor,
     ROOM_LOOT, ROOM_BUILDINGS, room,
-    def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell,
+    def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell, annex,
     /* place a named building and tag every piece with it. `rooms` rides along
        on the returned array — blueprints that don't declare any simply don't
        have the property, so every older blueprint is untouched. */
