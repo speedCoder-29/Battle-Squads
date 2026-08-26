@@ -237,9 +237,34 @@ variation, against 0 frozen and ±0.20px now. What you are driving yourself is
 predicted locally and eased onto the room's answer, so the wheel stays
 responsive.
 
-**Personal snapshots.** Your inventory and your acknowledgement are yours
-alone, and the scenery is culled to what you can see — on a busy map that is
-65 KB/s a player instead of 146.
+**Personal snapshots, and a host that doesn't drown.** A browser host uploads a
+copy of the world to *every* guest, so a full lobby costs eight times a duel —
+and it lands on a domestic connection that was sold on its download speed. That
+asymmetry is why a hosted match can be flawless for the host and terrible for
+everyone else: the host's own input never touches the network.
+
+Four things keep it inside a home uplink. Your inventory, armour, magazine and
+acknowledgement are yours alone rather than broadcast to everybody. Identity —
+name, squad, gun, scoreline — ships in the roster when it changes instead of in
+every packet, which was half the agent list. Scenery, tracers and local events
+are culled to what you can actually see. And the snapshot rate follows the room
+size: 20/s for two or three players, 16 for a squad, 12 for a full lobby, which
+the interpolator absorbs because it already adapts its buffer to the gaps it
+sees.
+
+| Players | Per snapshot | Rate | Host uplink |
+|---|---|---|---|
+| 2 | 1.0 KB | 20/s | 0.17 Mbps |
+| 4 | 1.4 KB | 16/s | 0.54 Mbps |
+| 8 | 1.9 KB | 12/s | **1.3 Mbps** (was 5.0) |
+
+If the uplink runs out anyway, the host **drops** snapshots for a congested
+guest rather than queueing them. PeerJS asks for an ordered data channel, so a
+packet that hasn't arrived holds up everything behind it — queueing turns a
+slow connection into a freeze followed by a burst of catching up. The next
+snapshot is 50ms away and is strictly better than this one; the guest loses one
+interpolated frame instead of falling seconds behind, and is told what is
+happening rather than left assuming it is their own connection.
 
 Limits worth knowing: the host carries the simulation, so pick the strongest
 machine, and if the host leaves the match ends.

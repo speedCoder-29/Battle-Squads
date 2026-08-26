@@ -286,10 +286,32 @@ const P2P = (() => {
       last = t;
       while (backlog >= SIM_STEP) { room.step(SIM_STEP); backlog -= SIM_STEP; }
     }, 1000 / 60);
-    host.timer = ticker(() => {
-      // personalised on the way out: each player's own inventory and input ack
-      room.sendSnapshot();
-    }, TICK);
+    /* ---------- how often the world goes out ----------
+       A dedicated server sends twenty a second to everybody and thinks nothing
+       of it, because it sits on a datacentre uplink. A browser host does not:
+       it pays for every guest separately, so the cost of a full lobby is eight
+       times the cost of a duel and lands on a connection that probably has a
+       megabit or two going up.
+
+       So the rate follows the room. Two or three people get the full twenty; a
+       full lobby drops to twelve, which the interpolator absorbs — it already
+       renders a fixed step behind and adapts its buffer to the gaps it sees
+       (see Net.interpolate). Twelve smooth snapshots beat twenty that arrive
+       in clumps because the uplink is full. */
+    let snapRate = 0;
+    const rateFor = (n) => (n <= 3 ? TICK : n <= 6 ? 1000 / 16 : 1000 / 12);
+    const retime = () => {
+      const want = rateFor(room.players.size);
+      if (want === snapRate) return;
+      snapRate = want;
+      if (host.timer) host.timer.stop();
+      host.timer = ticker(() => {
+        // personalised on the way out: each player's own inventory and input ack
+        room.sendSnapshot();
+        retime();
+      }, want);
+    };
+    retime();
 
     emit('status', { hosting: true, code, players: room.players.size });
     return host.localPlayer;
@@ -303,6 +325,45 @@ const P2P = (() => {
     // makes sense in the host's own tab, which is where the room lives
     if (world && typeof world.surface === 'function') host.room.setSurface(world.surface);
     return host.room.setWorld(world);
+  }
+
+  /* ---------- not sending faster than the wire can carry ----------
+     A browser host uploads a copy of the world to every guest, twenty times a
+     second, over a domestic connection that was sold on its download speed.
+     When that runs out the data channel does not refuse the write — it queues
+     it, and PeerJS asks for an *ordered* channel, so everything behind a
+     packet that has not made it yet waits for the retransmission.
+
+     That is the shape of the lag people actually report: the host is perfect,
+     because its own inputs never touch the network, while every guest gets a
+     freeze and then a burst of catching up. The queue is the problem, and the
+     fix is to stop adding to it. A snapshot is only worth sending if it can go
+     now; the next one is along in 50ms and is strictly better than this one.
+     Dropping it costs a guest one interpolated frame. Queueing it costs them
+     every frame after it too.
+
+     Control messages are never dropped — a welcome, a wall coming down or a
+     match ending is not something the next tick repeats. */
+  const SNAP_BACKLOG = 64 * 1024;      // bytes already waiting before we skip a tick
+  function sendTo(conn) {
+    let dropped = 0;
+    return (msg) => {
+      try {
+        if (msg && msg.t === 'snapshot') {
+          const ch = conn.dataChannel;
+          if (ch && ch.bufferedAmount > SNAP_BACKLOG) {
+            /* Tell them, once in a while, rather than silently thinning their
+               world — a guest whose connection cannot keep up should know that
+               is what is happening. */
+            if (++dropped % 40 === 1) {
+              try { conn.send({ t: 'congested', dropped }); } catch (e) {}
+            }
+            return;
+          }
+        }
+        conn.send(msg);
+      } catch (e) { /* channel closing under us */ }
+    };
   }
 
   /* accept a peer and wire its messages into the room */
@@ -376,7 +437,7 @@ const P2P = (() => {
              because it is the host who has to decide to stand up a relay. */
           watchIce(conn, (why) => { if (!player) note('Someone tried to join. ' + why); });
           conn.on('open', () => {
-            player = acceptPeer((msg) => { try { conn.send(msg); } catch (e) {} }, conn.metadata || {});
+            player = acceptPeer(sendTo(conn), conn.metadata || {});
             conn.on('data', (msg) => handleFromPeer(player, msg));
           });
           conn.on('close', () => { if (player) dropPlayer(player); });
@@ -620,6 +681,7 @@ const P2P = (() => {
     isHosting, isGuest, isActive, playerCount, rosterNames,
     hasRelay, iceServers,
     ROOM_PREFIX, CHANNEL,
+    /* exposed for tests */ _sendTo: sendTo,
     /* exposed for tests */ _startHost: startHost, _acceptPeer: acceptPeer, _handleFromPeer: handleFromPeer,
     get _host() { return host; },
   };

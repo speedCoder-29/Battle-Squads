@@ -120,7 +120,17 @@ const DB = (() => {
        every option added afterwards. */
     getSettings: () => Object.assign({
       volume: 70, sfx: true, sensitivity: 100, quality: 'medium', dmgNumbers: true,
-      botLevel: 5,        // 1-10, see js/botai.js
+      /* Deliberately absent: `botLevel`.
+
+         It used to be listed here as 5, which was harmless while these were a
+         wholesale fallback — the object was only consulted when no settings
+         existed at all. Now that they are merged over the defaults, a listed
+         value is always present, and `getSettings().botLevel || BotAI.DEFAULT`
+         stopped ever reaching BotAI.DEFAULT. Every player who had never
+         touched the slider silently dropped from difficulty 7 to 5.
+
+         Leaving it out keeps the fallback where the game expects it, in
+         js/botai.js, rather than having two places disagree about it. */
       keybinds: {},       // action -> [code, code]; only what differs from stock (js/controls.js)
       /* Sight. `teamColors` recolours the world for players who cannot separate
          the stock red and green: 'teams' is the normal per-squad palette,

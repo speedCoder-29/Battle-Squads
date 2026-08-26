@@ -89,6 +89,23 @@
   /* How far away the scenery still gets sent. Generous enough to cover the
      widest zoom with margin — see cullTo(). */
   const CULL_R = 2200;
+  // how often the roster is resent even when unchanged, in snapshot ticks
+  const ROSTER_RESEND = 40;
+  /* Events that only mean something where they happened. Anything not listed
+     here — a kill, a join, a capture, an emote — is the match talking to the
+     whole room and goes to everyone regardless of distance. */
+  const LOCAL_EVENTS = { wall: 1, boom: 1, trench: 1, deploy: 1, undeploy: 1, vehicle: 1, wreck: 1, smoke: 1, flash: 1, crate: 1 };
+  function eventsFor(events, p) {
+    if (!events.length) return events;
+    const r2 = CULL_R * CULL_R;
+    const out = [];
+    for (const e of events) {
+      // an event with no position is about the match, not about a place
+      if (!LOCAL_EVENTS[e.e] || e.x === undefined) { out.push(e); continue; }
+      if (dist2(e.x, e.y, p.x, p.y) <= r2) out.push(e);
+    }
+    return out;
+  }
 
   /* Ballistics, mirroring game.js. These belong with the simulation rather
      than the weapon table, and now that the sim is shared they live here
@@ -783,6 +800,7 @@
           const gold = I.makeLegendary(I.bestOfClass(p.cls.name));
           p.weapon = gold; p.weaponId = gold.id; p.ammo = gold.mag;
           p.reloadUntil = 0; p.reloading = false;
+          this.touchRoster();
           this.pushEvent({ e: 'legendary', id: p.id, weapon: gold.id, name: gold.name });
           break;
         }
@@ -978,6 +996,7 @@
         opened: this.crates.map((c, i) => (c.opened ? i : -1)).filter(i => i >= 0),
         you: this.personal(p),
       });
+      this.touchRoster();
       this.pushEvent({ e: 'join', id, name: p.name, team });
       this.pushLobby();
       return p;
@@ -987,6 +1006,7 @@
       const p = this.players.get(id);
       if (!p) return;
       this.players.delete(id);
+      this.touchRoster();
       this.pushEvent({ e: 'leave', id, name: p.name });
       this.pushLobby();
     }
@@ -1048,6 +1068,26 @@
         id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths,
         weaponId: p.weaponId, skin: p.skin, cls: p.cls.name,
       }));
+    }
+    /* ---------- who everybody is ----------
+       The half of a player that is a fact about them rather than about this
+       instant: their name, their squad, the gun in their hands, what they have
+       scored. It changes when somebody joins, dies, or picks up a Gold — a few
+       times a minute — and it used to ride in every single snapshot.
+
+       A version number rather than a diff: bump it on any change and the next
+       snapshot carries the list. The periodic resend is the safety net, because
+       a snapshot can be dropped on the way and a guest that missed the one
+       carrying the roster would otherwise draw nameless strangers for the rest
+       of the match. */
+    touchRoster() { this.rosterV = (this.rosterV || 0) + 1; }
+    rosterFor(tick) {
+      const v = this.rosterV || 0;
+      const stale = v !== this.rosterSentV || tick - (this.rosterSentAt || -999) >= ROSTER_RESEND;
+      if (!stale) return null;
+      this.rosterSentV = v;
+      this.rosterSentAt = tick;
+      return this.roster();
     }
     pushEvent(e) { this.events.push(e); if (this.events.length > 40) this.events.shift(); }
 
@@ -1714,6 +1754,7 @@
       if (target.channel) this.cancelChannel(target);
       if (target.hp <= 0) {
         target.hp = 0; target.alive = false; target.deaths++;
+        this.touchRoster();
         target.respawnAt = now() + 3000;
         if (attacker) attacker.kills++;
         /* What they were carrying hits the floor. Killing someone who had just
@@ -1759,18 +1800,29 @@
       const t = now();
       return {
         t: 'snapshot', tick: this.tick++, time: t, timeLeft: Math.max(0, Math.round(this.timeLeft)),
-        agents: [...this.players.values()].map(p => ({
-          id: p.id, x: Math.round(p.x), y: Math.round(p.y),
-          angle: +p.angle.toFixed(3), hp: Math.round(p.hp), alive: p.alive,
-          team: p.team, name: p.name, ammo: p.ammo, adrenaline: Math.round(p.adrenaline),
-          vest: p.vest, helmet: p.helmet, bag: p.bag, weaponId: p.weaponId, skin: p.skin,
-          kills: p.kills, deaths: p.deaths,
-          // riding, and channelling, so everyone draws them doing it
-          ride: p.riding ? p.riding.id : 0,
-          ch: p.channel ? +p.channel.left.toFixed(1) : 0,
-          // seconds until this one is back on their feet, for the HUD
-          respawn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - t) / 1000)),
-        })),
+        /* Only what moves. Half of what used to be here was identity — a name,
+           a skin, a weapon id, a kill count — resent twenty times a second to
+           every player for the whole match, and none of it had changed since
+           the last time. That is not free on a browser host: it uploads a copy
+           of this to every guest, so eight players cost eight times the waste,
+           and the uplink is what runs out. Identity lives in the roster now,
+           which ships only when it changes (see rosterFor). */
+        agents: [...this.players.values()].map(p => {
+          const a = {
+            id: p.id, x: Math.round(p.x), y: Math.round(p.y),
+            angle: +p.angle.toFixed(3), hp: Math.round(p.hp), alive: p.alive,
+            team: p.team,
+          };
+          /* The rest is the exception rather than the rule, so it is left out
+             when it is the default. Most players, most ticks, are not on
+             adrenaline, not in a vehicle and not drinking anything — and a key
+             with a zero after it costs as much to send as a real one. */
+          if (p.adrenaline >= 0.5) a.adrenaline = Math.round(p.adrenaline);
+          // inside a hull rather than standing on it — the renderer needs this
+          // or a passenger is drawn as a body riding on the roof
+          if (p.riding) a.ride = p.riding.id;
+          return a;
+        }),
         /* Rounds in flight. `o` is who fired it, so a client can skip its own
            (it drew those the moment it pulled the trigger) and `a` is the
            heading, so the tracer can be drawn pointing the right way rather
@@ -1785,9 +1837,12 @@
            by `o` in the same snapshot and reads the gun off them, so a tracer's
            colour and heft cost nothing on the wire. */
         bullets: this.bullets.slice(0, 120).map(b => ({
-          i: b.id, x: Math.round(b.x), y: Math.round(b.y), team: b.team, o: b.owner,
+          i: b.id, x: Math.round(b.x), y: Math.round(b.y), o: b.owner,
           a: +Math.atan2(b.vy, b.vx).toFixed(2),
-          s: b.from === 'sentry' ? 1 : 0,
+          // a sentry's round, which its owner has to be shown. Left out
+          // otherwise — an ordinary round is by far the common case, and the
+          // team it belongs to is already known from whoever fired it
+          ...(b.from === 'sentry' ? { s: 1 } : null),
         })),
         // grenades mid-flight, so they are drawn arcing rather than appearing
         // as an explosion out of nowhere
@@ -1823,6 +1878,8 @@
         objectives: this.objectives.map(o => ({ o: o.owner, p: Math.round(o.progress), c: o.capTeam })),
         scores: this.scores.map(s => Math.round(s)),
         events: this.events.splice(0, this.events.length),
+        // names, squads, guns and scorelines — only on the ticks they changed
+        roster: this.rosterFor(this.tick),
       };
     }
     /* The half of the snapshot that is different for everybody. Attached just
@@ -1833,6 +1890,12 @@
         // the last input packet of theirs we have acted on: reconcile() replays
         // from here rather than guessing the window from half a ping
         ack: p.seq,
+        /* Your own body's numbers. These were in the agent list, which meant
+           everybody was told everybody else's magazine and armour tiers
+           twenty times a second and no client ever read one of them. */
+        ammo: p.ammo,
+        vest: p.vest, helmet: p.helmet, bag: p.bag,
+        respawn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - now()) / 1000)),
         inv: {
           g: p.inv.grenade.id, gn: p.inv.grenade.n,
           t: p.inv.tactical.id, tn: p.inv.tactical.n,
@@ -1890,6 +1953,12 @@
        The radius is generous on purpose. It has to cover the widest zoom
        (binoculars) plus enough margin that something never pops into view
        already on top of you. */
+    /* Events split into two kinds. A kill, a join, an emote, a capture — those
+       are the match talking to everybody and they go to everybody. A wall
+       coming down, a barrel going off, a jeep being called in: those happen
+       somewhere, and somewhere is usually nowhere near you. Twenty of them a
+       tick going to all eight players was the second biggest line in the
+       budget after the agent list. */
     cullTo(list, x, y) {
       if (!list.length) return list;
       const r2 = CULL_R * CULL_R;
@@ -1915,6 +1984,7 @@
         const snap = Object.assign({}, full);
         snap.you = this.personal(p);
         for (const k of near) snap[k] = this.cullTo(full[k], p.x, p.y);
+        snap.events = eventsFor(full.events, p);
         p.send(snap);
       }
     }

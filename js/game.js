@@ -2137,6 +2137,7 @@ const Game = (() => {
     bullets = []; fx = []; dmgNums = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
+    rideStat = { look: 0, noHull: 0, inCombat: 0, notOnWay: 0, want: 0, walk: 0, noPath: 0, board: 0, dropStuck: 0, dropGone: 0, unreachable: 0, dropForMate: 0 };
     zoom = zoomTarget = baseZoom();
     hudMessage = ''; hudMessageT = 0;
     killFeed = []; killBanner = null; soundPings = [];
@@ -3384,7 +3385,83 @@ const Game = (() => {
      so they all abandoned what they were doing to walk at one and none of them
      entered a building any more — bots indoors went from 7 of 15 to 0. A
      divert has to be opportunistic, not a standing order. */
-  const BOT_RIDE_RANGE = 1500;
+  /* Why bots do or don't end up in the hulls. Counted at each decision so the
+     failure can be located instead of guessed at — the previous two attempts
+     at this feature were both tuned blind. */
+  let rideStat = { look: 0, noHull: 0, inCombat: 0, notOnWay: 0, want: 0, walk: 0, noPath: 0, board: 0, dropStuck: 0, dropGone: 0, unreachable: 0, dropForMate: 0 };
+  /* How long a bot will keep trying to reach a hull before writing it off.
+
+     A fixed fourteen seconds was less than the walk: at roughly 150px a second
+     a bot fetching something from the far end of its search radius needs over
+     twenty, so it would give up a few strides short every time. The allowance
+     is set from the distance when the errand is taken on, plus a margin for
+     walking round things. */
+  const ridePatienceFor = (dist) => 8 + dist / 110;
+  const RIDE_COOLDOWN = 9;
+
+  /* Can this bot actually get to that hull?
+
+     Some of them cannot be reached at all — parked in a sealed bay, or behind
+     geometry the nav grid has no way through. A bot that commits to one of
+     those spends its whole patience walking at a wall, and measured, that was
+     most of the failures: 2428 fruitless path requests against 3778 useful
+     ones, with bots tied up for fourteen seconds at a time.
+
+     So the route is checked once, when the errand is taken on, and the A* run
+     is kept as the path rather than thrown away — the test costs nothing that
+     the first step would not have cost anyway. A hull that fails is set aside
+     for a while so the bot goes and fetches a different one. */
+  function rideReachable(a, v) {
+    if (!navGrid) return true;                  // no grid to consult; let it try
+    if (ridePathBudget <= 0) return true;       // can't test this frame; let it try
+    ridePathBudget--;
+    const p = Nav.findPath(navGrid, a.x, a.y, v.x, v.y);
+    if (p && p.length) {
+      a.path = p; a.pathI = 0;
+      a.pathTarget = { x: v.x, y: v.y };
+      a.pathAge = 120;
+      return true;
+    }
+    return false;
+  }
+
+  /* A heading towards (gx, gy) that is not straight into a wall.
+
+     Probes the direct bearing, then widens the sweep either side until it
+     finds one that is open, which walks a bot around a corner and along a
+     frontage rather than pressing into it. Shared by the ordinary movement
+     fallback and by a bot fetching a vehicle, so both behave the same way when
+     the pathfinder has nothing to offer. */
+  function slideToward(a, gx, gy) {
+    const want = Math.atan2(gy - a.y, gx - a.x);
+    const open = (ang) => !pointInObstacle(
+      a.x + Math.cos(ang) * (a.r + 34), a.y + Math.sin(ang) * (a.r + 34));
+    if (open(want)) return want;
+    const side = a.wallSide || (a.wallSide = Math.random() < 0.5 ? 1 : -1);
+    for (let step = 1; step <= 5; step++) {
+      const off = step * (Math.PI / 7);
+      if (open(want + off * side)) return want + off * side;
+      if (open(want - off * side)) return want - off * side;
+    }
+    // committed to a way round; keep going that way so it does not dither
+    return want + (Math.PI / 2) * side;
+  }
+  /* How far a bot will travel for a hull.
+
+     1500 was tuned when the divert was a chance encounter — something you take
+     if it happens to be on your route. On a 7400px island with nineteen hulls
+     that meant the commonest outcome by far was simply having none in reach:
+     240 of 411 evaluations found nothing. A vehicle is worth a walk, so the
+     radius is now most of a map quadrant. What keeps that from turning every
+     bot into a car thief is the detour test below, plus the fact that anyone
+     in contact with an enemy does not go anywhere.
+
+     2400 rather than more: measured over three hundred random point pairs, A*
+     finds a route about 60% of the time up to ~2100px and only 33-50% beyond
+     2800, because long routes run into the search's node budget. Asking for
+     hulls further away than the pathfinder can reliably reach just produces
+     errands that cannot be completed. */
+  const BOT_RIDE_RANGE = 2400;
   /* How far a bot will go to pick somebody up, and how far it will go to
      finish somebody off. Reviving reaches further because it is worth more. */
   /* How much further a bot will accept walking to collect a vehicle, as a
@@ -3394,12 +3471,25 @@ const Game = (() => {
 
   /* Is this hull on the bot's way? Compares going straight to the goal against
      going via the vehicle. With no goal yet, anything close enough will do. */
+  /* Should this bot go and get that hull?
+
+     The test used to be purely "is it on my way", which treats a vehicle as an
+     interruption to whatever the bot was already doing. For a bot with nothing
+     urgent on, fetching one *is* a perfectly good thing to be doing — it is
+     faster, tougher and better armed afterwards, so the walk pays for itself.
+
+     So there are two cases. A bot with no goal, or one a long way from its
+     goal, will go and get a vehicle outright. A bot closing on something it
+     has already chosen only diverts for a hull that is roughly en route. */
   function rideIsOnTheWay(a, v) {
     const goal = a.aiTargetPt;
-    if (!goal) return dist2(a.x, a.y, v.x, v.y) < 700 * 700;
+    const dv = Math.hypot(v.x - a.x, v.y - a.y);
+    if (!goal) return true;                         // nothing better to do
     const direct = Math.hypot(goal.x - a.x, goal.y - a.y);
     if (direct < 260) return false;                 // nearly there; just finish
-    const viaRide = Math.hypot(v.x - a.x, v.y - a.y) + Math.hypot(goal.x - v.x, goal.y - v.y);
+    // a hull much closer than the errand is worth collecting first
+    if (dv < direct * 0.6) return true;
+    const viaRide = dv + Math.hypot(goal.x - v.x, goal.y - v.y);
     return viaRide <= direct * RIDE_DETOUR_MAX;
   }
 
@@ -3412,6 +3502,15 @@ const Game = (() => {
     for (const v of agents) {
       if (!v.isVehicle || !v.alive || v.driver) continue;
       if (!v.neutral && v.team !== a.team) continue;
+      // one it has already tried and could not get to
+      if (a.rideSkip === v && (a.rideSkipT || 0) > 0) continue;
+      /* ...and one a squadmate is already fetching. Without this the nearest
+         hull is the nearest hull for everybody, so several bots walk to the
+         same jeep, one gets in and the rest have wasted the trip. */
+      const dd0 = dist2(a.x, a.y, v.x, v.y);
+      const claimed = agents.some(q => q !== a && q.alive && q.rideWant === v
+        && dist2(q.x, q.y, v.x, v.y) <= dd0);
+      if (claimed) continue;
       const dd = dist2(a.x, a.y, v.x, v.y);
       if (dd < bd) { bd = dd; best = v; }
     }
@@ -4184,6 +4283,21 @@ const Game = (() => {
        in, the rest of updateBot drives it — a vehicle is an agent like any
        other, so everything below already works from the driver's seat. */
     if (!a.isVehicle && !a.riding && a.alive) {
+      /* A squadmate on the floor outranks a vehicle.
+
+         This divert sits above the revive tactic in updateBot and returns when
+         it moves, so a bot on a vehicle errand never even looked at the downed
+         man — and widening the search radius turned that from a rare
+         coincidence into the common case. Fetching a car is the lowest
+         priority thing a bot does; it waits. Checked every frame rather than
+         on the errand's own 1.2s cadence, because the whole point is to react
+         the moment someone goes down. */
+      if (a.rideWant && agents.some(q => q.alive && q.downed && !q.isVehicle
+        && q.team === a.team && q !== a
+        && dist2(a.x, a.y, q.x, q.y) < BOT_REVIVE_RANGE * BOT_REVIVE_RANGE)) {
+        rideStat.dropForMate++;
+        a.rideWant = null;
+      }
       a.rideLook = (a.rideLook || 0) - dt;
       if (a.rideLook <= 0) {
         a.rideLook = 1.2;
@@ -4201,20 +4315,81 @@ const Game = (() => {
            hundred pixels ahead on your route is worth taking, and one the same
            distance behind you is not. So the range goes back up, and the
            divert is gated on the detour being small. */
-        const v = botNearestRide(a, BOT_RIDE_RANGE);
-        a.rideWant = (v && !(enemy && d < 600) && rideIsOnTheWay(a, v)) ? v : null;
+        /* Once a bot has set out for a hull, it keeps going.
+
+           This used to re-decide from scratch every 1.2 seconds, and the
+           decision is "is that hull roughly on my way?" — which is a question
+           about where the bot is *now*. Walking towards the vehicle changes
+           the answer, so a bot would commit, take three steps, re-ask, hear
+           "no", and turn round. Fetching a car is an errand you finish, not a
+           preference you re-examine twice a second.
+
+           The commitment survives until the hull is taken, destroyed, or the
+           bot has spent long enough failing to reach it. */
+        rideStat.look++;
+        const held = a.rideWant;
+        if (held && held.alive && !held.driver && (a.rideT || 0) < (a.ridePatience || 14)) {
+          rideStat.want++;                      // still on the errand
+        } else {
+          if (held) { a.rideT = 0; a.rideCool = held.driver ? 0 : RIDE_COOLDOWN; }
+          const v = (a.rideCool || 0) > 0 ? null : botNearestRide(a, BOT_RIDE_RANGE);
+          if ((a.rideCool || 0) > 0) { a.rideWant = null; }
+          else if (!v) { rideStat.noHull++; a.rideWant = null; }
+          else if (enemy && d < 600) { rideStat.inCombat++; a.rideWant = null; }
+          else if (!rideIsOnTheWay(a, v)) { rideStat.notOnWay++; a.rideWant = null; }
+          else if (!rideReachable(a, v)) {
+            rideStat.unreachable++;
+            a.rideSkip = v; a.rideSkipT = RIDE_COOLDOWN;
+            a.rideWant = null;
+          } else {
+            rideStat.want++; a.rideWant = v; a.rideT = 0;
+            a.ridePatience = ridePatienceFor(Math.hypot(v.x - a.x, v.y - a.y));
+          }
+        }
       }
+      if (a.rideCool > 0) a.rideCool -= dt;
+      if (a.rideSkipT > 0) a.rideSkipT -= dt;
+      if (a.rideWant) a.rideT = (a.rideT || 0) + dt;
       const want = a.rideWant;
       if (want && want.alive && !want.driver) {
         const dv = Math.hypot(want.x - a.x, want.y - a.y);
         if (dv < a.r + want.r + 34) {
+          rideStat.board++;
           botBoard(a, want);
           a.rideWant = null;
           return;                              // spend this frame getting in
         }
         // otherwise walk to it, using the same pathing and the same speed
         // model as every other bot movement below
-        if (ensurePath(a, want.x, want.y)) {
+        if (!ensurePath(a, want.x, want.y, true)) {
+          /* No route this frame. Head for it anyway rather than dropping the
+             errand and wandering off — the wall-slide probe is the same one
+             the ordinary movement code uses when the pathfinder has nothing,
+             and it walks a bot round a corner instead of into it. */
+          rideStat.noPath++;
+          /* Cannot route to it, frame after frame. Sliding towards a hull the
+             pathfinder has no way to reach is just walking at a wall, so after
+             a second of it the errand is written off and the bot goes back to
+             what it was doing. */
+          if ((a.rideBlind = (a.rideBlind || 0) + dt) > 1.0) {
+            rideStat.dropStuck++;
+            a.rideSkip = want; a.rideSkipT = RIDE_COOLDOWN;
+            a.rideWant = null; a.rideBlind = 0;
+          }
+          const ang = slideToward(a, want.x, want.y);
+          const base = a.weapon.moveSpeed * 0.72 * a.cls.speed
+            * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
+          const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
+          const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
+          const px = a.x, py = a.y;
+          a.x += Math.cos(ang) * spd; a.y += Math.sin(ang) * spd;
+          resolveObstacles(a);
+          trackStuck(a, px, py, spd, dt);
+          a.angle = ang;
+          return;                                // stay on the errand
+        } else {
+          rideStat.walk++;
+          a.rideBlind = 0;
           /* followPath returns a unit vector, not an angle. Passing it to
              Math.cos gives NaN, and `a.x += NaN` makes the bot's position NaN
              for the rest of the match — which is why bots never once reached a
@@ -4234,6 +4409,7 @@ const Game = (() => {
           }
         }
       } else if (want) {
+        rideStat.dropGone++;
         a.rideWant = null;
       }
     }
@@ -4465,26 +4641,7 @@ const Game = (() => {
              one that still makes progress; that walks a bot around a corner
              and along a frontage until the way round comes into view, which is
              what a person does when a door is not where they are standing. */
-          const want = Math.atan2(goal.y - a.y, goal.x - a.x);
-          const open = (ang) => {
-            const px = a.x + Math.cos(ang) * (a.r + 34);
-            const py = a.y + Math.sin(ang) * (a.r + 34);
-            return !pointInObstacle(px, py);
-          };
-          let ang = null;
-          if (open(want)) ang = want;
-          else {
-            // widen the sweep either side until something is clear
-            for (let step = 1; step <= 5 && ang === null; step++) {
-              const off = step * (Math.PI / 7);
-              const side = a.wallSide || (a.wallSide = Math.random() < 0.5 ? 1 : -1);
-              if (open(want + off * side)) ang = want + off * side;
-              else if (open(want - off * side)) ang = want - off * side;
-            }
-            // committed to a way round; keep going that way for a moment so it
-            // does not dither at the corner
-            if (ang === null) { ang = want + (Math.PI / 2) * (a.wallSide || 1); }
-          }
+          const ang = slideToward(a, goal.x, goal.y);
           a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
         }
         if (a.aiTargetPt && dist2(a.x, a.y, a.aiTargetPt.x, a.aiTargetPt.y) < 90 * 90) {
@@ -4581,14 +4738,28 @@ const Game = (() => {
 
   /* Ask for a path, respecting the per-frame budget. Returns true if the bot
      has a usable route. */
-  function ensurePath(a, tx, ty) {
+  /* `urgent` jumps the queue.
+
+     The budget is two A* runs a frame shared across every bot, which is right
+     for "where shall I wander next" and wrong for an errand the bot has
+     already committed to. A bot walking to a vehicle that loses the draw gets
+     `false` back, falls through to its ordinary logic, walks somewhere else —
+     and a second later the hull is behind it and gets rejected as not on the
+     way. Measured: 3075 failed path requests against 1779 successful ones, and
+     one vehicle boarded in forty seconds.
+
+     Urgent requests draw on a small separate allowance, so a committed bot
+     gets its route without letting the general case run unbounded. */
+  let ridePathBudget = 0;
+  function ensurePath(a, tx, ty, urgent) {
     if (!navGrid) return false;
     const moved = !a.pathTarget || dist2(a.pathTarget.x, a.pathTarget.y, tx, ty) > 240 * 240;
     a.pathAge = (a.pathAge || 0) - 1;
     if (a.path && a.path.length && !moved && a.pathAge > 0) return true;
-    if (pathBudget <= 0) return !!(a.path && a.path.length);   // keep the old route this frame
-
-    pathBudget--;
+    if (pathBudget <= 0) {
+      if (!urgent || ridePathBudget <= 0) return !!(a.path && a.path.length);
+      ridePathBudget--;
+    } else pathBudget--;
     a.pathTarget = { x: tx, y: ty };
     a.pathAge = 90 + Math.floor(Math.random() * 60);           // ~1.5-2.5s
     a.path = Nav.findPath(navGrid, a.x, a.y, tx, ty) || null;
@@ -4643,8 +4814,28 @@ const Game = (() => {
          one — an objective it cannot reach is worth less than one it can. */
       if (a.stuckRepaths >= 3) {
         a.aiTargetPt = null; a.aiRepath = 0;
-        a.tacticPt = null; a.rideWant = null;
-        a.stuckRepaths = 0;
+        a.tacticPt = null;
+        /* The vehicle errand survives *brief* sticking. Snagging on a corner
+           is normal on a long walk across a cluttered map, and cancelling
+           every time meant a bot three quarters of the way to a jeep turned
+           round because it clipped a fence.
+
+           Persistent sticking is different, and dropping the check entirely
+           was worse than keeping it: bots stayed committed while pinned
+           against a wall, and failed path requests went from a dozen to nine
+           thousand. So a ride errand gets twice the tolerance, and then goes
+           the same way as any other unreachable goal. */
+        if (a.rideWant && (a.stuckRides = (a.stuckRides || 0) + 1) < 2) {
+          a.stuckRepaths = 0;
+        } else {
+          if (a.rideWant) {
+            rideStat.dropStuck++;
+            a.rideSkip = a.rideWant; a.rideSkipT = RIDE_COOLDOWN;
+            a.rideWant = null;
+          }
+          a.stuckRides = 0;
+          a.stuckRepaths = 0;
+        }
       }
     } else if (a.stuckAcc === 0 && a.stuckRepaths) {
       a.stuckRepaths = 0;                 // moving freely again
@@ -4663,7 +4854,8 @@ const Game = (() => {
     updateFeel(dt);
     updateToolRings(dt);
     invalidateRects();
-    pathBudget = 2;      // at most two A* runs a frame, spread across the bots          // walls can be built, blown up or opened any frame
+    pathBudget = 2;      // at most two A* runs a frame, spread across the bots
+    ridePathBudget = 2;  // ...plus two reserved for bots already fetching a vehicle          // walls can be built, blown up or opened any frame
     /* Online the match clock belongs to whoever is hosting, and we only read
        it. Counting down locally as well meant the displayed time was our own
        guess for most of every 50ms between snapshots, and a player who joined
@@ -8359,8 +8551,8 @@ const Game = (() => {
       const rows = (online.remote || []).map(a => ({
         name: a.name, team: a.team, kills: a.kills || 0, deaths: a.deaths || 0, alive: a.alive,
       }));
-      const me = (online.transport.snapshots.length
-        ? (online.transport.snapshots.at(-1).data.agents || []).find(a => a.id === online.id) : null);
+      // our own scoreline comes from the roster too, like everybody else's
+      const me = online.who.get(online.id);
       if (me) { mine.kills = me.kills || 0; mine.deaths = me.deaths || 0; }
       rows.push(mine);
       return rows;
@@ -8545,6 +8737,8 @@ const Game = (() => {
       transport,
       peer: !isSocket,
       id: null, roster: [], lastSend: 0, ping: 0, lastPingAt: 0,
+      // the roster, indexed by id — see setRoster
+      who: new Map(), you: null,
       remote: [],
       clockLeft: MATCH_SECONDS, clockAt: null,   // filled by the host's welcome
       history: [], netErr: 0, wasDead: false,    // input replay — see reconcile()
@@ -8643,7 +8837,7 @@ const Game = (() => {
     if (!msg) return;
     if (msg.t === 'welcome') {
       online.id = msg.id;
-      online.roster = msg.roster || [];
+      setRoster(msg.roster || []);
       online.teams = msg.teams || nTeams;
       online.capacity = msg.capacity || 0;
       online.phase = msg.phase || 'live';
@@ -8702,6 +8896,8 @@ const Game = (() => {
          positional waits for onlineTick, which draws it on the same delayed,
          interpolated clock as the players — see netSyncEntities. */
       if (msg.you) netSyncSelf(msg.you);
+      // identity rides along only on the ticks it changed
+      if (msg.roster) setRoster(msg.roster);
       online.transport.snapshots.push({ at: performance.now(), data: msg });
       while (online.transport.snapshots.length > 32) online.transport.snapshots.shift();
       setOnlineClock(msg.timeLeft);
@@ -8742,7 +8938,7 @@ const Game = (() => {
         else if (e.e === 'leave') hudMsg(`${e.name} left`);
       }
     } else if (msg.t === 'lobby') {
-      online.roster = msg.roster || [];
+      setRoster(msg.roster || []);
       online.teams = msg.teams || online.teams;
       online.capacity = msg.capacity || online.capacity;
       if (lobbyOpen()) renderLobby();
@@ -8750,7 +8946,7 @@ const Game = (() => {
     } else if (msg.t === 'start') {
       // the host said go: everyone drops in on the same clock, together
       online.phase = 'live';
-      online.roster = msg.roster || online.roster;
+      setRoster(msg.roster || online.roster);
       online.history.length = 0;              // nothing before this counts
       setOnlineClock(msg.timeLeft);
       showLobby(false);
@@ -8764,6 +8960,11 @@ const Game = (() => {
       quitMatch();
     } else if (msg.t === 'pong') {
       online.ping = Math.round(performance.now() - msg.c);
+    } else if (msg.t === 'congested') {
+      /* The host is dropping our snapshots because its uplink cannot keep up.
+         Worth saying: it looks exactly like our own connection failing, and it
+         is neither our fault nor something we can fix from here. */
+      hudMsg('The host’s connection is struggling — the match may stutter');
     } else if (msg.t === 'blind') {
       /* A flashbang that the room decided could see us. Line of sight is its
          call — it is the only place that has geometry everyone agrees on. */
@@ -9001,8 +9202,24 @@ const Game = (() => {
 
   /* The half of the snapshot that is only ours: what we are carrying, and how
      much of our own input the room has acted on. */
+  /* Who everybody is, kept as a list for the lobby and an index for the
+     renderer. The host sends this when it changes — somebody joins, somebody
+     dies, somebody picks up a Gold — and once a second regardless, so a guest
+     that lost the packet carrying it is never left drawing nameless strangers. */
+  function setRoster(list) {
+    online.roster = list || [];
+    online.who.clear();
+    for (const r of online.roster) {
+      online.who.set(r.id, {
+        name: r.name, team: r.team, weaponId: r.weaponId, skin: r.skin,
+        kills: r.kills || 0, deaths: r.deaths || 0,
+      });
+    }
+  }
+
   function netSyncSelf(you) {
     online.ack = you.ack || 0;
+    online.you = you;
     const inv = you.inv;
     if (!inv || !player || !player.inv) return;
     player.inv.grenade.id = inv.g; player.inv.grenade.n = inv.gn;
@@ -9062,7 +9279,14 @@ const Game = (() => {
     const pair = online.transport.interpolated();
     if (!pair) return;
     const lerped = Net.lerpAgents(pair.a, pair.b, pair.t);
-    online.remote = lerped.filter(a => a.id !== online.id);
+    /* A snapshot agent is only what moves. Who they are — name, squad, the gun
+       in their hands, their scoreline — comes from the roster, which the host
+       sends when it changes rather than in every packet. Stitched back together
+       here so everything downstream still sees one whole player. */
+    online.remote = lerped.filter(a => a.id !== online.id).map(a => {
+      const who = online.who.get(a.id);
+      return who ? Object.assign(a, who) : a;
+    });
     // the rest of the world, on the same clock the players are drawn on
     netSyncEntities(pair.a, pair.b, pair.t);
     /* Rounds other people have in the air. Taken from the newer snapshot
@@ -9096,10 +9320,18 @@ const Game = (() => {
     if (mine && player) {
       player.hp = mine.hp;
       player.alive = mine.alive;
-      online.respawn = mine.respawn || 0;   // the host owns the clock, not us
-      player.ammo = mine.ammo;
-      player.adrenaline = mine.adrenaline;
-      player.vest = mine.vest; player.helmet = mine.helmet; player.bag = mine.bag || 0;
+      // left out of the snapshot when it is zero, which is most of the time
+      player.adrenaline = mine.adrenaline || 0;
+      /* Our magazine, our armour and our respawn clock come from the personal
+         half of the snapshot now. They were in the agent list, which meant
+         every player was sent every other player's ammo count and armour
+         tiers twenty times a second, and nothing ever read one of them. */
+      const you = online.you;
+      if (you) {
+        online.respawn = you.respawn || 0;   // the host owns the clock, not us
+        player.ammo = you.ammo;
+        player.vest = you.vest; player.helmet = you.helmet; player.bag = you.bag || 0;
+      }
       // behind the wheel it is the hull that gets corrected, and we ride it
       if (player.riding) reconcileRide(dt);
       else reconcile(dt);
@@ -9364,6 +9596,10 @@ const Game = (() => {
     if (!online) return;
     for (const a of online.remote) {
       if (!a.alive || !onScreen(a.x, a.y, 40)) continue;
+      /* Inside a hull, not standing on one. The room reports who is riding
+         what; without it a driver was drawn as a body sitting on the roof of
+         their own jeep, sliding along with it. */
+      if (a.ride) continue;
       const col = TEAM_COLORS[a.team % TEAM_COLORS.length];
       // same body size as a local agent — a remote player must be the same
       // target the server is hit-testing
@@ -9661,6 +9897,50 @@ const Game = (() => {
     },
     /* Every building's footprint, for checking which are no longer boxes. */
     footprints: () => buildings.map(b => ({ name: b.name, blocks: (b.shape || []).length || 1 })),
+
+    /* Why a bot did or did not go for a hull. Read-only: it asks the same
+       questions updateBot asks, for every unclaimed vehicle on the map. */
+    rideStat: () => Object.assign({}, rideStat),
+    /* Does A* find a route between two arbitrary points? Used to check whether
+       long-range pathing fails on distance (the node budget) or on geometry. */
+    canRoute: (ax, ay, bx, by) => {
+      if (!navGrid) return null;
+      const pth = Nav.findPath(navGrid, ax, ay, bx, by);
+      return !!(pth && pth.length);
+    },
+    mapSize: () => ({ w: MAP_W, h: MAP_H }),
+    rideDiag() {
+      const bots = agents.filter(a => a.alive && !a.isPlayer && !a.isVehicle && !a.riding);
+      const hulls = agents.filter(v => v.isVehicle && v.alive);
+      const rows = hulls.map(v => {
+        let near = null, nd = Infinity;
+        for (const a of bots) {
+          const d = Math.hypot(a.x - v.x, a.y - v.y);
+          if (d < nd) { nd = d; near = a; }
+        }
+        const insideB = buildings.find(b => blocksOf(b).some(r => inRectXY(r, v.x, v.y)));
+        let routed = null;
+        if (near) {
+          const path = navGrid ? Nav.findPath(navGrid, near.x, near.y, v.x, v.y) : null;
+          routed = !!(path && path.length);
+        }
+        return {
+          kind: v.vtype, driven: !!v.driver, neutral: !!v.neutral,
+          nearestBot: Math.round(nd),
+          onWay: near ? rideIsOnTheWay(near, v) : null,
+          inBuilding: insideB ? insideB.name : null,
+          blockedSpot: pointInObstacle(v.x, v.y),
+          routable: routed,
+        };
+      });
+      return {
+        bots: bots.length,
+        wanting: bots.filter(a => a.rideWant).length,
+        hulls: rows.length,
+        driven: rows.filter(r => r.driven).length,
+        rows,
+      };
+    },
 
     /* Stand the player on the nearest piece of shore, to look at it. */
     gotoShore() {
