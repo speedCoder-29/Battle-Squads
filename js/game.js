@@ -152,6 +152,7 @@ const Game = (() => {
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
   let grenades = [], deployables = [], smokes = [], crates = [], drops = [], airstrikes = [];
+  let supplyDrop = null, supplyTimer = 0, supplyCount = 0;
   let grass = [], trenches = [], decor = [];                       // terrain + dressing
   let terrain = null;                                              // island: ocean/beach/grass/river/roads
   let flashOverlay = 0;                                            // player blind timer (s)
@@ -567,7 +568,10 @@ const Game = (() => {
     if (guess.w) {
       const pb = { x: x + guess.x, y: y + guess.y, w: guess.w, h: guess.h };
       if (pb.x < 16 || pb.y < 16 || pb.x + pb.w > MAP_W - 16 || pb.y + pb.h > MAP_H - 16) { lastReject = 'offMap'; return []; }
-      if (genHits(pb, Math.max(0, (pad === undefined ? 120 : pad) - 24))) { lastReject = 'occupied'; return []; }
+      const prePad = Math.max(0, (pad === undefined ? 120 : pad) - 24);
+      const preBlocks = guess.shape ? guess.shape.map(r => ({ x: x + r.x, y: y + r.y, w: r.w, h: r.h })) : [pb];
+      if (preBlocks.every(blk => genHits(blk, prePad))) { lastReject = 'occupied'; return []; }
+      if (!guess.shape && genHits(pb, prePad)) { lastReject = 'occupied'; return []; }
     }
     const parts = Structures.place(name, x, y);
     if (!parts.length) { lastReject = 'blueprint'; return []; }
@@ -576,7 +580,16 @@ const Game = (() => {
     // Cheap rejections first. Most candidates fail, and the per-segment terrain
     // check below runs a distance-to-river test per probe — doing that for a
     // building that already overlaps something was most of the generation cost.
-    if (genHits(bb, pad === undefined ? 120 : pad)) { lastReject = 'occupied'; return []; }
+    /* Clearance against the blocks the building is made of, not the box round
+       them. A compound like the harbour has a 1578x1113 bounding box that is
+       mostly open quay, and an L-shaped house demands the empty corner of the
+       L — so both were being refused ground they would never have stood on.
+       Measured after the house became an L: 3 of 5 placed. */
+    const clearPad = pad === undefined ? 120 : pad;
+    const blocks = parts.shape && parts.shape.length ? parts.shape : [bb];
+    for (const blk of blocks) {
+      if (genHits(blk, clearPad)) { lastReject = 'occupied'; return []; }
+    }
     if (!Terrain.isBuildable(terrain, bb.x + bb.w / 2, bb.y + bb.h / 2, 10)) { lastReject = 'terrain'; return []; }
     // Check every segment, not just the bounding box: a river bending through
     // the middle of a large building passes between the corners unnoticed, and
@@ -1487,7 +1500,12 @@ const Game = (() => {
   /* add a placed required building to the world */
   function commitRequired(name, parts, bb) {
     tally(name, 'placed');
-    requiredPlacements.push(bb);
+    /* Record the blocks as well as the box, so the next required building is
+       spaced against the ground this one stands on rather than the rectangle
+       drawn round it — a compound reserves its sheds, not its whole yard. */
+    requiredPlacements.push(parts.shape && parts.shape.length
+      ? Object.assign({}, bb, { blocks: parts.shape })
+      : bb);
     const pid = 'r' + requiredPlacements.length;
     for (const part of parts) { part.placement = pid; genAdd(part); }
     obstacles.push(...parts);
@@ -1514,8 +1532,13 @@ const Game = (() => {
           const parts = placeBuilding(name, x, y, pad);
           if (!parts.length) continue;
           const bb = boundsOf(parts);
-          if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(pad, 30)))) continue;
-          if (landmarks.some(l => padOverlap(bb, l, Math.min(pad, 60)))) continue;
+          const mine = parts.shape && parts.shape.length ? parts.shape : [bb];
+          const clashes = (other, gap) => {
+            const theirs = other.blocks && other.blocks.length ? other.blocks : [other];
+            return mine.some(a2 => theirs.some(b2 => padOverlap(a2, b2, gap)));
+          };
+          if (requiredPlacements.some(b => clashes(b, Math.min(pad, 30)))) continue;
+          if (landmarks.some(l => clashes(l, Math.min(pad, 60)))) continue;
           return commitRequired(name, parts, bb);
         }
       }
@@ -1542,7 +1565,11 @@ const Game = (() => {
   function placedSize(name) {
     if (!sizeCache[name]) {
       const parts = Structures.place(name, 0, 0);
-      sizeCache[name] = parts.length ? boundsOf(parts) : { w: 0, h: 0 };
+      const bb = parts.length ? boundsOf(parts) : { w: 0, h: 0 };
+      // the blocks it is really made of, relative to the origin, so the
+      // clearance test can ask about those instead of the box round them
+      bb.shape = parts.shape ? parts.shape.map(r => ({ x: r.x, y: r.y, w: r.w, h: r.h })) : null;
+      sizeCache[name] = bb;
     }
     return sizeCache[name];
   }
@@ -2137,6 +2164,7 @@ const Game = (() => {
     bullets = []; fx = []; dmgNums = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
+    supplyDrop = null; supplyCount = 0; supplyTimer = SUPPLY_FIRST;
     rideStat = { look: 0, noHull: 0, inCombat: 0, notOnWay: 0, want: 0, walk: 0, noPath: 0, board: 0, dropStuck: 0, dropGone: 0, unreachable: 0, dropForMate: 0 };
     zoom = zoomTarget = baseZoom();
     hudMessage = ''; hudMessageT = 0;
@@ -2154,15 +2182,13 @@ const Game = (() => {
     buildNav();          // the world is final now, so the grid matches it
     // starting tactical kit = whatever your class deploys with
     player.inv = {
-      grenade:  { id: null, n: 0 },
-      tactical: { id: null, n: 0 },
-      heal:     { id: null, n: 0 },
+      grenade: freshSlot(), tactical: freshSlot(), heal: freshSlot(),
       tokens: [],
     };
     const kit = Items.CONSUMABLES[player.cls.consumable];
-    if (kit) player.inv[kit.cat] = { id: player.cls.consumable, n: Classes.startFor(player.cls, carryTier(player), player.perk) };
+    if (kit) addItem(kit.cat, player.cls.consumable, Classes.startFor(player.cls, carryTier(player), player.perk));
     // everyone also deploys with a couple of bandages so you're never stranded
-    if (kit && kit.cat !== 'heal') player.inv.heal = { id: 'bandage', n: 2 };
+    if (kit && kit.cat !== 'heal') addItem('heal', 'bandage', 2);
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
     camTarget = player; camWasDead = false; camSnap = true;
@@ -2309,6 +2335,11 @@ const Game = (() => {
         e.preventDefault();
         return;
       }
+      /* Clicking an item panel picks that item rather than firing. The panels
+         sit in the corner of the screen you are least likely to be aiming at,
+         and the click is swallowed so you do not put a round into the wall
+         behind them. */
+      if (e.button === 0 && itemPanelClick(input.mx, input.my)) { e.preventDefault(); return; }
       if (e.button === 0) { input.shooting = true; input.fireEdge = true; }   // left = fire
       if (e.button === 1) { quickMark(); e.preventDefault(); }                // middle = quick ping
       if (e.button === 2) input.ads = true;                                    // right = aim
@@ -2624,29 +2655,84 @@ const Game = (() => {
     const kit = Items.CONSUMABLES[player.cls.consumable];
     if (!kit) return;
     const slot = player.inv[kit.cat];
-    if (!slot || slot.id !== player.cls.consumable) return;
-    slot.n = Math.max(slot.n || 0, Classes.startFor(player.cls, carryTier(player), player.perk));
+    if (!slot || !slot.held) return;
+    const want = Classes.startFor(player.cls, carryTier(player), player.perk);
+    const id = player.cls.consumable;
+    if ((slot.held[id] || 0) >= want) return;
+    slot.held[id] = want;
+    syncSlot(kit.cat);
   }
 
   /* How much you can hold, as a bag tier. A Mule counts as wearing one bag
      better than they are — including no bag at all, which becomes a T1. */
   const carryTier = (a) => Math.min(3, a.bag || 0);
 
+  /* ================= carrying things =================
+     A slot used to hold exactly one kind of thing. Picking up a smoke while
+     you had frags threw the frags on the floor, which meant walking over a
+     grenade you did not want cost you the one you did — and it made the three
+     item keys much less interesting than they should be, because the answer
+     to "what do I have" was always "one of something".
+
+     Each category is now a small store: `held` maps an item id to how many of
+     it you have, and `id`/`n` are a view onto whichever one is selected. That
+     shape matters — every existing caller reads `slot.id` and `slot.n`, and
+     the netcode sends them, so none of that had to change. What changed is
+     that `held` can have several entries at once and you choose between them.
+
+     Per-item caps still apply, so carrying everything is not carrying an
+     unlimited amount of everything. */
+  const CAT_KEYS = ['grenade', 'tactical', 'heal'];
+
+  const freshSlot = () => ({ id: null, n: 0, held: {} });
+
+  /* Point `id`/`n` at the selected entry, dropping the selection if it has run
+     out and picking whatever else is in the bag. */
+  function syncSlot(cat) {
+    const slot = player && player.inv && player.inv[cat];
+    if (!slot) return;
+    if (!slot.held) slot.held = {};
+    for (const k of Object.keys(slot.held)) if (slot.held[k] <= 0) delete slot.held[k];
+    if (!slot.id || !slot.held[slot.id]) slot.id = Object.keys(slot.held)[0] || null;
+    slot.n = slot.id ? slot.held[slot.id] : 0;
+  }
+
+  /* Choose which of the things you are carrying this key throws. */
+  function selectItem(cat, id) {
+    const slot = player && player.inv && player.inv[cat];
+    if (!slot || !slot.held || !slot.held[id]) return false;
+    // online the room decides; it will send the change back in the next snapshot
+    if (online) { online.transport.send('pick', { cat, id }); SFX.click(); return true; }
+    slot.id = id;
+    syncSlot(cat);
+    updateWeaponHud();
+    SFX.click();
+    return true;
+  }
+
+  /* Spend one of whatever is selected. */
+  function spendItem(cat) {
+    const slot = player.inv[cat];
+    if (!slot || !slot.id) return;
+    slot.held[slot.id] = (slot.held[slot.id] || 0) - 1;
+    syncSlot(cat);
+  }
+
   function addItem(cat, id, n, at) {
     const slot = player.inv[cat];
     if (!slot) return 0;
+    if (!slot.held) slot.held = {};
     const cap = Classes.limitFor(player.cls, id, carryTier(player), player.perk);
     const where = at || player;
 
-    // a different item in this slot? put the old one on the ground, don't bin it
-    if (slot.id && slot.id !== id && slot.n > 0) {
-      dropItem(cat, slot.id, slot.n, where);
-      slot.n = 0;
-    }
-    slot.id = id;
-    const room = Math.max(0, cap - (slot.n || 0));
+    /* Room is per item, not per category: picking up smoke no longer costs
+       you the frags you were carrying. */
+    const have = slot.held[id] || 0;
+    const room = Math.max(0, cap - have);
     const taken = Math.min(room, n);
-    slot.n = (slot.n || 0) + taken;
+    if (taken > 0) slot.held[id] = have + taken;
+    if (!slot.id) slot.id = id;              // first of anything becomes the pick
+    syncSlot(cat);
     const overflow = n - taken;
     if (overflow > 0) dropItem(cat, id, overflow, where);     // full — the rest hits the floor
     return overflow;
@@ -2693,7 +2779,7 @@ const Game = (() => {
     const slot = player.inv[best.cat];
     const cap = Classes.limitFor(player.cls, best.id, carryTier(player), player.perk);
     // already full of this exact item? leave it where it is
-    if (slot && slot.id === best.id && slot.n >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
+    if (slot && slot.held && (slot.held[best.id] || 0) >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
     drops.splice(bi, 1);
     const left = addItem(best.cat, best.id, best.n);
     hudMsg(`Picked up ${it.name} ×${best.n - left}`);
@@ -2821,6 +2907,131 @@ const Game = (() => {
     SFX.win();
     return true;
   }
+  /* ================= the supply drop =================
+     Every so often a plane crosses the island and puts one crate on the ground
+     somewhere in the open, and tells everybody where.
+
+     It exists for the fight, not the loot. A match on a map this size spreads
+     sixteen people across four thousand pixels and they can go a long time
+     without meeting; a drop gives the whole server the same destination for
+     half a minute, which is the cheapest way to manufacture a real fight that
+     nobody had to be herded into. The loot is good enough to be worth the
+     walk, and the crate takes long enough to open that winning the race is not
+     the same as winning the prize.
+
+     Offline and host-side only. Online the room owns the world, and a client
+     inventing a crate the host has never heard of is exactly the sort of thing
+     the room exists to prevent — so it simply does not run there. */
+  const SUPPLY_FIRST = 75;        // seconds into the match before the first one
+  const SUPPLY_EVERY = 105;       // and roughly how often after that
+  const SUPPLY_FALL = 6.5;        // seconds under the parachute
+  const SUPPLY_MAX = 3;           // per match, so it stays an event
+
+  function updateSupplyDrop(dt) {
+    if (online || mode === 'range' || !running) return;
+    // the crate on the ground is a normal crate once it lands; this is the fall
+    if (supplyDrop) {
+      supplyDrop.t -= dt;
+      if (supplyDrop.t <= 0) landSupplyDrop();
+      return;
+    }
+    if (supplyCount >= SUPPLY_MAX) return;
+    supplyTimer -= dt;
+    if (supplyTimer > 0) return;
+    callSupplyDrop();
+  }
+
+  function callSupplyDrop() {
+    /* Somewhere in the open, inland, and not on top of anybody's roof — the
+       whole point is that it has to be crossed ground to reach. */
+    let x = 0, y = 0, found = false;
+    for (let i = 0; i < 60 && !found; i++) {
+      x = rand(MAP_W * 0.2, MAP_W * 0.8);
+      y = rand(MAP_H * 0.2, MAP_H * 0.8);
+      found = Terrain.isBuildable(terrain, x, y, 120)
+        && !pointInObstacle(x, y)
+        && !buildings.some(b => blocksOf(b).some(r => inRectXY(r, x, y)));
+    }
+    if (!found) { supplyTimer = 20; return; }     // try again shortly
+    supplyCount++;
+    supplyTimer = SUPPLY_EVERY;
+    // the plane comes in across the short axis, so the run is visible
+    const fromLeft = Math.random() < 0.5;
+    supplyDrop = {
+      x, y, t: SUPPLY_FALL, total: SUPPLY_FALL,
+      planeY: y, planeFrom: fromLeft ? -400 : MAP_W + 400, fromLeft,
+    };
+    Toast.show('Supply drop inbound');
+    hudMsg('🪂  Supply drop inbound — watch the parachute');
+    SFX.win();
+  }
+
+  function landSupplyDrop() {
+    const d = supplyDrop;
+    supplyDrop = null;
+    if (!d) return;
+    crates.push({ x: d.x, y: d.y, tier: 'airdrop', opened: false, supply: true });
+    hudMsg('🪂  Supply drop has landed');
+    Toast.show('Supply drop landed');
+  }
+
+  /* Where the crate is, for the compass, the minimap and the edge arrows. A
+     drop nobody can find is just loot in a field. */
+  function supplyMark() {
+    if (supplyDrop) return { x: supplyDrop.x, y: supplyDrop.y, falling: true };
+    const c = crates.find(q => q.supply && !q.opened);
+    return c ? { x: c.x, y: c.y, falling: false } : null;
+  }
+
+  function drawSupplyDrop() {
+    const d = supplyDrop;
+    if (!d) return;
+    const k = 1 - d.t / d.total;                 // 0 at the drop, 1 on landing
+    // the aircraft, running in along its line
+    const px = d.planeFrom + (d.x - d.planeFrom) * Math.min(1, k * 2.2);
+    if (onScreen(px, d.planeY, 200)) {
+      ctx.save();
+      ctx.translate(px, d.planeY);
+      if (!d.fromLeft) ctx.scale(-1, 1);
+      ctx.fillStyle = 'rgba(40,48,66,0.85)';
+      ctx.beginPath();
+      ctx.moveTo(46, 0); ctx.lineTo(-30, 13); ctx.lineTo(-30, -13);
+      ctx.closePath(); ctx.fill();
+      ctx.fillRect(-14, -40, 12, 80);            // wings
+      ctx.restore();
+    }
+    if (k < 0.45) return;                        // not released yet
+    // the crate under its canopy, drifting down onto the marked spot
+    const fall = (k - 0.45) / 0.55;
+    const alt = (1 - fall) * 190;                // how far above the ground
+    const cx = d.x, cy = d.y - alt;
+    if (!onScreen(cx, cy, 220)) return;
+    groundShadow(d.x, d.y, 26 * (0.5 + fall * 0.5), 0);
+    ctx.save();
+    // canopy
+    ctx.fillStyle = 'rgba(127,242,193,0.85)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - 40, 40, 26, 0, Math.PI, 0);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(20,30,44,0.6)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 36, cy - 40); ctx.lineTo(cx - 10, cy - 8);
+    ctx.moveTo(cx + 36, cy - 40); ctx.lineTo(cx + 10, cy - 8);
+    ctx.stroke();
+    // the crate
+    ctx.fillStyle = '#5c7f6a';
+    roundRect(cx - 17, cy - 14, 34, 28, 4); ctx.fill();
+    ctx.strokeStyle = '#233529'; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.restore();
+    // and the spot it is coming down on
+    ctx.save();
+    ctx.strokeStyle = 'rgba(127,242,193,' + (0.35 + 0.35 * Math.sin(performance.now() / 180)).toFixed(2) + ')';
+    ctx.lineWidth = 3; ctx.setLineDash([14, 12]);
+    ctx.beginPath(); ctx.arc(d.x, d.y, 54, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
   function updateAirstrikes(dt) {
     for (let i = airstrikes.length - 1; i >= 0; i--) {
       const s = airstrikes[i];
@@ -3220,7 +3431,7 @@ const Game = (() => {
       vx: dx / d * 660, vy: dy / d * 660, mode: it.mode, item: it,
       team: player.team, owner: player, arrived: false, fuzeLeft: it.fuze || 0,
     });
-    slot.n--; if (slot.n <= 0) slot.id = null;
+    spendItem('grenade');
     hudMsg('Threw ' + it.name); SFX.click();
   }
 
@@ -3244,7 +3455,7 @@ const Game = (() => {
         hudMsg(it.name + ' used');
       },
     };
-    slot.n--; if (slot.n <= 0) slot.id = null;
+    spendItem('heal');
     SFX.reload();
   }
   function reviveTeammate() {
@@ -3283,7 +3494,7 @@ const Game = (() => {
       type: 'sentry', x: player.x, y: player.y, team: player.team, owner: player, item: it,
       hp: it.hp, maxHp: it.hp, life: it.life, angle: player.angle, cd: 0,
     });
-    slot.n--; if (slot.n <= 0) slot.id = null;
+    spendItem('tactical');
     hudMsg('Deployed ' + it.name); SFX.capture();
   }
 
@@ -4846,8 +5057,18 @@ const Game = (() => {
   /* Bots engage inside their own gun's effective range, clamped to something
      sane. The ceiling is deliberately about one screen: a sniper bot's rifle
      reaches 56 tiles, but being shot by something you have no way of seeing
-     isn't a fight, so they hold until you're on their screen too. */
-  const botRange = (w) => clamp(w.range * 0.8, TILE * 8, TILE * 25);
+     isn't a fight, so they hold until you're on their screen too.
+
+     `effectiveRange`, not `range`: for a shotgun those differ by a factor of
+     three, and reading the travel distance meant a bot holding an M870 opened
+     up at ten tiles, where nine pellets in a ±65px fan put about eleven damage
+     on a body. It now closes to where its gun works, which is also what makes
+     a shotgun bot frightening instead of harmless. The floor comes down for
+     the same reason — eight tiles is outside a shotgun's envelope entirely. */
+  const botRange = (w) => {
+    const eff = w.effectiveRange || w.range;
+    return clamp(eff * 0.8, Math.min(TILE * 8, eff * 0.9), TILE * 25);
+  };
 
   /* ---------------- update ---------------- */
   function update(dt) {
@@ -5128,6 +5349,7 @@ const Game = (() => {
       if (navRebuildIn <= 0) { buildNav(); navChanges = 0; }
     }
     updateAirstrikes(dt);
+    updateSupplyDrop(dt);
     if (!online) { updateDeployables(dt); updateSmokes(dt); }
 
     // fx + damage numbers
@@ -5644,8 +5866,12 @@ const Game = (() => {
       player.reloadTimer = 0;
       refillFromBag();
       if (player.inv && player.inv.heal) {
-        player.inv.heal.id = player.inv.heal.id || 'bandage';
-        player.inv.heal.n = Math.max(player.inv.heal.n || 0, 3);
+        const h = player.inv.heal;
+        if (!h.held) h.held = {};
+        const id = h.id || 'bandage';
+        h.held[id] = Math.max(h.held[id] || 0, 3);
+        h.id = id;
+        syncSlot('heal');
       }
       updateWeaponHud();
       hudMsg('📦  Resupplied');
@@ -6042,7 +6268,17 @@ const Game = (() => {
   function updateHud() {
     // health + ammo track whatever you're currently fighting from
     const s = hudSubject();
-    document.getElementById('hud-hpfill').style.width = clamp(s.hp / s.maxHp * 100, 0, 100) + '%';
+    /* Health as a bar *and* a number, with the state on the wrapper so the
+       colour changes character as it falls rather than only getting shorter. */
+    const frac = clamp(s.hp / s.maxHp, 0, 1);
+    document.getElementById('hud-hpfill').style.width = (frac * 100) + '%';
+    const bar = document.getElementById('hud-hpbar');
+    if (bar) bar.dataset.hp = Math.max(0, Math.round(s.hp)) + ' / ' + Math.round(s.maxHp);
+    const hpWrap = document.getElementById('hud-healthwrap');
+    if (hpWrap) {
+      hpWrap.classList.toggle('is-hurt', frac <= 0.55 && frac > 0.25);
+      hpWrap.classList.toggle('is-critical', frac <= 0.25);
+    }
     document.getElementById('hud-ammo').textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
     // timer
     const t = Math.max(0, Math.floor(timeLeft));
@@ -6156,6 +6392,7 @@ const Game = (() => {
 
     drawToolRings();
     drawCratesAndDeployables();
+    drawSupplyDrop();   // the plane, the canopy and the spot it is landing on
     drawDrops();
 
     // fx under agents
@@ -6309,6 +6546,15 @@ const Game = (() => {
     perfMark('roofs', drawRoofs);   // roofs hide interiors until you step inside
     drawSmokes();   // smoke sits above units to obscure them
 
+    /* Sightline shadows, before any of the interface goes on.
+
+       These used to be drawn after drawTacticalHud, and they are a full-screen
+       darkening layer — so standing next to a wall dimmed the health bar, the
+       adrenaline bar, the item slots and the class line along with the ground.
+       The interface is not part of the world and nothing in the world should
+       be able to shade it. */
+    perfMark('sight', drawSightShadows);
+
     ctx.restore();
 
     // dead overlay hint
@@ -6329,7 +6575,6 @@ const Game = (() => {
     }
 
     drawTacticalHud();
-    perfMark('sight', drawSightShadows);   // hide what the walls stand in front of
     drawSoundPings();
     drawMinimap();
     drawCompass();          // which way to turn, as opposed to where things are
@@ -7592,6 +7837,7 @@ const Game = (() => {
       drawVehicleStatus(p.riding);
     } else {
       drawStatusStack(p);
+      drawItemPanels(p);
       drawActionBar(p);
     }
     drawChannelRing(p);
@@ -7654,6 +7900,94 @@ const Game = (() => {
   }
 
   /* left column: class → armour → adrenaline, one aligned stack */
+  /* ================= the item panels =================
+     One area per category down the right-hand side, listing everything you are
+     actually carrying rather than the single thing the key happens to be
+     pointed at. The selected entry is the one that key throws; click another
+     to point it there instead.
+
+     Right side because the left is the status stack and the bottom is the
+     action bar — and because with a full bag this is three columns of content
+     that needs somewhere it can grow without pushing anything else around. */
+  const PANEL = { w: 168, row: 30, gap: 10, right: 20, top: 300 };
+  let panelHots = [];                 // click targets, rebuilt each frame
+
+  const CAT_META = {
+    grenade:  { key: 'Q', name: 'Grenades', tint: '#ff9d6a' },
+    tactical: { key: 'C', name: 'Tactical', tint: '#7fd0ff' },
+    heal:     { key: 'F', name: 'Healing',  tint: '#7ff2c1' },
+  };
+
+  function drawItemPanels(p) {
+    panelHots = [];
+    if (!p || !p.inv) return;
+    const x = W - PANEL.w - PANEL.right;
+    let y = PANEL.top;
+    for (const cat of CAT_KEYS) {
+      const slot = p.inv[cat];
+      const meta = CAT_META[cat];
+      const ids = slot && slot.held ? Object.keys(slot.held) : [];
+      const h = 24 + Math.max(1, ids.length) * PANEL.row + 6;
+
+      ctx.save();
+      // the panel itself: opaque enough to read over anything underneath
+      ctx.fillStyle = 'rgba(10,15,28,0.82)';
+      roundRect(x, y, PANEL.w, h, 10); ctx.fill();
+      ctx.strokeStyle = hexA(meta.tint, 0.34); ctx.lineWidth = 1.4; ctx.stroke();
+
+      // heading: the key that uses this category, and what it is
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold 10px ' + UI_FONT;
+      ctx.fillStyle = hexA(meta.tint, 0.9);
+      ctx.fillText(meta.name.toUpperCase(), x + 11, y + 13);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(210,222,244,0.6)';
+      ctx.fillText('[' + Controls.labelFor(cat) + ']', x + PANEL.w - 11, y + 13);
+
+      let ry = y + 24;
+      if (!ids.length) {
+        ctx.textAlign = 'left';
+        ctx.font = '11px ' + UI_FONT;
+        ctx.fillStyle = 'rgba(150,164,190,0.55)';
+        ctx.fillText('empty', x + 12, ry + PANEL.row / 2);
+      }
+      for (const id of ids) {
+        const it = Items.CONSUMABLES[id];
+        if (!it) continue;
+        const on = slot.id === id;
+        if (on) {
+          ctx.fillStyle = hexA(meta.tint, 0.16);
+          roundRect(x + 5, ry + 2, PANEL.w - 10, PANEL.row - 4, 6); ctx.fill();
+          ctx.strokeStyle = hexA(meta.tint, 0.75); ctx.lineWidth = 1.2; ctx.stroke();
+        }
+        ctx.textAlign = 'left';
+        ctx.font = '15px ' + UI_FONT;
+        ctx.fillText(it.icon, x + 12, ry + PANEL.row / 2);
+        ctx.font = (on ? 'bold ' : '') + '12px ' + UI_FONT;
+        ctx.fillStyle = on ? '#fff' : 'rgba(206,218,240,0.8)';
+        ctx.fillText(it.name, x + 36, ry + PANEL.row / 2);
+        ctx.textAlign = 'right';
+        ctx.font = 'bold 13px ' + NUM_FONT;
+        ctx.fillStyle = on ? meta.tint : 'rgba(206,218,240,0.75)';
+        ctx.fillText('x' + slot.held[id], x + PANEL.w - 12, ry + PANEL.row / 2);
+        panelHots.push({ cat, id, x: x + 5, y: ry, w: PANEL.w - 10, h: PANEL.row });
+        ry += PANEL.row;
+      }
+      ctx.restore();
+      y += h + PANEL.gap;
+    }
+  }
+
+  /* Clicking an entry points that category's key at it. */
+  function itemPanelClick(mx, my) {
+    for (const hot of panelHots) {
+      if (mx >= hot.x && mx <= hot.x + hot.w && my >= hot.y && my <= hot.y + hot.h) {
+        return selectItem(hot.cat, hot.id);
+      }
+    }
+    return false;
+  }
+
   function drawStatusStack(p) {
     const adr = Combat.adrenaline(p.adrenaline);
     const x = HUD.statusLeft;
@@ -7661,18 +7995,30 @@ const Game = (() => {
     let y = H - 78;
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
 
-    // adrenaline (only while you have some) — bar plus what it's currently giving
+    /* Adrenaline. Taller, on its own backing plate, with a label you can read
+       without hunting for it — this is a live combat number and it used to be
+       an 8px sliver of colour drawn straight onto the terrain. */
     if (adr.amount > 0) {
-      const bw = 200;
-      ctx.fillStyle = 'rgba(20,30,55,0.8)'; roundRect(x, y - 4, bw, 8, 4); ctx.fill();
-      ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';    // green while it's healing you
-      roundRect(x, y - 4, bw * (adr.amount / 100), 8, 4); ctx.fill();
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      for (const t of [25, 50, 75]) ctx.fillRect(x + bw * (t / 100), y - 4, 1, 8);
-      ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';
+      const bw = 210, bh = 14;
+      const ink = p.hp < p.maxHp ? '#4be08a' : '#ffcf4a';   // green while it's healing you
+      y -= 6;
+      ctx.fillStyle = 'rgba(8,13,26,0.78)';
+      roundRect(x - 7, y - bh / 2 - 5, bw + 14, bh + 10, 7); ctx.fill();
+      ctx.strokeStyle = hexA(ink, 0.45); ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      roundRect(x, y - bh / 2, bw, bh, 5); ctx.fill();
+      ctx.fillStyle = ink;
+      roundRect(x, y - bh / 2, bw * (adr.amount / 100), bh, 5); ctx.fill();
+      // the band markers, which are what the number actually means
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      for (const t of [25, 50, 75]) ctx.fillRect(x + bw * (t / 100), y - bh / 2, 1.5, bh);
+      ctx.font = 'bold 10px ' + NUM_FONT;
+      ctx.fillStyle = '#0a0f1c';
+      ctx.fillText('ADR ' + Math.round(adr.amount), x + 7, y + 0.5);
+      ctx.font = 'bold 10px ' + UI_FONT; ctx.fillStyle = ink;
       const healing = p.hp < p.maxHp ? ` · +${adr.regen.toFixed(1)} HP/s` : '';
-      ctx.fillText(`ADR ${Math.round(adr.amount)} · +${Math.round((adr.speed - 1) * 100)}% · -${Math.round(adr.dr * 100)}% dmg${healing}`, x + bw + 10, y);
-      y -= HUD.rowH;
+      ctx.fillText(`+${Math.round((adr.speed - 1) * 100)}% speed · -${Math.round(adr.dr * 100)}% dmg${healing}`, x + bw + 14, y);
+      y -= HUD.rowH + 8;
     }
     // armour
     if (p.vest || p.helmet || p.bag) {
@@ -8172,6 +8518,15 @@ const Game = (() => {
       ctx.fillStyle = '#0b1020'; ctx.font = 'bold 8px Outfit, Segoe UI, sans-serif';
       ctx.fillText(o.name, px, y + h - 6);
     }
+    const sup = supplyMark();
+    if (sup) {
+      const px = at(Math.atan2(sup.y - sub.y, sup.x - sub.x));
+      if (px !== null) {
+        ctx.fillStyle = '#7ff2c1';
+        ctx.font = 'bold 11px ' + UI_FONT;
+        ctx.fillText('🪂', px, y + h - 7);
+      }
+    }
     for (const m of marks) {
       const def = Comms.pingById[m.kind];
       if (!def) continue;
@@ -8231,6 +8586,10 @@ const Game = (() => {
         label: o.name, urgent: false, ring: true,
       });
     }
+    // the supply drop, which is the one thing on the map everybody wants
+    const sup = supplyMark();
+    if (sup) items.push({ x: sup.x, y: sup.y, color: '#7ff2c1', label: 'DROP', urgent: sup.falling });
+
     /* On the range the targets are the point, and at this zoom only the first
        two are ever on screen. Pointing at the rest is what makes the far marks
        usable rather than decorative. */
@@ -8497,6 +8856,17 @@ const Game = (() => {
         ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, 2, 0, Math.PI * 2);
         ctx.fillStyle = teamInk(a.team); ctx.fill();
       }
+    }
+    // the supply drop, pulsing so it reads as the live thing on the map
+    const sup = supplyMark();
+    if (sup) {
+      const sx2 = ox + sup.x * sx, sy2 = oy + sup.y * sy;
+      const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 200);
+      ctx.beginPath(); ctx.arc(sx2, sy2, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#7ff2c1'; ctx.fill();
+      ctx.beginPath(); ctx.arc(sx2, sy2, 5 + pulse * 5, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(127,242,193,' + pulse.toFixed(2) + ')';
+      ctx.lineWidth = 1.5; ctx.stroke();
     }
     // your squad's pings
     for (const m of marks) {
@@ -9222,9 +9592,15 @@ const Game = (() => {
     online.you = you;
     const inv = you.inv;
     if (!inv || !player || !player.inv) return;
-    player.inv.grenade.id = inv.g; player.inv.grenade.n = inv.gn;
-    player.inv.tactical.id = inv.t; player.inv.tactical.n = inv.tn;
-    player.inv.heal.id = inv.h; player.inv.heal.n = inv.hn;
+    /* The room owns the bag, including which of several items is selected. */
+    const put = (cat, id, n, held) => {
+      const slot = player.inv[cat];
+      slot.id = id; slot.n = n;
+      slot.held = held || (id ? { [id]: n } : {});
+    };
+    put('grenade', inv.g, inv.gn, inv.gh);
+    put('tactical', inv.t, inv.tn, inv.th);
+    put('heal', inv.h, inv.hn, inv.hh);
     player.inv.tokens = inv.tk || [];
   }
 
@@ -9901,6 +10277,14 @@ const Game = (() => {
     /* Why a bot did or did not go for a hull. Read-only: it asks the same
        questions updateBot asks, for every unclaimed vehicle on the map. */
     rideStat: () => Object.assign({}, rideStat),
+    supplyState: () => ({
+      falling: !!supplyDrop, count: supplyCount,
+      nextIn: Math.round(supplyTimer),
+      onGround: crates.filter(c => c.supply && !c.opened).length,
+      mark: supplyMark(),
+    }),
+    forceSupplyDrop() { supplyTimer = 0; supplyCount = 0; updateSupplyDrop(0.016); return !!supplyDrop; },
+    landSupplyNow() { if (supplyDrop) supplyDrop.t = 0; updateSupplyDrop(0.016); return crates.filter(c => c.supply).length; },
     /* Does A* find a route between two arbitrary points? Used to check whether
        long-range pathing fails on distance (the node budget) or on geometry. */
     canRoute: (ax, ay, bx, by) => {

@@ -128,6 +128,22 @@ const Items = (() => {
   };
   // how often each crate tier appears on the map
   const CRATE_RARITY = [ { tier: 'regular', w: 60 }, { tier: 'silver', w: 30 }, { tier: 'gold', w: 10 } ];
+  /* ---------- the supply drop ----------
+     What a plane puts on the map halfway through a match. Richer than a chest
+     — this is the best loot in the game — but there is only ever one of it,
+     everybody is told where it landed, and it takes long enough to open that
+     doing so is a decision rather than a reflex. The point is not the loot; it
+     is that for thirty seconds the whole map has the same destination. */
+  CRATE_TABLES.airdrop = [
+    { id: 'legendary',       w: 30, label: 'Legendary Weapon' },
+    { id: 'armorT3',         w: 18, label: 'Armor T3' },
+    { id: 'tank',            w: 12, label: 'Tank' },
+    { id: 'medkit',          w: 12, label: 'Medkit' },
+    { id: 'stim',            w: 10, label: 'Stim Injection' },
+    { id: 'classConsumable', w: 10, label: 'Class Consumable' },
+    { id: 'jeep',            w: 8,  label: 'Armored Jeep' },
+  ];
+
   const CRATE_STYLE = {
     regular: { color: '#8ea0c9', icon: '📦', name: 'Crate' },
     silver:  { color: '#cfd8ee', icon: '🎁', name: 'Silver Crate' },
@@ -137,12 +153,16 @@ const Items = (() => {
     industrial: { color: '#9bacc9', icon: '🔧', name: 'Supply Crate' },
     military: { color: '#4a6280', icon: '🎖️', name: 'Ammo Cache' },
     furniture: { color: '#b08a55', icon: '🔍', name: 'Search' },
+    airdrop: { color: '#7ff2c1', icon: '🪂', name: 'Supply Drop' },
   };
 
   /* How many rolls opening one of these gives you, and how long it takes.
      A crate is one roll and instant; a chest is three and takes a moment,
      which is what makes standing over one a risk worth taking. */
   const CRATE_PAYOUT = {
+    // four rolls, and the longest open in the game — you are standing still in
+    // the open, at a spot every squad was told about
+    airdrop: { rolls: 4, openMs: 2200 },
     chest: { rolls: 3, openMs: 1400 },
     gold: { rolls: 1, openMs: 0 },
     furniture: { rolls: 1, openMs: 0 },

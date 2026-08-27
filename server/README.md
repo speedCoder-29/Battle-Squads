@@ -3,6 +3,11 @@
 Authoritative WebSocket server. Clients send inputs; this process owns the world
 and broadcasts snapshots at 20Hz.
 
+Rooms start themselves here, because there is no host to press the button: five
+seconds after a second player arrives, or thirty seconds for somebody who is
+still on their own, so the first person through the door is not left staring at
+an empty island.
+
 It loads the game's own `js/weapons.js`, `js/combat.js`, `js/classes.js` and
 `js/items.js`, so ballistics and the damage calculator are literally the same
 code on both ends — there is no second copy of the numbers to drift.
@@ -29,15 +34,61 @@ http://localhost:8000/?server=ws://localhost:8080
 hold a WebSocket open, so there is nowhere for an authoritative game loop to
 live. The static site is fine there — only this server needs a different home.
 
-Any host that keeps a process running works. All of these read `PORT` from the
-environment, which this server already honours:
+Any host that keeps a Node process alive works. This one reads `PORT` from the
+environment already, and answers `/health` for a health check.
 
-| Host | Setup |
-|---|---|
-| **Render** | New Web Service → point at this repo → Root Directory `server` → Build `npm install` → Start `npm start`. Free tier sleeps when idle. |
-| **Railway** | New Project → Deploy from repo → set Root Directory to `server`. |
-| **Fly.io** | `fly launch` inside `server/`, accept the Node defaults. |
-| **Any VPS** | `npm install && npm start` behind nginx with a TLS proxy. |
+**Deploy the repository root, not `server/`.** The server loads the game's own
+weapon, combat and class tables through [`../js/_shared.js`](../js/_shared.js),
+and builds its map by running [`../js/game.js`](../js/game.js) in a sandbox —
+that is why there is only one copy of the rules. A deploy that uploads only
+this folder installs cleanly and then dies on the first `require`. The
+[`Dockerfile`](../Dockerfile) and [`render.yaml`](../render.yaml) in the repo
+root both do it correctly.
+
+### Free hosts that can actually hold a socket open
+
+Checked against each provider's own documentation rather than a listicle; free
+tiers move, so re-check before relying on any of it.
+
+| Host | What's free | Sleeps? | Good for |
+|---|---|---|---|
+| **Render** | 750 instance-hours/month (one service, continuously), WebSockets supported, free `*.onrender.com` with TLS, custom domains with automatic certificates | Yes — after 15 min with no HTTP request *and* no WebSocket message, ~1 min to wake | The easy answer. Use [`render.yaml`](../render.yaml) |
+| **Northflank** | Sandbox: 2 services, **always-on, no sleeping**; card is verified but not charged | No | The easy answer if the cold start bothers you |
+| **Oracle Cloud** | Always Free, perpetual: 2 AMD micro VMs (1 GB each), or ~2 ARM cores + 12 GB continuous, **10 TB/month out** | No | A real server, if you'll do TLS yourself |
+| **Fly.io** | No free tier any more — about $2/month for one small always-on machine | — | Cheap, not free |
+
+Render's sleep rule matters less than it sounds for a game: an occupied match
+is never idle, because clients ping every two seconds. It costs the first
+player of the day about a minute, nobody else.
+
+On Oracle you get a bare VM, so terminate TLS yourself — Caddy is two lines and
+gets a certificate automatically:
+
+```
+your.domain { reverse_proxy localhost:8080 }
+```
+
+### A domain for it
+
+The host's own subdomain (`something.onrender.com`) already has a valid
+certificate and needs no setup. For a nicer name:
+
+- **[is-a.dev](https://is-a.dev)** — free `you.is-a.dev`, by pull request to
+  [is-a-dev/register](https://github.com/is-a-dev/register). Cloudflare-backed.
+- **[eu.org](https://nic.eu.org)** — free `you.eu.org`, approval takes ~2 weeks.
+- **[js.org](https://js.org)** — free, but only for JavaScript libraries and
+  tools, so a game is unlikely to qualify.
+
+Point it at the host with a CNAME and let the host issue the certificate.
+If you proxy through Cloudflare instead, WebSockets work on the free plan with
+the orange cloud on — just note the 100-second idle timeout, which this game
+never hits because snapshots and pings are always flowing.
+
+### Bandwidth, so you know what you're spending
+
+Eight players is roughly 1.9 KB per snapshot each, 20 times a second — about
+1 GB per hour of a full match. Render's free bandwidth allowance is the thing
+to watch; Oracle's 10 TB is not a constraint for a hobby game.
 
 Once deployed, either:
 

@@ -32,6 +32,10 @@ const Weapons = (() => {
      back toward — see roomsim.moveSpeedFor. */
   const WEIGHT_FREE = 258;
   const PELLET_SPREAD = 0.10;      // shotgun fan, radians either side of aim
+  /* How far a pellet gun is worth using: the distance at which the fan is
+     still about the width of a body (15px radius), so a centred shot lands
+     most of what it fires rather than one or two strays. */
+  const PELLET_REACH = Math.round((15 * 1.6) / Math.tan(PELLET_SPREAD));
   const SPLASH_RADIUS = TILE * 2.8;   // launcher blast — sits above a frag's
 
   /* ammo-type → colour used for bullets & UI chips */
@@ -265,6 +269,22 @@ const Weapons = (() => {
       // close-range weapon: at 13 tiles a ±0.10 rad fan is ±65px, so a torso
       // catches one or two pellets there and most of them at contact.
       pelletSpread: pellets > 1 ? PELLET_SPREAD : 0,
+      /* How far the gun is actually worth using, as opposed to how far its
+         bullets travel.
+
+         For everything with one bullet these are the same number. For a
+         shotgun they are not, and nothing in the game knew it: the pellet fan
+         is what makes a shotgun a close-range weapon, so an M870 that
+         "reaches 13 tiles" does about 11 damage there — but the bots read
+         `range` to decide when to open fire, so a bot holding one stood at ten
+         tiles plinking, and the loadout screen quoted the same fiction to the
+         player.
+
+         Effective range is where a centred hit still lands most of its
+         pellets: the distance at which the fan is about the width of a body. */
+      effectiveRange: pellets > 1
+        ? Math.round(Math.min((rangeUnits || 24) * TILE, PELLET_REACH))
+        : (rangeUnits || 24) * TILE,
 
       // range / damage falloff
       falloff: num(falloffStr) / 100,   // fraction lost per range-step
@@ -434,6 +454,20 @@ const Weapons = (() => {
       damage: base.damage * mul('damageMult'),
       pellets,
       pelletSpread: pellets > 1 ? PELLET_SPREAD : 0,
+      /* How far the gun is actually worth using, as opposed to how far its
+         bullets travel.
+
+         For everything with one bullet these are the same number. For a
+         shotgun they are not, and nothing in the game knew it: the pellet fan
+         is what makes a shotgun a close-range weapon, so an M870 that
+         "reaches 13 tiles" does about 11 damage there — but the bots read
+         `range` to decide when to open fire, so a bot holding one stood at ten
+         tiles plinking, and the loadout screen quoted the same fiction to the
+         player.
+
+         Effective range is where a centred hit still lands most of its
+         pellets: the distance at which the fan is about the width of a body. */
+      effectiveRange: base.effectiveRange,
       falloff: base.falloff * mul('falloffMult'),
       penetration: base.penetration + add('penetration'),
       reloadMs: Math.max(300, base.reloadMs * mul('reloadMult')),

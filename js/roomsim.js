@@ -180,15 +180,20 @@
      one that has already been thrown. */
   function startingInv(cls) {
     deps();
+    /* Each category is a store, matching the client: `held` maps an item id to
+       how many you have, and `id`/`n` are a view onto the selected one. The
+       room has to model this the same way the client does or the two disagree
+       about what you are carrying the moment you pick up a second kind. */
     const inv = {
-      grenade: { id: null, n: 0 },
-      tactical: { id: null, n: 0 },
-      heal: { id: null, n: 0 },
+      grenade: { id: null, n: 0, held: {} },
+      tactical: { id: null, n: 0, held: {} },
+      heal: { id: null, n: 0, held: {} },
       tokens: [],
     };
     const kit = I.CONSUMABLES[cls.consumable];
-    if (kit) inv[kit.cat] = { id: cls.consumable, n: K.startFor(cls, 0) };
-    if (kit && kit.cat !== 'heal') inv.heal = { id: 'bandage', n: 2 };
+    if (kit) { inv[kit.cat].held[cls.consumable] = K.startFor(cls, 0); inv[kit.cat].id = cls.consumable; }
+    if (kit && kit.cat !== 'heal') { inv.heal.held.bandage = 2; inv.heal.id = 'bandage'; }
+    for (const c of ['grenade', 'tactical', 'heal']) syncSlot(inv[c]);
     return inv;
   }
   /* A Mule counts as wearing one bag better than they are, exactly as
@@ -197,22 +202,35 @@
   /* Put `n` of something into a slot, returning what wouldn't fit. Swapping an
      occupied slot for a different item drops the old contents rather than
      binning them, which is what the client does too. */
+  /* Point id/n at the selected entry, or at whatever is left if it ran out. */
+  function syncSlot(slot) {
+    if (!slot) return;
+    if (!slot.held) slot.held = {};
+    for (const k of Object.keys(slot.held)) if (slot.held[k] <= 0) delete slot.held[k];
+    if (!slot.id || !slot.held[slot.id]) slot.id = Object.keys(slot.held)[0] || null;
+    slot.n = slot.id ? slot.held[slot.id] : 0;
+  }
+
   function addItem(room, p, cat, id, n) {
     const slot = p.inv[cat];
     if (!slot) return n;
+    if (!slot.held) slot.held = {};
     const cap = K.limitFor(p.cls, id, carryTier(p));
-    if (slot.id && slot.id !== id && slot.n > 0) {
-      if (room) room.dropItem(cat, slot.id, slot.n, p);
-      slot.n = 0;
-    }
-    slot.id = id;
-    const taken = Math.min(Math.max(0, cap - (slot.n || 0)), n);
-    slot.n = (slot.n || 0) + taken;
+    // room is per item, so a second kind no longer displaces the first
+    const have = slot.held[id] || 0;
+    const taken = Math.min(Math.max(0, cap - have), n);
+    if (taken > 0) slot.held[id] = have + taken;
+    if (!slot.id) slot.id = id;
+    syncSlot(slot);
     const over = n - taken;
     if (over > 0 && room) room.dropItem(cat, id, over, p);
     return over;
   }
-  const spend = (slot) => { slot.n--; if (slot.n <= 0) { slot.n = 0; slot.id = null; } };
+  const spend = (slot) => {
+    if (!slot || !slot.id) return;
+    slot.held[slot.id] = (slot.held[slot.id] || 0) - 1;
+    syncSlot(slot);
+  };
 
   /* ---------- vehicles ----------
      The same two the client draws (see VEHICLES in game.js). Their toughness
@@ -680,6 +698,19 @@
     /* Heals are channelled: you stand still-ish and vulnerable for a few
        seconds and it lands at the end. The room runs the clock, so being shot
        mid-drink is decided in one place. */
+    /* Point a category's key at a different item the player is carrying.
+       Validated against what the room thinks they have, because a client
+       asking to select something it does not own is exactly the kind of claim
+       the room exists to check. */
+    pickItem(p, cat, id) {
+      if (!p || !p.alive || !p.inv) return false;
+      const slot = p.inv[cat];
+      if (!slot || !slot.held || !slot.held[id]) return false;
+      slot.id = id;
+      syncSlot(slot);
+      return true;
+    }
+
     heal(p) {
       if (!p || !p.alive || p.riding || p.channel) return false;
       const slot = p.inv.heal;
@@ -1900,6 +1931,10 @@
           g: p.inv.grenade.id, gn: p.inv.grenade.n,
           t: p.inv.tactical.id, tn: p.inv.tactical.n,
           h: p.inv.heal.id, hn: p.inv.heal.n,
+          // the full bag, so the item panels show the same thing the room has
+          gh: Object.assign({}, p.inv.grenade.held),
+          th: Object.assign({}, p.inv.tactical.held),
+          hh: Object.assign({}, p.inv.heal.held),
           tk: p.inv.tokens.slice(),
         },
       };
@@ -1925,6 +1960,7 @@
         case 'throw': return this.throwItem(p, msg.x, msg.y);
         case 'deploy': return this.deploy(p);
         case 'heal': return this.heal(p);
+        case 'pick': return this.pickItem(p, msg.cat, msg.id);
         case 'grab': return this.grab(p);
         case 'crate': return this.openCrate(p, msg.i);
         case 'token': return this.callVehicle(p, msg.x, msg.y);

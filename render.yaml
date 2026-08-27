@@ -1,0 +1,23 @@
+# One-click Render deploy: New → Blueprint → point at this repo.
+#
+# Free plan notes, current as of writing:
+#   • WebSockets work on free instances.
+#   • A free service sleeps after 15 minutes with no HTTP request and no
+#     WebSocket message, and takes about a minute to wake. An occupied match
+#     never sleeps — clients ping every two seconds — so this only costs the
+#     first player of the day a wait.
+#   • 750 instance-hours a month, which is one service running continuously.
+services:
+  - type: web
+    name: battle-squads
+    runtime: node
+    plan: free
+    # the repo root, not server/: js/_shared.js reaches up into js/ for the
+    # weapon, combat and class tables the browser uses
+    rootDir: .
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

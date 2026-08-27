@@ -212,13 +212,41 @@ wss.on('connection', (ws) => {
   });
 });
 
+/* ---------- starting a match with nobody to press start ----------
+   A room opens in `lobby` and step() does nothing until it is `live`. On a
+   browser host that is right: a human owns the room and clicks Start Match
+   when their squad is in. A dedicated server has no such human, and nothing
+   here ever called startMatch — so a room filled up, handed out welcomes,
+   sent snapshots, and simulated not one tick of anything. Measured: hold [D]
+   for five seconds against this server and you moved zero pixels.
+
+   So it starts itself. As soon as a second player arrives the countdown runs,
+   because a match is worth starting once there is somebody to fight; a player
+   sitting alone gets a longer grace period and then a match anyway, so that
+   the first person through the door is not stuck staring at an empty island
+   waiting for a second who may never come. */
+const START_WITH_SQUAD = 5;      // seconds once a second player is in
+const START_ALONE = 30;          // seconds if nobody else turns up
+function considerStart(r) {
+  if (r.phase !== 'lobby' || r.over) return;
+  if (!r.players.size) { r.startAt = 0; return; }
+  const wait = r.players.size >= 2 ? START_WITH_SQUAD : START_ALONE;
+  // the clock runs from the first arrival, and shortens when the room fills
+  if (!r.startAt) r.startAt = now() + wait * 1000;
+  else r.startAt = Math.min(r.startAt, now() + wait * 1000);
+  if (now() >= r.startAt) {
+    r.startMatch();
+    console.log(`[room] ${r.id} started with ${r.players.size} player(s)`);
+  }
+}
+
 /* simulation loop, independent of the snapshot rate */
 let last = now();
 setInterval(() => {
   const t = now();
   const dt = Math.min(0.05, (t - last) / 1000);
   last = t;
-  for (const r of rooms.values()) r.step(dt);
+  for (const r of rooms.values()) { considerStart(r); r.step(dt); }
 }, SIM);
 
 /* snapshot loop */

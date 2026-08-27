@@ -1047,6 +1047,35 @@ const Structures = (() => {
      cuts it down its long axis into rooms of a sensible proportion and builds
      the partitions between them, with a doorway through each so the run is
      still walkable end to end. */
+  /* What the far end of a room becomes when a long one is divided.
+
+     The automatic split in `place()` used to give every piece the room's own
+     name, so a kitchen too long to be a kitchen became *two kitchens*, a long
+     bedroom became three bedrooms, and a mansion ended up with two kitchens
+     and one bathroom. That is wrong twice over: it does not match the design
+     the building was written to, and it is not how dividing a room works —
+     you get the room plus something subordinate to it, not two of the room.
+
+     So the first piece keeps the name and the rest take the room this one
+     would spawn off. It also fixes the loot, which is keyed off the kind: two
+     kitchens paid out two kitchens' worth. */
+  const SPLIT_INTO = {
+    kitchen: 'pantry', backKitchen: 'pantry', dining: 'pantry',
+    diningLobby: 'lounge', lounge: 'study', living: 'study',
+    bedroom: 'study', apartment: 'study', bunkroom: 'storeroom',
+    displayHall: 'storeroom', mainExhibit: 'displayHall', gunExhibit: 'displayHall',
+    classroom: 'storeroom', ward: 'dispensary', office: 'storeroom',
+    warehouse: 'storeroom', workbay: 'storeroom', barn: 'storeroom',
+    lobby: 'hall', foyer: 'hall',
+    /* The big rooms need big offspring. Halving a mess hall and calling the
+       far end a store room produced a "store room" larger than any mess on the
+       map, which is the sort of thing that quietly breaks the size ordering
+       the room table is built on. */
+    mess: 'kitchen', briefing: 'opsRoom', gym: 'lounge', motorPool: 'workbay',
+    diningLobby: 'lounge', living: 'lounge',
+  };
+  const splitInto = (kind) => SPLIT_INTO[kind] || 'storeroom';
+
   function splitLong(type, r, opts = {}) {
     const target = opts.aspect || 1.7;
     const horiz = r.w >= r.h;
@@ -1059,9 +1088,13 @@ const Structures = (() => {
     const parts = [], rooms = [];
     for (let i = 0; i < n; i++) {
       const a = i * step;
+      /* First piece keeps the room's name; the rest become what it spawns off.
+         Only the automatic pass asks for this — a blueprint that splits a run
+         deliberately (a row of cells, a rank of bunks) wants them all alike. */
+      const kind = opts.kind || (opts.subordinate && i > 0 ? splitInto(r.kind) : r.kind);
       rooms.push(horiz
-        ? room(opts.kind || r.kind, r.x + a + 6, r.y, step - 12, r.h)
-        : room(opts.kind || r.kind, r.x, r.y + a + 6, r.w, step - 12));
+        ? room(kind, r.x + a + 6, r.y, step - 12, r.h)
+        : room(kind, r.x, r.y + a + 6, r.w, step - 12));
       if (i === 0) continue;
       parts.push(...(horiz
         ? partition(type, r.x + a, r.y, r.h, 'v', th, [r.h / 2], doorType)
@@ -1482,7 +1515,7 @@ const Structures = (() => {
       const w = 800, h = 570;
       const plan = floorPlan('wood', ox, oy, w, h, {
         corridor: { axis: 'h', at: 0.45, width: 84 },
-        a: ['bedroom', 'bedroom', 'bathroom', 'bedroom', 'bedroom'],
+        a: ['bedroom', 'bedroom', 'bathroom', 'bedroom', 'bedroom', 'bathroom'],
         b: ['living', 'dining', 'kitchen', 'study', 'safe', 'garage'],
         fillA: 'study', fillB: 'pantry', thickness: 0.3,
         passage: 'a',       // servants' corridor behind the bedrooms
@@ -1526,12 +1559,16 @@ const Structures = (() => {
        range. The public rooms are along the back with the dining lobby in the
        middle of them. */
     resort(ox, oy) {
-      const w = 1050, h = 620;
+      /* Wider than it was. The design calls for ten guest rooms and two
+         washrooms, and at 1050px across only seven fitted — the rest were
+         dropped for being under the minimum room size, so a hotel came out
+         with fewer bedrooms than the farmhouse next door. */
+      const w = 1340, h = 620;
       const plan = floorPlan('wood', ox, oy, w, h, {
         corridor: { axis: 'h', at: 0.44, width: 84 },
-        a: ['bedroom', 'bedroom', 'bedroom', 'bedroom', 'bedroom'],
-        b: ['washroom', 'diningLobby', 'lounge', 'backKitchen', 'bedroom'],
-        fillA: 'bedroom', fillB: 'washroom', thickness: 0.25, chicane: true,
+        a: ['bedroom', 'bedroom', 'bedroom', 'bedroom', 'bedroom', 'bedroom', 'washroom'],
+        b: ['washroom', 'diningLobby', 'lounge', 'backKitchen', 'bedroom', 'bedroom', 'bedroom'],
+        fillA: 'bedroom', fillB: 'lounge', thickness: 0.25, chicane: true,
         passage: 'b',       // service corridor behind the public rooms
       });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
@@ -1540,7 +1577,7 @@ const Structures = (() => {
         { side: 's', at: 420, type: 'door', len: 2 },
       ]);
       out.push(...plan.parts);
-      for (const dx of [120, 400, 700, 980]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      for (const dx of [120, 400, 700, 980, 1240]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
       out.rooms = [
         ...plan.rooms,
         room('pool', ox + w + 60, oy + 120, 260, 200),
@@ -1964,14 +2001,20 @@ const Structures = (() => {
     /* C · the citadel. Reinforced, walled, and the hardest of the three to
        take off somebody who is already in it. */
     'obj-citadel'(ox, oy) {
-      const w = 860, h = 760;
+      /* Bigger, and with deeper ranges round the courtyard. At 150px the bands
+         were 3.75m deep, which is shallower than the minimum for half the
+         rooms put in them — the mess hall came out 4.3m square against a table
+         that says 5.4 to 8. Undersized rooms are not a cosmetic problem: the
+         room table is what the loot, the furniture and the size ordering are
+         all keyed off. */
+      const w = 980, h = 850;
       const out = [];
       const plan = courtyardPlan('rwall', ox, oy, w, h, {
         north: ['guardRoom', 'bunkroom'],
         south: ['storeroom', 'mess'],
         west: ['armoury'],
         east: ['opsRoom', 'washroom'],
-        core: 'strongroom', depth: 150, corridor: 96, thickness: 0.45,
+        core: 'strongroom', depth: 205, corridor: 96, thickness: 0.45,
       });
       objectiveShell(out, ox, oy, w, h, 'C', [
         { side: 'n', at: 380, type: 'rdoor', len: 2 },
@@ -2138,7 +2181,10 @@ const Structures = (() => {
         corridor: { axis: 'h', at: 0.5, width: 70 },
         a: ['bedroom', 'bedroom'],
         b: ['kitchen', 'bathroom'],
-        fillA: 'bedroom', fillB: 'pantry', thickness: 0.25,
+        // leftover space becomes a study, not a third bedroom — `fillA` is for
+        // whatever is left over, and filling it with more of the same is how
+        // a two-bedroom farmhouse quietly became a three-bedroom one
+        fillA: 'study', fillB: 'pantry', thickness: 0.25,
       });
       const out = shell(ox, oy, 480, 340, 'wood', WALL_T.exterior, [
         { side: 'w', at: 340 * 0.5 - 28, len: 2 },
@@ -3397,7 +3443,7 @@ const Structures = (() => {
         for (const r of parts.rooms) {
           const asp = Math.max(r.w, r.h) / Math.max(1, Math.min(r.w, r.h));
           if (r.basement || OPEN_ROOMS.has(r.kind) || asp <= 3.0) { kept.push(r); continue; }
-          const sp = splitLong(wallType, r, { aspect: 1.8 });
+          const sp = splitLong(wallType, r, { aspect: 1.8, subordinate: true });
           added.push(...sp.parts);
           for (const nr of sp.rooms) { nr.dark = r.dark; nr.basement = r.basement; kept.push(nr); }
         }

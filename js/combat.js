@@ -79,9 +79,20 @@ const Combat = (() => {
      Reads the agent's perk directly rather than taking it as an argument, so
      every existing caller — including the shared movement model both the
      client and the room run — picks it up without changing shape. */
+  /* How much of your speed the armour costs you.
+
+     Juggernaut used to zero this entirely — "plate carries like cloth" — and
+     measured against a tier-2 vest and helmet that is not a perk, it is a
+     different game: 127 px/s becomes 227, a 79% increase, while you keep every
+     point of the protection. The next best movement perk is Jogger at 10%.
+
+     It now carries *half* the weight, which is still far and away the best
+     mobility option for anyone in heavy armour without making the choice
+     automatic for everyone who can afford a vest. */
   const armorSpeed = (a) => {
-    if (P().mod(a, 'noArmourWeight', false)) return 1;   // plate carries like cloth
-    return 1 + vest(a.vest || 0).speed + helmet(a.helmet || 0).speed;
+    const penalty = vest(a.vest || 0).speed + helmet(a.helmet || 0).speed;
+    const relief = P().mod(a, 'armourRelief', 0);
+    return 1 + penalty * (1 - relief);
   };
   /* Perks is a global in the browser and a require() on the server, and this
      file is loaded by both. Resolved on use so load order can't matter. */

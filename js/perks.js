@@ -55,8 +55,18 @@ const Perks = (() => {
     flak: {
       id: 'flak', name: 'Flak Jacket', icon: '🧥',
       blurb: 'Grenades, launchers and barrels stop deciding fights.',
-      effects: ['+90% explosion damage reduction'],
-      mods: { explosiveMult: 0.10 },
+      /* 50%, not 90%.
+
+         This sat at 0.10 — ninety per cent off — while the design table and
+         the test both said half. Ninety is not a resistance, it is an
+         immunity: a frag that takes 110 off anyone else takes 11 off you, so
+         grenades, launchers, mines and barrels all stop existing for one perk
+         slot, and there is no counterplay to a choice made in the menu.
+
+         Halved is the number that does what the blurb says — explosives stop
+         *deciding* fights without ceasing to matter. */
+      effects: ['+50% explosion damage reduction'],
+      mods: { explosiveMult: 0.50 },
     },
     cargo: {
       id: 'cargo', name: 'Cargo Pants', icon: '👖',
@@ -109,7 +119,7 @@ const Perks = (() => {
       id: 'lockpick', name: 'Lockpick', icon: '🔧', extra: true,
       blurb: 'Every locker has a false bottom if you know where to look.',
       effects: ['Searching furniture gives a second item'],
-      mods: { furnitureBonus: 1 },
+      mods: {},
     },
     trenchrunner: {
       id: 'trenchrunner', name: 'Trench Runner', icon: '🥾', synced: true, extra: true,
@@ -128,9 +138,9 @@ const Perks = (() => {
     /* ---------- written before the table existed ---------- */
     juggernaut: {
       id: 'juggernaut', name: 'Juggernaut', icon: '🛡️', synced: true, extra: true,
-      blurb: 'Plate carries like cloth — a T3 vest with none of the weight.',
-      effects: ['Armour costs no movement speed'],
-      mods: { noArmourWeight: true },
+      blurb: 'Plate still weighs something — but only half what it weighs anyone else.',
+      effects: ['Armour costs half the movement speed'],
+      mods: { armourRelief: 0.5 },
     },
     medic: {
       id: 'medic', name: 'Field Medic', icon: '⛑️', synced: true, extra: true,

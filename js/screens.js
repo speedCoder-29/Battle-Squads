@@ -507,7 +507,13 @@ const Screens = (() => {
     const bars = [
       { label: 'DMG',   v: clamp01((w.damage * w.pellets * w.burst) / 130) },
       { label: 'ROF',   v: clamp01(w.firerate / 18) },
-      { label: 'RANGE', v: clamp01(1 - w.falloff / 0.30) },
+      /* Range means how far the gun is worth using, not how gently its damage
+         decays. Reading it off falloff gave the three shotguns — 10%, 7% and
+         5% — the three *best* range bars on the screen, which is the exact
+         opposite of the truth: their pellet fan makes them five-tile weapons.
+         `effectiveRange` is the number the bots now use as well, so the bar
+         and the AI finally agree about what a gun is for. */
+      { label: 'RANGE', v: clamp01((w.effectiveRange || w.range) / 2800) },
       { label: 'MOBIL', v: clamp01((w.moveSpeed - 120) / 135) },
       { label: 'CTRL',  v: clamp01(1 - w.recoilRaw / 4.5) },
     ];
@@ -814,7 +820,7 @@ const Screens = (() => {
           <div class="weapon-card__type">${w.type}${w.burst > 1 ? ` · ${w.burst}-rnd burst` : ''}${w.pellets > 1 ? ` · ${w.pellets} pellets` : ''}${w.explosive ? ' · 💥 explosive' : ''}</div>
           <div class="weapon-card__stats">${statBars(w)}</div>
           <div class="weapon-card__nums">
-            <span>🔧 ${w.mag} mag</span><span>⏱ ${(w.reloadMs / 1000).toFixed(1)}s</span><span>⚖ ${w.weight}</span>
+            <span>🔧 ${w.mag} mag</span><span>⏱ ${(w.reloadMs / 1000).toFixed(1)}s</span><span>⚖ ${w.weight}</span><span>↔ ${Math.round((w.effectiveRange || w.range) / 50)}t</span>
           </div>
           ${ratingBadges(w)}
           <div class="weapon-card__badge">${equipped ? '✓ EQUIPPED' : unlocked ? 'Equip' : '🔒 Locked'}</div>`;
