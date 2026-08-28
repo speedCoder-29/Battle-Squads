@@ -2130,8 +2130,16 @@ const Structures = (() => {
        doorways on one plane */
     apartments(ox, oy) {
       const w = 820, h = 460;
+      /* The stair core, off the back. Every block of flats has one — it is the
+         only part of the building that is not a flat, and it gives the rear
+         elevation something other than a row of identical windows. Built
+         before the shell because the shell needs to know where to leave the
+         join open. */
+      const core = annex('wood', 0.45, { x: ox, y: oy, w, h },
+        { side: 'n', at: 325, len: 170, depth: 150, doors: [{ side: 'n', at: 60 }] });
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
-        { side: 'w', at: 210 }, { side: 'e', at: 210 }, { side: 'n', at: 400 },
+        { side: 'w', at: 210 }, { side: 'e', at: 210 },
+        core.openMain,
       ]);
       out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', WALL_T.interior, [110, 310, 510, 710], 'door'));
       out.push(...partition('wood', ox + 14, oy + 280, w - 28, 'h', WALL_T.interior, [110, 310, 510, 710], 'door'));
@@ -2143,7 +2151,10 @@ const Structures = (() => {
         out.push(seg('window', ox + dx, oy + 12, 1.6, 'h', 0.15));
         out.push(seg('window', ox + dx, oy + h - 12, 1.6, 'h', 0.15));
       }
-      out.rooms = [...cellRooms(top.cells, 'apartment'), ...cellRooms(bot.cells, 'apartment')];
+      out.push(...core.parts);
+      out.rooms = [...cellRooms(top.cells, 'apartment'), ...cellRooms(bot.cells, 'apartment'),
+        { kind: 'foyer', x: core.wing.x + 12, y: core.wing.y + 12, w: core.wing.w - 24, h: core.wing.h - 24 }];
+      out.shape = [{ x: ox, y: oy, w, h }, core.wing];
       return out;
     },
 
@@ -2424,14 +2435,25 @@ const Structures = (() => {
         fillA: 'ward', fillB: 'staffRoom', thickness: 0.28, chicane: true,
         passage: 'a',       // the way the trolleys go
       });
+      /* The ambulance bay, projecting off the front. Hospitals are not boxes:
+         the thing that makes one recognisable from the air is the covered bay
+         hanging off the entrance, and it gives the approach a corner to fight
+         over instead of a flat wall. */
+      const bay = annex('wood', 0.4, { x: ox, y: oy, w, h },
+        { side: 'n', at: 520, len: 200, depth: 150,
+          doors: [{ side: 'n', at: 56, type: 'garage-door', len: 4 }] });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
-        { side: 'n', at: 340, type: 'door', len: 3 },
+        { side: 's', at: 150, type: 'door', len: 3 },   // main entrance, onto the lobby
         { side: 'w', at: h * 0.47 - 30, type: 'door' },
-        { side: 'e', at: h * 0.47 - 30, type: 'door' },
+        bay.openMain,
       ]);
-      out.push(...plan.parts);
-      for (const dx of [80, 300, 520, 740]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
-      out.rooms = plan.rooms;
+      out.push(...plan.parts, ...bay.parts);
+      for (const dx of [330, 430]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      // and windows down the long back wall, which is where the wards are
+      for (const dx of [120, 340, 560]) out.push(seg('window', ox + dx, oy + h, 1.6, 'h', 0.15));
+      out.rooms = [...plan.rooms,
+        { kind: 'dispensary', x: bay.wing.x + 12, y: bay.wing.y + 12, w: bay.wing.w - 24, h: bay.wing.h - 24 }];
+      out.shape = [{ x: ox, y: oy, w, h }, bay.wing];
       return out;
     },
 

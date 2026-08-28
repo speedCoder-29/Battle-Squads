@@ -2228,7 +2228,7 @@ const Game = (() => {
         `${k('heal')} heal`, `${k('token')} call-in`, `${k('streak')} scorestreak`],
       ['SQUAD', 'Middle-click ping', `${k('ping')} ping wheel`, `${k('emote')} emote`,
         `${k('resupply')} give ammo`, `${k('deploy')} deploy on squad (when down)`],
-      ['WORLD', `${k('interact')} door/crate/vehicle`, `${k('pause')} pause`],
+      ['WORLD', `${k('interact')} door/crate/vehicle/climb`, `${k('pause')} pause`],
     ];
     hint.innerHTML = groups.map(([head, ...rest]) =>
       `<span class="hint-group"><b>${head}</b> ${rest.join(' · ')}</span>`).join('');
@@ -2983,6 +2983,29 @@ const Game = (() => {
     return c ? { x: c.x, y: c.y, falling: false } : null;
   }
 
+  /* Tell the player the window is a way in. Without this the mechanic is a
+     secret: nothing about a window says "climb me", and a feature nobody
+     discovers may as well not exist. */
+  function drawVaultPrompt() {
+    if (!player || !player.alive || player.riding || player.channel) return;
+    const v = vaultTarget(player);
+    if (!v) return;
+    const c = { x: v.seg.x + v.seg.w / 2, y: v.seg.y + v.seg.h / 2 };
+    if (!onScreen(c.x, c.y, 60)) return;
+    ctx.save();
+    // the sill lights up, and the landing spot is shown
+    ctx.strokeStyle = 'rgba(127,242,193,0.9)'; ctx.lineWidth = 2.5;
+    roundRect(v.seg.x - 2, v.seg.y - 2, v.seg.w + 4, v.seg.h + 4, 4); ctx.stroke();
+    ctx.setLineDash([6, 6]); ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(127,242,193,0.55)';
+    ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(v.to.x, v.to.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(v.to.x, v.to.y, 9, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px ' + UI_FONT; ctx.textAlign = 'center';
+    ctx.fillText('[' + Controls.labelFor('interact') + '] Climb through', c.x, c.y - 20);
+    ctx.restore();
+  }
+
   function drawSupplyDrop() {
     const d = supplyDrop;
     if (!d) return;
@@ -3704,6 +3727,9 @@ const Game = (() => {
     return viaRide <= direct * RIDE_DETOUR_MAX;
   }
 
+  /* Tried at 1700 on the theory that a downed teammate is worth walking
+     further for than a parked jeep. Measured, it made the approach worse in
+     four runs out of four — so it stays where it was tuned. */
   const BOT_REVIVE_RANGE = 1100;
   const BOT_FINISH_RANGE = 620;
 
@@ -3860,6 +3886,79 @@ const Game = (() => {
 
   /* --- doors --- */
   const doorCentre = (d) => ({ x: d.x + d.w / 2, y: d.y + d.h / 2 });
+  /* ================= vaulting =================
+     Going through a window instead of round to the door.
+
+     Every building on the map has windows, and until now they were purely
+     scenery you could shoot through — the only way in was whichever door the
+     blueprint happened to put where you were not. That made buildings much
+     more predictable to attack and to hold than they should be: one entrance
+     means one place to watch.
+
+     A window you can climb through turns every elevation into a way in, gives
+     the defender more to cover than a doorway, and makes the window placement
+     the blueprints already do into something that matters. Sandbags and
+     barricades work the same way — low cover you can get over rather than
+     only hide behind.
+
+     It is deliberately not free: it takes a moment, it puts you in the open
+     while it happens, and you come out the far side committed. */
+  const VAULT_REACH = 78;          // how close you have to be to the sill
+  const VAULT_TIME = 0.55;         // seconds spent going through
+  const VAULT_CLEAR = 34;          // how far past the far face you land
+
+  /* Can this piece be climbed? A window, or anything low enough to swing a leg
+     over. A reinforced wall is not a suggestion. */
+  const vaultable = (s) => {
+    if (s.open || s.dead) return false;
+    if (s.type === 'window') return true;
+    const k = Structures.def(s.type);
+    return k.height === 'low' && !k.passable && !k.prop;
+  };
+
+  /* The piece in front of you that you could get over, and where you would
+     land. Only counts one you are actually facing — you cannot vault sideways
+     out of a window behind your shoulder. */
+  function vaultTarget(a) {
+    let best = null, bd = VAULT_REACH * VAULT_REACH, bestTo = null;
+    for (const s of structureRects()) {
+      if (!vaultable(s)) continue;
+      const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+      const d = dist2(a.x, a.y, cx, cy);
+      if (d >= bd) continue;
+      // the sill runs along its long axis; you cross it the short way
+      const along = s.w >= s.h;
+      const nx = along ? 0 : 1, ny = along ? 1 : 0;
+      // which side of it are we on, and is that the way we are looking?
+      const side = along ? Math.sign(a.y - cy) : Math.sign(a.x - cx);
+      if (!side) continue;
+      const facing = Math.cos(a.angle) * (-side * nx) + Math.sin(a.angle) * (-side * ny);
+      if (facing < 0.35) continue;                 // not looking at it
+      const depth = (along ? s.h : s.w) + VAULT_CLEAR + a.r;
+      const to = { x: cx - side * nx * depth, y: cy - side * ny * depth };
+      if (pointInObstacle(to.x, to.y)) continue;   // nowhere to land
+      bd = d; best = s; bestTo = to;
+    }
+    return best ? { seg: best, to: bestTo } : null;
+  }
+
+  function tryVault() {
+    if (!canAct()) return false;
+    const v = vaultTarget(player);
+    if (!v) return false;
+    const name = v.seg.type === 'window' ? 'window' : 'cover';
+    player.channel = {
+      t: VAULT_TIME, total: VAULT_TIME, label: 'Climbing through',
+      onDone: () => {
+        player.x = v.to.x; player.y = v.to.y;
+        resolveObstacles(player);
+        hudMsg('Through the ' + name);
+        SFX.click();
+      },
+    };
+    return true;
+  }
+
   function nearestDoor(x, y, range) {
     let best = null, bd = range * range;
     for (const s of structureRects()) {
@@ -3930,6 +4029,8 @@ const Game = (() => {
     if (grabDrop()) return;
     const door = nearestDoor(player.x, player.y, 70);
     if (door) { toggleDoor(door, player); return; }
+    // a window or a low wall you are facing: climb it rather than walk round
+    if (tryVault()) return;
     let best = null, bi = -1, bd = 95 * 95;
     for (let i = 0; i < crates.length; i++) {
       const c = crates[i];
@@ -3962,6 +4063,18 @@ const Game = (() => {
     // is final rather than trusting where they were put.
     for (const c of pendingIndoorCrates) {
       if (pointInObstacle(c.x, c.y)) continue;
+      /* ...and never in the water.
+
+         Placement checks the terrain under every wall of a building, which
+         covers any room the walls enclose. Several blueprints also declare
+         rooms *outside* their shell — a resort's dock and pool, a farm's
+         fields, a harbour's quay — and those have no walls, so nothing was
+         testing the ground under them. Put a resort near a bay and its dock
+         hangs over the sea, with a silver crate bobbing in it.
+
+         The outdoor crates have always had this guard; the indoor ones were
+         trusting a check that does not reach them. */
+      if (terrain && !Terrain.isSpawnable(terrain, c.x, c.y)) continue;
       crates.push({
         x: c.x, y: c.y, tier: c.tier, opened: false, indoors: true, room: c.room, needs: c.needs,
         // searchable furniture draws as itself rather than as a box
@@ -6391,6 +6504,7 @@ const Game = (() => {
     });
 
     drawToolRings();
+    drawVaultPrompt();  // the window or low wall you are facing, if any
     drawCratesAndDeployables();
     drawSupplyDrop();   // the plane, the canopy and the spot it is landing on
     drawDrops();
@@ -7840,6 +7954,7 @@ const Game = (() => {
       drawItemPanels(p);
       drawActionBar(p);
     }
+    drawNetStatus();
     drawChannelRing(p);
     drawWeather(Math.min(0.05, lastDt || 0.016));
     drawFeel();
@@ -7909,7 +8024,14 @@ const Game = (() => {
      Right side because the left is the status stack and the bottom is the
      action bar — and because with a full bag this is three columns of content
      that needs somewhere it can grow without pushing anything else around. */
-  const PANEL = { w: 168, row: 30, gap: 10, right: 20, top: 300 };
+  const PANEL = { w: 236, row: 30, gap: 10, right: 20, head: 24, pad: 6 };
+  /* The key legend is a DOM layer in the bottom-right corner and the canvas
+     always draws under the DOM, so these cannot be allowed to reach it. The
+     stack is measured first and anchored from its foot, growing upward — a
+     bag with one item sits low and out of the way, a full one climbs toward
+     the compass and stops short of it. */
+  const PANEL_FOOT = 150;        // clear space kept below the stack
+  const PANEL_CEIL = 252;        // ...and above it, clear of the minimap
   let panelHots = [];                 // click targets, rebuilt each frame
 
   const CAT_META = {
@@ -7922,12 +8044,33 @@ const Game = (() => {
     panelHots = [];
     if (!p || !p.inv) return;
     const x = W - PANEL.w - PANEL.right;
-    let y = PANEL.top;
+    const rowsOf = (cat) => {
+      const sl = p.inv[cat];
+      return Math.max(1, sl && sl.held ? Object.keys(sl.held).length : 0);
+    };
+    /* Fit the stack to the space rather than letting it run into the key
+       legend below. A bag full of every kind of everything is taller than the
+       gap between the minimap and the legend, so the rows tighten until it
+       fits — legible down to 22px, which is still a comfortable click target. */
+    /* Two columns once a category gets crowded. Carrying every kind of
+       everything is fifteen entries, which does not fit in one column between
+       the minimap and the key legend at any legible row height — so a category
+       with more than three items lays them out two abreast instead of
+       squeezing the whole stack thinner. */
+    const colsOf = (cat) => (rowsOf(cat) > 3 ? 2 : 1);
+    const linesOf = (cat) => Math.ceil(rowsOf(cat) / colsOf(cat));
+    const linesTotal = CAT_KEYS.reduce((t, c) => t + linesOf(c), 0);
+    const chrome = CAT_KEYS.length * (PANEL.head + PANEL.pad) + PANEL.gap * (CAT_KEYS.length - 1);
+    const space = H - PANEL_FOOT - PANEL_CEIL;
+    const row = clamp(Math.floor((space - chrome) / Math.max(1, linesTotal)), 24, PANEL.row);
+    const heightOf = (cat) => PANEL.head + linesOf(cat) * row + PANEL.pad;
+    const total = linesTotal * row + chrome;
+    let y = Math.max(PANEL_CEIL, H - PANEL_FOOT - total);
     for (const cat of CAT_KEYS) {
       const slot = p.inv[cat];
       const meta = CAT_META[cat];
       const ids = slot && slot.held ? Object.keys(slot.held) : [];
-      const h = 24 + Math.max(1, ids.length) * PANEL.row + 6;
+      const h = heightOf(cat);
 
       ctx.save();
       // the panel itself: opaque enough to read over anything underneath
@@ -7944,35 +8087,41 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(210,222,244,0.6)';
       ctx.fillText('[' + Controls.labelFor(cat) + ']', x + PANEL.w - 11, y + 13);
 
-      let ry = y + 24;
+      const top = y + PANEL.head;
       if (!ids.length) {
         ctx.textAlign = 'left';
         ctx.font = '11px ' + UI_FONT;
         ctx.fillStyle = 'rgba(150,164,190,0.55)';
-        ctx.fillText('empty', x + 12, ry + PANEL.row / 2);
+        ctx.fillText('empty', x + 12, top + row / 2);
       }
-      for (const id of ids) {
+      const cols = colsOf(cat);
+      const cw = (PANEL.w - 10) / cols;
+      ids.forEach((id, i) => {
         const it = Items.CONSUMABLES[id];
-        if (!it) continue;
+        if (!it) return;
+        const cx0 = x + 5 + (i % cols) * cw;
+        const ry = top + Math.floor(i / cols) * row;
         const on = slot.id === id;
         if (on) {
           ctx.fillStyle = hexA(meta.tint, 0.16);
-          roundRect(x + 5, ry + 2, PANEL.w - 10, PANEL.row - 4, 6); ctx.fill();
+          roundRect(cx0 + 1, ry + 2, cw - 2, row - 4, 6); ctx.fill();
           ctx.strokeStyle = hexA(meta.tint, 0.75); ctx.lineWidth = 1.2; ctx.stroke();
         }
         ctx.textAlign = 'left';
-        ctx.font = '15px ' + UI_FONT;
-        ctx.fillText(it.icon, x + 12, ry + PANEL.row / 2);
-        ctx.font = (on ? 'bold ' : '') + '12px ' + UI_FONT;
+        ctx.font = '14px ' + UI_FONT;
+        ctx.fillText(it.icon, cx0 + 7, ry + row / 2);
+        ctx.font = (on ? 'bold ' : '') + '11px ' + UI_FONT;
         ctx.fillStyle = on ? '#fff' : 'rgba(206,218,240,0.8)';
-        ctx.fillText(it.name, x + 36, ry + PANEL.row / 2);
+        // the name has to survive a half-width column
+        let nm = it.name;
+        while (nm.length > 4 && ctx.measureText(nm).width > cw - 62) nm = nm.slice(0, -1);
+        ctx.fillText(nm === it.name ? nm : nm + '…', cx0 + 28, ry + row / 2);
         ctx.textAlign = 'right';
-        ctx.font = 'bold 13px ' + NUM_FONT;
+        ctx.font = 'bold 12px ' + NUM_FONT;
         ctx.fillStyle = on ? meta.tint : 'rgba(206,218,240,0.75)';
-        ctx.fillText('x' + slot.held[id], x + PANEL.w - 12, ry + PANEL.row / 2);
-        panelHots.push({ cat, id, x: x + 5, y: ry, w: PANEL.w - 10, h: PANEL.row });
-        ry += PANEL.row;
-      }
+        ctx.fillText('x' + slot.held[id], cx0 + cw - 7, ry + row / 2);
+        panelHots.push({ cat, id, x: cx0, y: ry, w: cw, h: row });
+      });
       ctx.restore();
       y += h + PANEL.gap;
     }
@@ -7986,6 +8135,41 @@ const Game = (() => {
       }
     }
     return false;
+  }
+
+  /* ================= connection =================
+     Online, the two numbers that explain what you are seeing are the round
+     trip to the host and how far the room is currently correcting you. Both
+     already existed; neither was ever shown, so a player being dragged around
+     by a bad connection had no way to tell that from the game being broken.
+
+     Sits under the minimap, quiet when things are fine and loud when they are
+     not — the point is to be ignorable until it matters. */
+  function drawNetStatus() {
+    if (!online) return;
+    const ping = Math.round(online.ping || 0);
+    const err = Math.round(online.netErr || 0);
+    // green under 90ms, amber to 200, red past it — and the drift matters too
+    const bad = ping > 200 || err > 90;
+    const meh = ping > 90 || err > 45;
+    const ink = bad ? '#e8556a' : meh ? '#e8bb52' : '#4fcb8a';
+    const x = W - 16, y = 56 + MINIMAP_W * (MAP_H / MAP_W) + 16;
+    ctx.save();
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 11px ' + NUM_FONT;
+    const label = ping + 'ms' + (err > 12 ? '  drift ' + err + 'px' : '');
+    const w = ctx.measureText(label).width + 26;
+    ctx.fillStyle = 'rgba(10,15,28,0.7)';
+    roundRect(x - w, y - 10, w, 20, 6); ctx.fill();
+    // the bars, so it reads at a glance without reading the number
+    const bars = bad ? 1 : meh ? 2 : 3;
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i < bars ? ink : 'rgba(140,155,185,0.28)';
+      ctx.fillRect(x - w + 8 + i * 5, y + 4 - (i + 1) * 3, 3, (i + 1) * 3);
+    }
+    ctx.fillStyle = ink;
+    ctx.fillText(label, x - 8, y);
+    ctx.restore();
   }
 
   function drawStatusStack(p) {
@@ -8376,10 +8560,17 @@ const Game = (() => {
      Sits directly under the minimap, top-right, newest at the top. Each row is
      "killer ▸ victim" with both names in their team colour, so you can read who
      is winning a fight without reading the words. */
+  /* The kill feed moved to the left.
+
+     It used to sit under the minimap, which is where the item panels now live
+     — and the panels have to be on the right because that is where they were
+     asked for, and because a full bag is three columns of content that needs
+     somewhere it can grow. The left is free below the scorestreak chips, the
+     rows are short, and a feed reads just as well left-aligned. */
   function drawKillFeed() {
     if (!killFeed.length) return;
-    const pad = 16, rowH = 24, right = W - pad;
-    let y = pad + 40 + MINIMAP_W * (MAP_H / MAP_W) + 14;   // below the minimap
+    const pad = 16, rowH = 24, left = 22;
+    let y = 96 + streakBank.length * 34 + 14;   // below whatever streaks are banked
 
     ctx.save();
     ctx.textBaseline = 'middle';
@@ -8394,7 +8585,7 @@ const Game = (() => {
       const wv = ctx.measureText(victim).width;
       const wa = ctx.measureText(arrow).width;
       const boxW = wk + wa + wv + 20;
-      const x0 = right - boxW;
+      const x0 = left;
 
       // rows you're in are called out; everything else is quiet background
       ctx.fillStyle = k.mine ? 'rgba(75,224,138,0.22)'
@@ -10277,6 +10468,70 @@ const Game = (() => {
     /* Why a bot did or did not go for a hull. Read-only: it asks the same
        questions updateBot asks, for every unclaimed vehicle on the map. */
     rideStat: () => Object.assign({}, rideStat),
+    /* Put the player at a window on the outside, facing it, and report whether
+       they can get through. */
+    vaultProbe() {
+      const wins = obstacles.filter(o => o.type === 'window' && !o.dead);
+      for (const w of wins) {
+        const along = w.w >= w.h;
+        const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
+        for (const side of [1, -1]) {
+          const sx = cx + (along ? 0 : side * 46), sy = cy + (along ? side * 46 : 0);
+          if (pointInObstacle(sx, sy)) continue;
+          player.x = sx; player.y = sy;
+          player.angle = Math.atan2(cy - sy, cx - sx);
+          const t = vaultTarget(player);
+          if (!t) continue;
+          const from = { x: player.x, y: player.y };
+          const ok = tryVault();
+          if (!ok) continue;
+          player.channel.t = 0; player.channel.onDone(); player.channel = null;
+          return {
+            found: true, type: w.type,
+            moved: Math.round(Math.hypot(player.x - from.x, player.y - from.y)),
+            crossed: Math.round(Math.hypot(player.x - from.x, player.y - from.y)) > 20,
+            insideAfter: pointInObstacle(player.x, player.y),
+          };
+        }
+      }
+      return { found: false, windows: wins.length };
+    },
+    /* Stand at a window facing it, without going through — so the prompt can
+       be looked at. */
+    standAtWindow() {
+      for (const w of obstacles.filter(o => o.type === 'window' && !o.dead)) {
+        const along = w.w >= w.h;
+        const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
+        for (const side of [1, -1]) {
+          const sx = cx + (along ? 0 : side * 46), sy = cy + (along ? side * 46 : 0);
+          if (pointInObstacle(sx, sy)) continue;
+          player.x = sx; player.y = sy;
+          player.angle = Math.atan2(cy - sy, cx - sx);
+          camSnap = true;
+          if (vaultTarget(player)) return { x: Math.round(sx), y: Math.round(sy) };
+        }
+      }
+      return null;
+    },
+    /* ...and that you cannot climb something you should not. */
+    vaultWall() {
+      const wall = obstacles.find(o => (o.type === 'rwall' || o.type === 'metal') && !o.dead);
+      if (!wall) return 'no wall';
+      const along = wall.w >= wall.h;
+      const cx = wall.x + wall.w / 2, cy = wall.y + wall.h / 2;
+      player.x = cx + (along ? 0 : 46); player.y = cy + (along ? 46 : 0);
+      player.angle = Math.atan2(cy - player.y, cx - player.x);
+      return vaultTarget(player) ? 'CLIMBED A SOLID WALL' : 'refused';
+    },
+    /* The whole bag, for checking that several kinds can be carried at once. */
+    inv: () => (player && player.inv ? {
+      grenade: Object.assign({}, player.inv.grenade.held), gSel: player.inv.grenade.id,
+      tactical: Object.assign({}, player.inv.tactical.held), tSel: player.inv.tactical.id,
+      heal: Object.assign({}, player.inv.heal.held), hSel: player.inv.heal.id,
+    } : null),
+    give: (cat, id, n) => addItem(cat, id, n),
+    pick: (cat, id) => selectItem(cat, id),
+    panelHotspots: () => panelHots.map(h => ({ cat: h.cat, id: h.id, x: Math.round(h.x + h.w / 2), y: Math.round(h.y + h.h / 2) })),
     supplyState: () => ({
       falling: !!supplyDrop, count: supplyCount,
       nextIn: Math.round(supplyTimer),
