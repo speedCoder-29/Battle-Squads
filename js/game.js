@@ -7037,6 +7037,85 @@ const Game = (() => {
      legible from the material rather than from remembering the layout: boards
      in a house, tiles in a hospital, slab joints in a bunker, corrugate in a
      hangar, and bare speckled ground in a camp. */
+  /* ================= what a room is for, written on its floor =================
+     Rooms already have their own floor colour and ruling, which tells you the
+     material. It does not tell you the purpose: a surgery and a washroom are
+     both pale tile, a workbay and a store room are both concrete.
+
+     These are the markings the real room would have — a cross on the theatre
+     floor, bay lines in the workshop, hazard chevrons outside the armoury, a
+     rug in the lounge. Cheap to draw (a handful of paths, only for rooms on
+     screen and only when the roof is off) and they turn an interior from a
+     grid of coloured rectangles into a set of places. */
+  function drawRoomMarking(r, x, y, w, h) {
+    const cx = x + w / 2, cy = y + h / 2;
+    const k = r.kind;
+    ctx.save();
+    if (k === 'surgery' || k === 'dispensary') {
+      // a red cross, big enough to read from the doorway
+      const s2 = Math.min(w, h) * 0.26;
+      ctx.fillStyle = 'rgba(206,64,72,0.30)';
+      ctx.fillRect(cx - s2 / 3, cy - s2, s2 / 1.5, s2 * 2);
+      ctx.fillRect(cx - s2, cy - s2 / 3, s2 * 2, s2 / 1.5);
+    } else if (k === 'workbay' || k === 'garage' || k === 'motorPool') {
+      // a marked-out bay with hatching at the mouth
+      ctx.strokeStyle = 'rgba(232,187,82,0.34)'; ctx.lineWidth = 3;
+      ctx.setLineDash([]);
+      ctx.strokeRect(x + w * 0.14, y + h * 0.16, w * 0.72, h * 0.68);
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 5; i++) {
+        const px = x + w * 0.14 + (w * 0.72 * i) / 4;
+        ctx.beginPath(); ctx.moveTo(px, y + h * 0.84); ctx.lineTo(px + 14, y + h * 0.96); ctx.stroke();
+      }
+    } else if (k === 'armoury' || k === 'strongroom' || k === 'safe') {
+      // hazard chevrons: the floor telling you this is the room that matters
+      ctx.strokeStyle = 'rgba(232,187,82,0.30)'; ctx.lineWidth = 6;
+      for (let i = -1; i <= 1; i++) {
+        ctx.beginPath();
+        ctx.moveTo(cx - 22, cy + i * 20 - 10);
+        ctx.lineTo(cx, cy + i * 20 + 4);
+        ctx.lineTo(cx + 22, cy + i * 20 - 10);
+        ctx.stroke();
+      }
+    } else if (k === 'lounge' || k === 'living' || k === 'study' || k === 'diningLobby') {
+      // a rug, inset from the walls the way one actually sits
+      const rw2 = w * 0.6, rh2 = h * 0.55;
+      ctx.fillStyle = 'rgba(120,60,58,0.26)';
+      roundRect(cx - rw2 / 2, cy - rh2 / 2, rw2, rh2, 6); ctx.fill();
+      ctx.strokeStyle = 'rgba(190,140,110,0.26)'; ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.strokeRect(cx - rw2 / 2 + 8, cy - rh2 / 2 + 8, rw2 - 16, rh2 - 16);
+    } else if (k === 'gym') {
+      // a court: centre circle and a halfway line
+      ctx.strokeStyle = 'rgba(232,236,255,0.20)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(cx, cy, Math.min(w, h) * 0.2, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      if (w >= h) { ctx.moveTo(cx, y + 8); ctx.lineTo(cx, y + h - 8); }
+      else { ctx.moveTo(x + 8, cy); ctx.lineTo(x + w - 8, cy); }
+      ctx.stroke();
+    } else if (k === 'warehouse' || k === 'storeroom' || k === 'shippingCrate') {
+      // racking lines: where the pallets are supposed to go
+      ctx.strokeStyle = 'rgba(232,187,82,0.22)'; ctx.lineWidth = 2;
+      ctx.setLineDash([16, 10]);
+      for (let i = 1; i <= 2; i++) {
+        const py = y + (h * i) / 3;
+        ctx.beginPath(); ctx.moveTo(x + 10, py); ctx.lineTo(x + w - 10, py); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    } else if (k === 'cell' || k === 'washroom' || k === 'bathroom') {
+      // a floor drain, which is the one fitting every wet room has
+      ctx.strokeStyle = 'rgba(0,0,0,0.30)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 5, cy); ctx.lineTo(cx + 5, cy);
+      ctx.moveTo(cx, cy - 5); ctx.lineTo(cx, cy + 5); ctx.stroke();
+    } else if (k === 'lobby' || k === 'foyer') {
+      // a mat inside the door
+      ctx.fillStyle = 'rgba(40,50,70,0.26)';
+      roundRect(cx - w * 0.22, cy - h * 0.16, w * 0.44, h * 0.32, 4); ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function drawFloorPattern(b, st) {
     const p = st.pattern || 'planks';
     if (p === 'dirt') {
@@ -7094,6 +7173,7 @@ const Game = (() => {
         ctx.fillStyle = rs.floor;
         ctx.fillRect(rx, ry, rw, rh);
         drawFloorPattern({ x: rx, y: ry, w: rw, h: rh }, rs);
+        drawRoomMarking(r, rx, ry, rw, rh);
         // a firm edge, so the size and shape of the room are unambiguous
         ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.lineWidth = 2;
         ctx.strokeRect(rx, ry, rw, rh);
@@ -7216,6 +7296,28 @@ const Game = (() => {
     }
     ctx.strokeStyle = hexA(st.trim, 0.9); ctx.lineWidth = 4;
     ctx.strokeRect(b.x - 8, b.y - 8, b.w + 16, b.h + 16);
+
+    /* Downpipes at the corners and a vent or two along the long side.
+
+       A roof with a clean border round it reads as a tile; what makes it read
+       as the top of a building is the plumbing hanging off the edge. Placed
+       from the block's own position so they never move, and only on blocks big
+       enough to have earned them. */
+    if (b.w < 150 || b.h < 130) return;
+    ctx.fillStyle = 'rgba(24,22,28,0.5)';
+    for (const [px, py] of [[b.x - 8, b.y - 8], [b.x + b.w - 2, b.y - 8],
+      [b.x - 8, b.y + b.h - 2], [b.x + b.w - 2, b.y + b.h - 2]]) {
+      roundRect(px, py, 10, 10, 3); ctx.fill();
+    }
+    const wide2 = b.w >= b.h;
+    const vents2 = Math.max(1, Math.min(3, Math.floor((wide2 ? b.w : b.h) / 300)));
+    ctx.fillStyle = hexA(st.trim, 0.4);
+    for (let i = 0; i < vents2; i++) {
+      const t2 = (i + 1) / (vents2 + 1);
+      const vx2 = wide2 ? b.x + b.w * t2 - 7 : b.x - 12;
+      const vy2 = wide2 ? b.y - 12 : b.y + b.h * t2 - 7;
+      roundRect(vx2, vy2, wide2 ? 14 : 9, wide2 ? 9 : 14, 2); ctx.fill();
+    }
   }
 
   /* ---------------- interior lighting ----------------
@@ -7609,6 +7711,21 @@ const Game = (() => {
       ctx.lineWidth = 2; ctx.strokeStyle = k.stroke; ctx.stroke();
       ctx.globalAlpha = 1;
       ctx.restore();
+      /* A threshold under the opening and a jamb at each side. A doorway used
+         to be a gap in a wall with a dot in it; what makes one read as a
+         doorway is the frame around it and the worn step through it. */
+      const flat = s.w >= s.h;      // `along` is taken further down this function
+      ctx.fillStyle = 'rgba(30,26,22,0.30)';
+      if (flat) ctx.fillRect(s.x, s.y + s.h * 0.15, s.w, s.h * 0.7);
+      else ctx.fillRect(s.x + s.w * 0.15, s.y, s.w * 0.7, s.h);
+      ctx.fillStyle = hexA(k.stroke, 0.55);
+      if (flat) {
+        ctx.fillRect(s.x - 2, s.y - 2, 4, s.h + 4);
+        ctx.fillRect(s.x + s.w - 2, s.y - 2, 4, s.h + 4);
+      } else {
+        ctx.fillRect(s.x - 2, s.y - 2, s.w + 4, 4);
+        ctx.fillRect(s.x - 2, s.y + s.h - 2, s.w + 4, 4);
+      }
       // handle dot so a door reads as a door at a glance
       ctx.beginPath(); ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
       ctx.fillStyle = k.stroke; ctx.fill();

@@ -165,6 +165,46 @@ const Structures = (() => {
       fill: '#9ca5b5', stroke: '#6a7382',
       effect: 'Hard cover — takes HEAT or a hammer',
     },
+    /* ---- the newer props ----
+       Each one is a piece of cover as well as a piece of scenery: what it is
+       made of decides whether you can shoot through it and what it leaves
+       behind, so they carry the same fields as the crates and barrels above
+       rather than being decoration bolted on beside them. */
+    bin: {
+      name: 'Wheelie Bin', height: 'low', hp: 45, toughness: 1, prop: 'bin',
+      bullets: 'pen', drops: null,
+      fill: '#3f5a46', stroke: '#22332a',
+      effect: 'Soft cover — rounds go through it',
+    },
+    hayBale: {
+      name: 'Hay Bale', height: 'low', hp: 140, toughness: 1, prop: 'hayBale',
+      /* No `conceals`. That flag is for things you stand *inside* — the test
+         is whether your position is within the rect — so it only means
+         anything on something passable, like a bush. A bale is solid: you get
+         behind it, and the cover is the fact that rounds stop in it. */
+      bullets: 'stop', round: true,
+      fill: '#c2a75c', stroke: '#8a7538',
+      effect: 'Soaks up rounds — hard cover you get behind',
+    },
+    pipes: {
+      name: 'Pipe Stack', height: 'low', hp: 220, toughness: 3, prop: 'pipes',
+      bullets: 'stop',
+      fill: '#8d97a5', stroke: '#4a525d',
+      effect: 'Hard cover — steel does not care about rifle rounds',
+    },
+    generator: {
+      name: 'Generator', height: 'low', hp: 110, toughness: 2, prop: 'generator',
+      bullets: 'stop', explodes: { damage: 70, radius: 140 },
+      fill: '#e8bb52', stroke: '#7a6224',
+      effect: 'Full of diesel — it goes up when it goes down',
+    },
+    bench: {
+      name: 'Bench', height: 'low', hp: 60, toughness: 1, prop: 'bench',
+      bullets: 'pen', drops: null,
+      fill: '#6b5231', stroke: '#3a2c1c',
+      effect: 'Something to vault, not something to hide behind',
+    },
+
     window: {
       name: 'Window', height: 'high', hp: 80, toughness: 1,
       bullets: 'pen', flatLoss: 0.35,
@@ -301,7 +341,7 @@ const Structures = (() => {
     },
   };
   /* wall types that are really world props, drawn with a sprite */
-  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush', 'desk', 'locker', 'ammoBox', 'pallet', 'tyre', 'rubble', 'stump', 'cone', 'sandpile', 'chair', 'plant', 'lamp', 'striplight', 'palm', 'tent', 'antenna', 'sign', 'post', 'pillar'];
+  const PROP_TYPES = ['crate', 'barrel', 'tree', 'rock', 'container', 'bush', 'desk', 'locker', 'ammoBox', 'pallet', 'tyre', 'rubble', 'stump', 'cone', 'sandpile', 'chair', 'plant', 'lamp', 'striplight', 'palm', 'tent', 'antenna', 'sign', 'post', 'pillar', 'bin', 'hayBale', 'pipes', 'generator', 'bench'];
 
   /* ---------- derived stats ---------- */
   const def = (type) => WALL_TYPES[type] || WALL_TYPES.wood;
@@ -3326,27 +3366,30 @@ const Structures = (() => {
     'bunker-complex': ['sandpile', 'sandpile', 'crate', 'ammoBox', 'rubble'],
     'obj-relay':    ['antenna', 'crate', 'ammoBox', 'cone', 'barrel'],
     'obj-refinery': ['barrel', 'barrel', 'pallet', 'container', 'tyre'],
-    'obj-citadel':  ['sandbag' === 'x' ? 'crate' : 'sandpile', 'ammoBox', 'crate', 'rubble', 'barrel'],
+    /* This read `'sandbag' === 'x' ? 'crate' : 'sandpile'` — a comparison
+       between two literals that can only ever go one way, so it was an
+       elaborate way of writing 'sandpile'. */
+    'obj-citadel':  ['sandpile', 'ammoBox', 'crate', 'rubble', 'barrel'],
     /* ---- residential: gardens, washing lines, firewood ---- */
-    house:        ['bush', 'bush', 'stump', 'plant', 'crate'],
-    mansion:      ['plant', 'plant', 'bush', 'bush', 'cone'],
+    house:        ['bush', 'bush', 'bin', 'plant', 'stump'],
+    mansion:      ['plant', 'plant', 'bush', 'bench', 'bush'],
     shanty:       ['rubble', 'rubble', 'tyre', 'pallet', 'crate'],
-    apartments:   ['bush', 'crate', 'rubble', 'cone', 'plant'],
+    apartments:   ['bin', 'bin', 'bush', 'bench', 'plant'],
     clinic:       ['bush', 'plant', 'cone', 'crate'],
     watermill:    ['stump', 'bush', 'barrel', 'pallet', 'crate'],
 
     /* ---- rural ---- */
-    farm:         ['stump', 'stump', 'pallet', 'bush', 'barrel', 'crate'],
+    farm:         ['hayBale', 'hayBale', 'stump', 'pallet', 'bush', 'barrel'],
     camp:         ['tent', 'stump', 'bush', 'crate', 'rubble'],
-    campground:   ['tent', 'tent', 'stump', 'bush', 'crate'],
+    campground:   ['tent', 'tent', 'bench', 'stump', 'bin'],
 
     /* ---- industrial: pallets, drums, tyres, steel ---- */
     warehouse:    ['pallet', 'pallet', 'crate', 'barrel', 'tyre'],
-    factory:      ['barrel', 'barrel', 'pallet', 'rubble', 'container'],
-    workshop:     ['tyre', 'tyre', 'barrel', 'pallet', 'ammoBox'],
+    factory:      ['barrel', 'pipes', 'pallet', 'generator', 'container'],
+    workshop:     ['tyre', 'pipes', 'barrel', 'generator', 'pallet'],
     garage:       ['tyre', 'tyre', 'tyre', 'barrel', 'cone', 'pallet'],
     depot:        ['crate', 'pallet', 'barrel', 'container', 'tyre'],
-    'power-plant': ['barrel', 'container', 'rubble', 'cone', 'pallet'],
+    'power-plant': ['generator', 'pipes', 'container', 'barrel', 'cone'],
     silos:        ['barrel', 'pallet', 'crate', 'stump'],
     mine:         ['rock', 'rock', 'rubble', 'stump', 'barrel', 'pallet'],
 

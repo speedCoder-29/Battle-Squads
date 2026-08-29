@@ -358,6 +358,83 @@ const Sprites = (() => {
       ctx.beginPath(); ctx.moveTo(-r * 0.85, -r * 0.25); ctx.lineTo(r * 0.85, -r * 0.25); ctx.stroke();
     },
 
+    /* ---------- more of the world ----------
+       The prop pool was twenty-five kinds, and a handful of them did most of
+       the work: nearly every yard on the map was crates, barrels and tyres.
+       These are the things that actually stand around outside the buildings
+       they belong to, so a farmyard stops looking like a warehouse yard with
+       different walls. */
+
+    /* wheelie bin: the most reliable sign of somewhere people live */
+    bin(ctx, r) {
+      box(ctx, -r * 0.62, -r * 0.78, r * 1.24, r * 1.56, '#3f5a46', '#22332a', 2, 3);
+      lit(ctx, () => {
+        // the lid, catching the light, with its lip along the front
+        box(ctx, -r * 0.58, -r * 0.74, r * 1.16, r * 1.1, '#4d6d56', '#22332a', 1.5, 3);
+        ctx.strokeStyle = 'rgba(200,230,210,0.30)'; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.5, -r * 0.68); ctx.lineTo(r * 0.5, -r * 0.68);
+        ctx.stroke();
+      });
+      circle(ctx, -r * 0.45, r * 0.66, r * 0.16, '#1b2620', null);   // wheels
+      circle(ctx, r * 0.45, r * 0.66, r * 0.16, '#1b2620', null);
+    },
+
+    /* round hay bale, seen from above: concentric wound straw */
+    hayBale(ctx, r) {
+      circle(ctx, 0, 0, r, '#c2a75c', '#8a7538', 2.5);
+      lit(ctx, () => {
+        circle(ctx, LX * r * 0.2, LY * r * 0.2, r * 0.72, '#d4bb72', null);
+        circle(ctx, LX * r * 0.3, LY * r * 0.3, r * 0.42, '#e0cb8c', null);
+      });
+      ctx.strokeStyle = 'rgba(110,92,44,0.5)'; ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r * 0.25, Math.sin(a) * r * 0.25);
+        ctx.lineTo(Math.cos(a) * r * 0.95, Math.sin(a) * r * 0.95);
+        ctx.stroke();
+      }
+    },
+
+    /* a stack of pipe, chocked so it does not roll */
+    pipes(ctx, r) {
+      const rr = r * 0.30;
+      const rows = [[-1, -0.5], [0, -0.5], [1, -0.5], [-0.5, 0.4], [0.5, 0.4]];
+      for (const [ox2, oy2] of rows) {
+        circle(ctx, ox2 * rr * 2, oy2 * rr * 2, rr, '#8d97a5', '#4a525d', 2);
+        circle(ctx, ox2 * rr * 2, oy2 * rr * 2, rr * 0.55, '#3d444d', null);
+      }
+      // the chock along the front
+      box(ctx, -r * 0.95, r * 0.72, r * 1.9, r * 0.2, '#6b5231', '#3a2c1c', 1.5, 1);
+    },
+
+    /* site generator: a box with a radiator grille and an exhaust */
+    generator(ctx, r) {
+      box(ctx, -r * 0.9, -r * 0.62, r * 1.8, r * 1.24, '#e8bb52', '#7a6224', 2.5, 3);
+      lit(ctx, () => {
+        box(ctx, -r * 0.82, -r * 0.54, r * 1.64, r * 0.5, '#f0cf7c', null, 0, 2);
+      });
+      // grille
+      ctx.strokeStyle = '#5f4d1c'; ctx.lineWidth = 1.6;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * r * 0.28, -r * 0.34); ctx.lineTo(i * r * 0.28, r * 0.5);
+        ctx.stroke();
+      }
+      circle(ctx, r * 0.68, -r * 0.46, r * 0.16, '#3a3a3a', '#1e1e1e', 1.5);  // exhaust
+    },
+
+    /* park bench: slats and two legs */
+    bench(ctx, r) {
+      box(ctx, -r, -r * 0.34, r * 2, r * 0.68, P.woodDark, '#3a2c1c', 2, 2);
+      ctx.fillStyle = P.wood;
+      for (let i = 0; i < 3; i++) ctx.fillRect(-r * 0.94, -r * 0.26 + i * r * 0.2, r * 1.88, r * 0.12);
+      ctx.fillStyle = '#4a5260';
+      ctx.fillRect(-r * 0.78, r * 0.3, r * 0.16, r * 0.16);
+      ctx.fillRect(r * 0.62, r * 0.3, r * 0.16, r * 0.16);
+    },
+
     /* bare stump */
     stump(ctx, r) {
       circle(ctx, 0, 0, r * 0.8, P.wood, P.woodDark, 2.5);
@@ -396,6 +473,11 @@ const Sprites = (() => {
     sandpile:  { r: 40, shadow: 7 },                  // 2.0m heap
     container: { r: 49, shadow: 14, tall: true },     // 2.44m across (see PROP_BOX)
     stump:     { r: 17, shadow: 3 },                  // 0.85m
+    bin:       { r: 16, shadow: 6, tall: true },      // 0.8m wheelie bin
+    hayBale:   { r: 30, shadow: 8, tall: true },      // 1.5m round bale
+    pipes:     { r: 26, shadow: 5 },                  // 1.3m stack
+    generator: { r: 22, shadow: 6 },                  // 1.1m site genset
+    bench:     { r: 24, shadow: 3 },                  // 1.2m seat
     table:     { r: 31, shadow: 4 },
     shelf:     { r: 34, shadow: 4 },
     locker:    { r: 25, shadow: 6, tall: true },
@@ -418,6 +500,9 @@ const Sprites = (() => {
      the sprite still draws from `r`, this is what the collision box uses. */
   const PROP_BOX = {
     container: { w: 98, h: 242 },
+    bench:     { w: 48, h: 18 },
+    bin:       { w: 24, h: 30 },
+    generator: { w: 40, h: 28 },
     tent:      { w: 96, h: 116 },
     bed:       { w: 42, h: 82 },
     shelf:     { w: 72, h: 26 },
