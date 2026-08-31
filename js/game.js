@@ -1328,6 +1328,85 @@ const Game = (() => {
      per effect, and announced once on the way in so you know it is happening. */
   let hereBuilding = null, hereEffect = null, resupplyT = 0;
 
+  /* ================= what you have seen of a building =================
+     Standing in a room used to tell you nothing about it that the ray-cast
+     shadows had not already decided. The shadows are cast from wall geometry,
+     so the room you are standing in gets carved up by its own doorframes and
+     pillars, while the room next door — which you have never been in — is lit
+     exactly as brightly as the one you are in.
+
+     That is backwards. What you cannot see is the part of the building you
+     have not been into. So inside a building the geometric shadows are dropped
+     entirely and this takes over:
+
+       • the room you walk into is revealed whole, the moment you enter it
+       • everything you have not reached yet stays dark
+       • anything you have already been through stays revealed
+
+     Kept as a coarse grid per building rather than a set of room rectangles,
+     because rooms only cover about half a footprint — the corridors, lobbies
+     and the space between partitions are not rooms, and fogging only the rooms
+     would leave the gaps between them permanently visible. */
+  const FOG_CELL = 34;                 // px per cell of building memory
+  const FOG_REACH = 78;                // how far around you counts as seen
+
+  function fogFor(b) {
+    if (!b.fog) {
+      const blocks = blocksOf(b);
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const r of blocks) {
+        x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y);
+        x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h);
+      }
+      const cols = Math.max(1, Math.ceil((x1 - x0) / FOG_CELL));
+      const rows = Math.max(1, Math.ceil((y1 - y0) / FOG_CELL));
+      b.fog = { x0, y0, cols, rows, seen: new Uint8Array(cols * rows), any: false, dirty: true, tile: null };
+    }
+    return b.fog;
+  }
+
+  /* Mark what an occupant can see of the building they are standing in. */
+  function seeBuilding(b, a) {
+    const f = fogFor(b);
+    const mark = (x, y) => {
+      const cx = Math.floor((x - f.x0) / FOG_CELL), cy = Math.floor((y - f.y0) / FOG_CELL);
+      if (cx < 0 || cy < 0 || cx >= f.cols || cy >= f.rows) return;
+      const i = cy * f.cols + cx;
+      if (!f.seen[i]) { f.seen[i] = 1; f.dirty = true; }
+    };
+    /* The room you are in, all of it. Walking through a doorway should show
+       you the room, not a torchlit circle that follows you around it. */
+    for (const r of b.rooms || []) {
+      if (r.basement) continue;
+      if (a.x <= r.x || a.x >= r.x + r.w || a.y <= r.y || a.y >= r.y + r.h) continue;
+      for (let y = r.y - FOG_CELL; y <= r.y + r.h + FOG_CELL; y += FOG_CELL / 2) {
+        for (let x = r.x - FOG_CELL; x <= r.x + r.w + FOG_CELL; x += FOG_CELL / 2) mark(x, y);
+      }
+    }
+    // ...and a little around you, so corridors and the gaps between rooms clear
+    for (let y = a.y - FOG_REACH; y <= a.y + FOG_REACH; y += FOG_CELL / 2) {
+      for (let x = a.x - FOG_REACH; x <= a.x + FOG_REACH; x += FOG_CELL / 2) {
+        if (Math.hypot(x - a.x, y - a.y) <= FOG_REACH) mark(x, y);
+      }
+    }
+    f.any = true;
+  }
+
+  /* Everyone on your side explores for you — the roof already lifts for a
+     squadmate inside, so it would be odd if their half of the building stayed
+     dark to you. */
+  function updateBuildingFog() {
+    if (!player) return;
+    for (const b of buildings) {
+      if (!b.rooms || !b.rooms.length) continue;
+      if (insideBuilding(b, player)) seeBuilding(b, player);
+      for (const a of agents) {
+        if (!a.alive || a.isVehicle || a.team !== player.team || a === player) continue;
+        if (insideBuilding(b, a)) seeBuilding(b, a);
+      }
+    }
+  }
+
   function updateBuildingEffect(dt) {
     if (!player || !player.alive) { hereBuilding = null; hereEffect = null; return; }
     let found = null;
@@ -2559,11 +2638,18 @@ const Game = (() => {
     for (const a of agents) {
       if (!a.alive || a.riding) continue;      // the hull eats it, not the driver
       const d = Math.hypot(a.x - x, a.y - y);
-      if (d < radius) {
-        const dmg = baseDmg * (1 - d / radius) * (a.team === team ? 0.5 : 1);
-        // blasts always count as body hits — no lucky head/limb rolls from splash
-        if (dmg > 1) applyDamage(a, dmg, owner, type, 'body');
-      }
+      if (d >= radius) continue;
+      /* A wall between you and the blast is the entire reason to be behind it.
+
+         This checked distance and nothing else, so a grenade on one side of a
+         warehouse wall took 74 of a man's health off on the other — against 84
+         in the open, meaning the wall was worth ten points. Sight-blocking
+         walls stop it outright now; low cover does not, because a blast goes
+         over sandbags and that is what sandbags are for. */
+      if (!blastLOS(x, y, a.x, a.y)) continue;
+      const dmg = baseDmg * (1 - d / radius) * (a.team === team ? 0.5 : 1);
+      // blasts always count as body hits — no lucky head/limb rolls from splash
+      if (dmg > 1) applyDamage(a, dmg, owner, type, 'body');
     }
     // blasts tear up cover and sentries too — that's how you make an entry point
     const src = { kind: kind || (type === 'heat' ? 'heat' : 'explosive') };
@@ -3097,6 +3183,8 @@ const Game = (() => {
       const d = Math.hypot(o.x - a.x, o.y - a.y);
       if (d > reach + o.r) continue;
       if (Math.abs(angleDiff(Math.atan2(o.y - a.y, o.x - a.x), a.angle)) > 0.9) continue;
+      // ...and not through the wall between you. A machete has no penetration.
+      if (!hasLOS(a.x, a.y, o.x, o.y)) continue;
       applyDamage(o, t.melee, a);
       spawnFx(o.x, o.y, '#ffffff', 6);
       hitSomething = true;
@@ -4388,6 +4476,33 @@ const Game = (() => {
 
   /* only "high" walls block sight — you can see (and shoot) over sandbags and wire.
      Walks the line and only tests walls in the cell each sample lands in. */
+  /* Line of sight for a blast.
+
+     Same walk as hasLOS, with one exception: anything the explosion started
+     *inside* does not shield the explosion. A barrel cooking off is not
+     protected by its own drum, and a vehicle brewing up is not protected by
+     its own hull — testing plain line of sight from those centres reported no
+     line of sight to anybody, which would have made every barrel on the map
+     harmless.
+
+     The exception is deliberately limited to props and hulls. A long wall run
+     that the blast centre happens to be inside still blocks, or a charge
+     placed against a wall would blow straight through it. */
+  function blastLOS(x, y, tx, ty) {
+    const g = sightIndex();
+    if (!g.cells.size) return true;
+    const here = (gridAt(g, x, y) || []).filter(o => inRect(x, y, o) && (o.isProp || o.isVehicle));
+    const steps = 16;
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const px = x + (tx - x) * t, py = y + (ty - y) * t;
+      const arr = gridAt(g, px, py);
+      if (!arr) continue;
+      for (const o of arr) if (inRect(px, py, o) && here.indexOf(o) < 0) return false;
+    }
+    return true;
+  }
+
   function hasLOS(ax, ay, bx, by) {
     const g = sightIndex();
     if (!g.cells.size) return true;
@@ -5221,6 +5336,7 @@ const Game = (() => {
     if (rangeShot && (rangeShot.life -= dt) <= 0) rangeShot = null;
     updateSoundPings(dt);
     updateBuildingEffect(dt);
+    updateBuildingFog();
     findSecrets();
 
     // player control — frozen while the lobby is up, so nobody gets a head
@@ -6657,6 +6773,7 @@ const Game = (() => {
     ctx.globalAlpha = 1;
 
     drawBuildingShadows();   // the roofs' own shadows, under them
+    drawBuildingFog();       // the part of this building you have not been into
     perfMark('roofs', drawRoofs);   // roofs hide interiors until you step inside
     drawSmokes();   // smoke sits above units to obscure them
 
@@ -7150,6 +7267,19 @@ const Game = (() => {
   }
 
   function drawFloors() {
+    /* The doors worth drawing wear under, gathered once.
+
+       The first version of this walked every rect on the map for every
+       building on screen — five buildings against twenty-three hundred pieces,
+       every frame — and took this pass from 0.04ms to 0.38. One sweep, grouped
+       by building, costs the same as one building did. */
+    const doorsBy = new Map();
+    for (const d of structureRects()) {
+      if (!Structures.isDoor(d) || !d.building || !rectOnScreen(d)) continue;
+      let list = doorsBy.get(d.building);
+      if (!list) doorsBy.set(d.building, (list = []));
+      list.push(d);
+    }
     for (const b of buildings) {
       if (!b.floor || !rectOnScreen(b)) continue;
       const st = b.style || Structures.styleOf(b.name);
@@ -7174,13 +7304,83 @@ const Game = (() => {
         ctx.fillRect(rx, ry, rw, rh);
         drawFloorPattern({ x: rx, y: ry, w: rw, h: rh }, rs);
         drawRoomMarking(r, rx, ry, rw, rh);
-        // a firm edge, so the size and shape of the room are unambiguous
+        /* Skirting.
+
+           A room was a coloured rectangle with a hard black line round it,
+           which reads as a shape drawn on the ground rather than a floor
+           inside walls. Two lines instead of one — a shadow where the wall
+           meets the floor, and a paler board just inside it — and the corner
+           reads as a corner. It is the cheapest possible depth cue and it does
+           more for an interior than anything else at this scale. */
         ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.lineWidth = 2;
         ctx.strokeRect(rx, ry, rw, rh);
+        if (rw > 40 && rh > 40) {
+          ctx.strokeStyle = 'rgba(255,246,228,0.10)'; ctx.lineWidth = 3;
+          ctx.strokeRect(rx + 3, ry + 3, rw - 6, rh - 6);
+          ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1;
+          ctx.strokeRect(rx + 5.5, ry + 5.5, rw - 11, rh - 11);
+        }
+      }
+      /* The path people wear through a doorway. Everyone who has ever used
+         this building came through these openings, and the floor under them
+         would show it. */
+      for (const d of doorsBy.get(b.name) || []) {
+        const dcx = d.x + d.w / 2, dcy = d.y + d.h / 2;
+        const g2 = ctx.createRadialGradient(dcx, dcy, 2, dcx, dcy, 34);
+        g2.addColorStop(0, 'rgba(0,0,0,0.20)');
+        g2.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g2;
+        ctx.beginPath(); ctx.arc(dcx, dcy, 34, 0, Math.PI * 2); ctx.fill();
       }
       // the building's own accent runs round each block of the slab
       ctx.strokeStyle = hexA(st.trim, 0.55); ctx.lineWidth = 2;
       for (const blk of blocksOf(b)) ctx.strokeRect(blk.x, blk.y, blk.w, blk.h);
+    }
+  }
+
+  /* The unexplored half of the building you are standing in.
+
+     Drawn into a tiny offscreen — one pixel per cell — and scaled up with
+     smoothing on, so the boundary between what you have seen and what you have
+     not comes out as a soft gradient rather than a staircase of 34px squares.
+     That costs one small canvas and one drawImage instead of a few hundred
+     rounded rects, and looks better than either. */
+  function drawBuildingFog() {
+    if (!player) return;
+    for (const b of buildings) {
+      if (!b.fog || !b.fog.any) continue;
+      // only where the roof is off — you cannot see into a building you are
+      // not in, so there is nothing there to fog
+      if (b.roofAlpha !== undefined && b.roofAlpha > 0.5) continue;
+      if (!rectOnScreen(b)) continue;
+      const f = b.fog;
+      /* Rebuilt only when a cell actually flips. The first version repainted
+         the image every frame for every building on screen, which is a lot of
+         per-pixel work to arrive at the picture that was already there — you
+         only change this by walking somewhere new. */
+      if (f.dirty || !f.tile) {
+        if (!f.tile) {
+          f.tile = document.createElement('canvas');
+          f.tile.width = f.cols; f.tile.height = f.rows;
+        }
+        const g = f.tile.getContext('2d');
+        const img = g.createImageData(f.cols, f.rows);
+        for (let i = 0; i < f.seen.length; i++) {
+          const o = i * 4;
+          img.data[o] = 6; img.data[o + 1] = 9; img.data[o + 2] = 18;
+          img.data[o + 3] = f.seen[i] ? 0 : 214;    // seen = clear, unseen = dark
+        }
+        g.putImageData(img, 0, 0);
+        f.dirty = false;
+      }
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      // clipped to the building's own blocks, so the haze never spills outside
+      ctx.beginPath();
+      for (const r of blocksOf(b)) ctx.rect(r.x - 6, r.y - 6, r.w + 12, r.h + 12);
+      ctx.clip();
+      ctx.drawImage(f.tile, f.x0, f.y0, f.cols * FOG_CELL, f.rows * FOG_CELL);
+      ctx.restore();
     }
   }
 
@@ -7263,6 +7463,14 @@ const Game = (() => {
     // gutter shadow just inside the eaves
     ctx.strokeStyle = 'rgba(26, 22, 30, 0.16)'; ctx.lineWidth = 6;
     ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+    /* Damp along the low edge. Water runs to the bottom of a roof and sits
+       there, so the shaded side is always the dirty one — which also happens
+       to reinforce which way the light is coming from. */
+    const damp = ctx.createLinearGradient(0, b.y + b.h - 34, 0, b.y + b.h + 8);
+    damp.addColorStop(0, 'rgba(24, 30, 26, 0)');
+    damp.addColorStop(1, 'rgba(24, 30, 26, 0.20)');
+    ctx.fillStyle = damp;
+    ctx.fillRect(b.x - 8, b.y + b.h - 34, b.w + 16, 42);
     /* The eaves. Two edges face the sun and two face away, and drawing that is
        what turns a coloured rectangle into something with a thickness — the
        same trick the sprites use, at building scale. */
@@ -7287,6 +7495,18 @@ const Game = (() => {
       // each vent throws its own little shadow, down and right like everything else
       ctx.fillStyle = 'rgba(18, 15, 22, 0.20)';
       roundRect(vx - 6, vy + 7, 16, 4, 2); ctx.fill();
+      /* ...and the stain running away from it. Anything that has sat on a roof
+         venting warm air for a decade leaves a mark downwind of itself, and it
+         is the difference between a roof with objects on it and a roof that
+         has been there. */
+      const streak = ctx.createLinearGradient(vx, vy + 8, vx + 6, vy + 46);
+      streak.addColorStop(0, 'rgba(30, 26, 22, 0.24)');
+      streak.addColorStop(1, 'rgba(30, 26, 22, 0)');
+      ctx.fillStyle = streak;
+      ctx.beginPath();
+      ctx.moveTo(vx - 8, vy + 8); ctx.lineTo(vx + 10, vy + 8);
+      ctx.lineTo(vx + 14, vy + 46); ctx.lineTo(vx - 4, vy + 46);
+      ctx.closePath(); ctx.fill();
     }
     if (b.w > 340 && b.h > 260) {
       const sw = Math.min(120, b.w * 0.22), sh = Math.min(90, b.h * 0.2);
@@ -7581,7 +7801,16 @@ const Game = (() => {
        used to be projected and then clipped away, which is the same work for
        nothing. */
     const reach = Math.min(sightReach(), Math.hypot(W / zoom, H / zoom) * 0.75);
-    const blockers = nearRects(g, px, py, reach);
+    let blockers = nearRects(g, px, py, reach);
+    /* Inside a building, its own walls stop casting.
+
+       They are what carved up the room you are standing in — your own
+       doorframes and pillars throwing bars across the floor you can obviously
+       see — while leaving the room next door as bright as this one. The fog
+       above answers "what have I not been into" far better than ray casting
+       answers it, so indoors the two do not both run. Everything outside the
+       building still shadows normally. */
+    if (hereBuilding) blockers = blockers.filter(o => o.building !== hereBuilding.name);
     if (!blockers.length) return;
 
     /* Built on an offscreen layer: the shadows are unioned there first, so
@@ -7732,6 +7961,55 @@ const Game = (() => {
       if (player && player.alive && near2({ x: c.x, y: c.y }, player, 70)) {
         ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
         ctx.fillText(s.open ? '[E] Close' : '[E] Open', c.x, c.y - 18);
+      }
+      return;
+    }
+
+    /* ---- windows ----
+       A window was a translucent bar in a wall. It is a frame, a sill, the
+       glass between them and the bars that divide it — and once it has been
+       shot at, a spider of cracks. Worth the paths: there are windows on
+       nearly every elevation on the map, and they are now the thing you climb
+       through rather than scenery you shoot past. */
+    if (s.type === 'window') {
+      const len = along ? s.w : s.h, th = along ? s.h : s.w;
+      // the reveal: masonry either side of the opening
+      ctx.fillStyle = 'rgba(46,38,30,0.55)';
+      roundRect(s.x - 1, s.y - 1, s.w + 2, s.h + 2, 2); ctx.fill();
+      // the glass, tinted by whatever is behind it
+      roundRect(s.x + 1, s.y + 1, Math.max(1, s.w - 2), Math.max(1, s.h - 2), 1);
+      ctx.fillStyle = k.fill; ctx.fill();
+      // a sill along the outer face, catching the light
+      ctx.fillStyle = 'rgba(232,222,200,0.42)';
+      if (along) ctx.fillRect(s.x - 2, s.y - 2, s.w + 4, 2.5);
+      else ctx.fillRect(s.x - 2, s.y - 2, 2.5, s.h + 4);
+      // glazing bars, spaced so a wide window gets more of them
+      ctx.strokeStyle = 'rgba(226,238,255,0.55)'; ctx.lineWidth = 1.4;
+      const bars = Math.max(1, Math.round(len / 26));
+      ctx.beginPath();
+      for (let i = 1; i < bars; i++) {
+        const at = (len * i) / bars;
+        if (along) { ctx.moveTo(s.x + at, s.y + 1); ctx.lineTo(s.x + at, s.y + s.h - 1); }
+        else { ctx.moveTo(s.x + 1, s.y + at); ctx.lineTo(s.x + s.w - 1, s.y + at); }
+      }
+      ctx.stroke();
+      // ...and a highlight down the pane, so glass reads as glass
+      ctx.strokeStyle = 'rgba(255,255,255,0.30)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (along) { ctx.moveTo(s.x + 2, s.y + th * 0.32); ctx.lineTo(s.x + s.w - 2, s.y + th * 0.32); }
+      else { ctx.moveTo(s.x + th * 0.32, s.y + 2); ctx.lineTo(s.x + th * 0.32, s.y + s.h - 2); }
+      ctx.stroke();
+      if (dmg > 0.15) {
+        // cracks radiating from where it was hit
+        const cx2 = s.x + s.w / 2, cy2 = s.y + s.h / 2;
+        ctx.strokeStyle = `rgba(255,255,255,${0.35 + dmg * 0.4})`; ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const a2 = (i / 5) * Math.PI * 2 + s.x * 0.01;
+          ctx.moveTo(cx2, cy2);
+          ctx.lineTo(cx2 + Math.cos(a2) * len * 0.4, cy2 + Math.sin(a2) * th * 0.9);
+        }
+        ctx.stroke();
       }
       return;
     }
@@ -10585,6 +10863,93 @@ const Game = (() => {
     /* Why a bot did or did not go for a hull. Read-only: it asks the same
        questions updateBot asks, for every unclaimed vehicle on the map. */
     rideStat: () => Object.assign({}, rideStat),
+    /* How much of the building the player is in has been explored. */
+    fogState() {
+      const b = buildings.find(q => insideBuilding(q, player));
+      if (!b) return { inside: null };
+      const f = b.fog;
+      if (!f) return { inside: b.name, seen: 0, total: 0 };
+      let seen = 0;
+      for (let i = 0; i < f.seen.length; i++) if (f.seen[i]) seen++;
+      // which of its rooms the player has actually stood in
+      const inRoom = (b.rooms || []).find(r => !r.basement
+        && player.x > r.x && player.x < r.x + r.w && player.y > r.y && player.y < r.y + r.h);
+      return {
+        inside: b.name, seen, total: f.seen.length,
+        pct: Math.round((seen / f.seen.length) * 100),
+        room: inRoom ? inRoom.kind : null,
+        rooms: (b.rooms || []).filter(r => !r.basement).length,
+      };
+    },
+    /* Walk the player into a building and report what opens up. */
+    fogWalk(steps) {
+      const b = buildings.find(q => (q.rooms || []).length >= 4 && q.shape !== undefined || (q.rooms || []).length >= 4);
+      if (!b) return { error: 'no roomy building' };
+      const rooms = (b.rooms || []).filter(r => !r.basement && r.w > 40 && r.h > 40);
+      if (rooms.length < 2) return { error: 'not enough rooms' };
+      const out = [];
+      for (let i = 0; i < Math.min(steps || 3, rooms.length); i++) {
+        const r = rooms[i];
+        player.x = r.x + r.w / 2; player.y = r.y + r.h / 2;
+        updateBuildingFog();
+        const f = b.fog;
+        let seen = 0;
+        for (let j = 0; j < f.seen.length; j++) if (f.seen[j]) seen++;
+        out.push({ room: r.kind, pctAfter: Math.round((seen / f.seen.length) * 100) });
+      }
+      return { building: b.name, steps: out };
+    },
+    /* Can you hurt somebody through a solid wall?
+
+       Puts an enemy on the far side of a sight-blocking wall, a body's width
+       away, and tries each way of hurting them. Anything that lands is an
+       attack that ignored the wall. */
+    throughWall() {
+      const wall = obstacles.find(o => !o.dead && Structures.blocksSight(o)
+        && Math.max(o.w, o.h) > 80 && Math.min(o.w, o.h) < 40);
+      if (!wall) return { error: 'no wall' };
+      const flat = wall.w >= wall.h;
+      const cx = wall.x + wall.w / 2, cy = wall.y + wall.h / 2;
+      const off = (flat ? wall.h : wall.w) / 2 + 26;
+      const near = flat ? { x: cx, y: cy - off } : { x: cx - off, y: cy };
+      const far = flat ? { x: cx, y: cy + off } : { x: cx + off, y: cy };
+
+      const foe = agents.find(q => q.alive && !q.isVehicle && !q.isPlayer && q.team !== player.team);
+      if (!foe) return { error: 'no enemy' };
+      const put = () => {
+        player.x = near.x; player.y = near.y;
+        player.angle = Math.atan2(far.y - near.y, far.x - near.x);
+        foe.x = far.x; foe.y = far.y; foe.hp = foe.maxHp; foe.blindTimer = 0;
+      };
+      const out = { gap: Math.round(Math.hypot(far.x - near.x, far.y - near.y)), wall: wall.type };
+
+      put(); explode(player.x, player.y, 120, 200, player.team, player, 'explosive');
+      out.blastDamage = Math.round(foe.maxHp - foe.hp);
+
+      put(); swingTool(player);
+      out.meleeDamage = Math.round(foe.maxHp - foe.hp);
+
+      put(); flashDetonate(player.x, player.y, 260, 3, player.team);
+      out.blinded = +(foe.blindTimer || 0).toFixed(2);
+
+      /* The control: the same two attacks with nothing between them. Placed by
+         stepping *along* the wall rather than across it — the first version of
+         this walked the enemy 60px from the player's position beside the wall,
+         which put them straight back through it, so the control was a second
+         through-wall test and reported the fix as having broken everything. */
+      const openA = { x: near.x + (flat ? 300 : 0), y: near.y + (flat ? 0 : 300) };
+      player.x = openA.x; player.y = openA.y;
+      foe.x = openA.x + (flat ? 46 : 0); foe.y = openA.y + (flat ? 0 : 46);
+      out.openClear = !pointInObstacle(player.x, player.y) && !pointInObstacle(foe.x, foe.y);
+      foe.hp = foe.maxHp;
+      player.angle = Math.atan2(foe.y - player.y, foe.x - player.x);
+      explode(player.x, player.y, 120, 200, player.team, player, 'explosive');
+      out.blastInOpen = Math.round(foe.maxHp - foe.hp);
+      foe.hp = foe.maxHp;
+      swingTool(player);
+      out.meleeInOpen = Math.round(foe.maxHp - foe.hp);
+      return out;
+    },
     /* Put the player at a window on the outside, facing it, and report whether
        they can get through. */
     vaultProbe() {

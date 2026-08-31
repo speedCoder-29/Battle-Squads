@@ -69,17 +69,30 @@ const Structures = (() => {
   //          'reflect' — ricochets off, keeps 50% of its damage
   //          'through' — no interaction at all
   const WALL_TYPES = {
+    /* ---- structural walls stop rounds ----
+       Wood and metal were `pen` at 1.0 loss per metre. An exterior wall is
+       0.36m thick, so a rifle round arrived on the far side of a house still
+       carrying 64% of its damage; an interior partition passed 80%. Both of
+       these block sight, so the common case was being shot through a wall by
+       somebody who could not see you and was not aiming at you.
+
+       Cover you can be killed through is not cover. Penetration stays where it
+       belongs — windows, and light furniture you can see over. */
     wood: {
       name: 'Wood', height: 'high', hpPerThickness: 10, toughness: (t) => (t <= 0.2 ? 1 : t <= 0.4 ? 2 : 3),
-      bullets: 'pen', lossPerM: 1.0,            // 10% per 0.1 thickness
+      bullets: 'stop',
       fill: '#8a6d45', stroke: 'rgba(255,200,110,0.95)',
-      effect: 'Bullets lose 10% damage per 0.1 thickness',
+      effect: 'Stops rounds — shoot the wall down or go round it',
     },
     metal: {
+      /* Metal ricochets rather than merely stopping. A round that comes off a
+         steel wall at half power and a new angle is still a round that did not
+         go through the wall, and it keeps sheet steel feeling different from
+         timber. */
       name: 'Metal', height: 'high', hpPerThickness: 20, toughness: 4,
-      bullets: 'pen', lossPerM: 1.0, reflectAbove: 0.5,
+      bullets: 'reflect',
       fill: '#4a6280', stroke: 'rgba(200,220,255,0.90)',
-      effect: 'Penetrable up to 0.5 thickness, then ricochets for 50%',
+      effect: 'Rounds skip off it for 50% — nothing gets through',
     },
     door: {
       name: 'Door', height: 'high', tableHp: 30, toughness: 1, door: true,
@@ -100,7 +113,7 @@ const Structures = (() => {
        as a way into the building and not just a place to loot. */
     'garage-door': {
       name: 'Garage Door', height: 'high', tableHp: 60, toughness: 2, door: true,
-      bullets: 'pen', lossPerM: 1.6, defThickness: 0.4, defLength: 5,
+      bullets: 'stop', defThickness: 0.4, defLength: 5,
       fill: '#8a939c', stroke: 'rgba(225,238,250,0.9)',
       effect: 'Opens and closes · wide enough for a vehicle',
     },
