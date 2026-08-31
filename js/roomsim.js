@@ -1477,18 +1477,28 @@
           if (dist2(p.x, p.y, obj.x, obj.y) < obj.r * obj.r) counts[p.team] = (counts[p.team] || 0) + 1;
         }
         const present = Object.keys(counts);
+        /* Same rule as offline, and it has to be the same rule: `progress` is
+           the capture bar only. Leaving it at 100 after a capture — and only
+           decaying it on neutral points — meant a held point was permanently
+           one frame away from flipping, so objectives changed hands the
+           instant anyone walked on. Zero it on capture, bleed it down
+           whenever the team it was counting for is not alone on the point. */
         if (present.length === 1) {
           const t = +present[0];
           if (obj.owner !== t) {
-            obj.capTeam = t;
+            if (obj.capTeam !== t) { obj.capTeam = t; obj.progress = 0; }
             obj.progress += 45 * dt * counts[t];
             if (obj.progress >= 100) {
-              obj.progress = 100; obj.owner = t;
+              obj.progress = 0; obj.capTeam = -1; obj.owner = t;
               this.pushEvent({ e: 'capture', name: obj.name, team: t });
             }
+          } else {
+            obj.progress = Math.max(0, obj.progress - 30 * dt);
+            if (obj.progress === 0) obj.capTeam = -1;
           }
-        } else if (!present.length && obj.owner === -1) {
+        } else {
           obj.progress = Math.max(0, obj.progress - 20 * dt);
+          if (obj.progress === 0) obj.capTeam = -1;
         }
         if (obj.owner >= 0) this.scores[obj.owner] += 4 * dt;
       }

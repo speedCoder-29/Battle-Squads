@@ -732,6 +732,13 @@ p  { text-wrap: pretty; }
 .setting { display: flex; flex-direction: column; gap: 8px; }
 .setting > label:first-child { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; }
 .setting__val { color: var(--text); font-weight: 700; }
+/* A second line under a setting's name, for options whose effect isn't
+   obvious from four words. Sentence case, muted, never wider than the row. */
+.setting__hint {
+  display: block; margin-top: 2px; max-width: 34ch;
+  font-size: 11px; font-weight: 400; line-height: 1.35;
+  color: var(--muted); text-wrap: pretty;
+}
 .setting input[type="text"], .setting select {
   padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line-strong);
   background: rgba(0,0,0,0.3); color: var(--text); font-size: 14px;
@@ -851,8 +858,14 @@ p  { text-wrap: pretty; }
 .hud__hp-fill { height: 100%; width: 100%; background: linear-gradient(90deg, var(--green), #a6ff6a); transition: width 0.15s linear; }
 .hud__weapon { padding: 8px 14px; background: rgba(0,0,0,0.5); border: 1px solid var(--line); border-radius: 10px; font-weight: 700; }
 .hud__ammo { padding: 8px 14px; background: rgba(0,0,0,0.5); border: 1px solid var(--line); border-radius: 10px; }
-.hud__ammo b { font-size: 20px; font-weight: 900; }
+.hud__ammo b { font-size: 20px; font-weight: 900; transition: color 140ms ease; }
 .hud__ammo span { color: var(--muted); }
+/* Running dry. Amber under a quarter magazine, red at zero — the pulse is on
+   opacity and colour only, so it costs nothing and never moves the layout. */
+.hud__ammo b[data-ammo="low"]   { color: #ffb038; animation: ammo-pulse 900ms ease-in-out infinite; }
+.hud__ammo b[data-ammo="empty"] { color: #ff5a5f; animation: ammo-pulse 420ms ease-in-out infinite; }
+@keyframes ammo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .hud__ammo b[data-ammo] { animation: none; } }
 /* control legend: grouped by what you're doing, fades out once you're playing */
 .hud__hint {
   position: absolute; bottom: 22px; right: 22px;
@@ -1183,7 +1196,9 @@ p  { text-wrap: pretty; }
 /* Deliberately lighter than the four headline tiles above it: this is the
    detail behind the result, not four more results. */
 .aar {
-  display: grid; grid-template-columns: repeat(6, 1fr);
+  /* auto-fit rather than a fixed six: the report grew past one row, and a
+     hard column count either squeezes the cells or strands them. */
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 6px; margin: 16px 0 4px; padding-top: 14px;
   border-top: 1px solid var(--line);
 }

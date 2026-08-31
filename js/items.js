@@ -60,20 +60,30 @@ const Items = (() => {
       { id: 'ammo',           w: 25, label: 'Ammo' },
       { id: 'armorT1',        w: 15, label: 'Armor T1' },
     ],
+    /* Silver is the middle of the ladder: better armour and the useful
+       consumables, and the transport moves up to gold where it belongs — a
+       jeep out of a common box was the single most valuable thing on the map
+       arriving from the second-cheapest source. */
     silver: [
-      { id: 'soda',           w: 15, label: 'Soda' },
-      { id: 'stim',           w: 10, label: 'Stim Injection' },
-      { id: 'classConsumable',w: 15, label: 'Class Consumable' },
-      { id: 'jeep',           w: 25, label: 'Armored Jeep' },
-      { id: 'flag',           w: 15, label: 'Cool Flag' },
-      { id: 'armorT2',        w: 20, label: 'Armor T2' },
+      { id: 'soda',           w: 14, label: 'Soda' },
+      { id: 'stim',           w: 14, label: 'Stim Injection' },
+      { id: 'medkit',         w: 10, label: 'Medkit' },
+      { id: 'classConsumable',w: 18, label: 'Class Consumable' },
+      { id: 'flag',           w: 8,  label: 'Cool Flag' },
+      { id: 'armorT2',        w: 28, label: 'Armor T2' },
+      { id: 'jeep',           w: 8,  label: 'Armored Jeep' },
     ],
+    /* Gold is the top of the ladder a box can reach. A legendary is still the
+       headline, but it is now one outcome in four of a crate that is itself
+       one in twenty-five — so finding one is an event rather than a fact of
+       the map. */
     gold: [
-      { id: 'stim',           w: 15, label: 'Stim Injection' },
-      { id: 'tank',           w: 15, label: 'Tank' },
-      { id: 'jeep',           w: 20, label: 'Armored Jeep' },
-      { id: 'legendary',      w: 30, label: 'Legendary Weapon' },
-      { id: 'armorT3',        w: 20, label: 'Armor T3' },
+      { id: 'legendary',      w: 25, label: 'Legendary Weapon' },
+      { id: 'armorT3',        w: 26, label: 'Armor T3' },
+      { id: 'jeep',           w: 18, label: 'Armored Jeep' },
+      { id: 'tank',           w: 13, label: 'Tank' },
+      { id: 'medkit',         w: 10, label: 'Medkit' },
+      { id: 'stim',           w: 8,  label: 'Stim Injection' },
     ],
     /* A chest is the thing at the end of the tunnel. It pays out three times
        rather than once (see CRATE_PAYOUT), so it is worth the walk down and
@@ -126,8 +136,19 @@ const Items = (() => {
       { id: 'sentry',         w: 10, label: 'Sentry Gun' },
     ],
   };
-  // how often each crate tier appears on the map
-  const CRATE_RARITY = [ { tier: 'regular', w: 60 }, { tier: 'silver', w: 30 }, { tier: 'gold', w: 10 } ];
+  /* ---------- how often each tier appears ----------
+     Was 60/30/10, and a gold crate carried a legendary a third of the time —
+     so three per cent of every box on the map was a gold gun, and a map holds
+     about a thousand boxes. Thirty-two legendaries for sixteen players is two
+     each: at that supply the "legendary" is the baseline and every stock
+     weapon is a strictly worse version of what everybody is already carrying.
+
+     Gold is now genuinely uncommon, and the legendary inside it is the
+     uncommon outcome of an uncommon box. The guaranteed sources — a chest at
+     the end of a tunnel, a supply drop the whole map was told about — are
+     unchanged, because those are places you fight over rather than boxes you
+     walk past. */
+  const CRATE_RARITY = [ { tier: 'regular', w: 72 }, { tier: 'silver', w: 24 }, { tier: 'gold', w: 4 } ];
   /* ---------- the supply drop ----------
      What a plane puts on the map halfway through a match. Richer than a chest
      — this is the best loot in the game — but there is only ever one of it,
@@ -189,18 +210,46 @@ const Items = (() => {
 
   /* ---------- LEGENDARY WEAPONS ---------- */
   // additive stat deltas by weapon type (from the design table; blanks = mild generic buff)
+  /* ---------- what "gold" means ----------
+     It used to mean something different in every hand. Measured against the
+     base weapon of each class, the old table gave a sniper +4% damage and an
+     SMG +40% — so a gold SMG collapsed its time-to-kill from fourteen rounds
+     to ten while a gold sniper was a rounding error, and whether the best gun
+     in the game was worth picking up depended entirely on which class it was.
+
+     The rework holds two lines:
+
+       • DAMAGE MOVES A LITTLE, THE SAME LITTLE. Roughly a tenth, across the
+         board, and never enough to cross a shots-to-kill breakpoint on its
+         own. A legendary should win a fight it was going to win anyway, not
+         change the arithmetic of the fight.
+
+       • THE REST OF THE UPLIFT IS FEEL. Magazine, reload, recoil, handling,
+         falloff — the things that make a weapon pleasant to hold rather than
+         mathematically superior. That is what makes gold worth carrying
+         without making stock weapons worthless.
+
+     Snipers and launchers get almost no damage at all, because both already
+     kill in one and more damage buys them literally nothing. */
   const LEGENDARY_MODS = {
-    'Assault Rifle': { dDamage: 5, dFirerate: 1, dMag: 5, dReloadS: -0.3, dAcc: -0.4, dRec: -0.05, dHandS: -0.06, dWeight: -2, dFalloffPct: -1 },
-    'Burst Rifle':   { dDamage: 3, dMag: 6, dReloadS: -0.2, dAcc: -0.4, dRec: -0.05, dHandS: -0.04, dWeight: -2, dFalloffPct: -1, dBurstDelayS: -0.03 },
-    'LMG':           { dDamage: 3, dFirerate: 2, dMag: 15, dReloadS: -1.5, dAcc: -1, dRec: -0.02, dHandS: -0.1, dWeight: -3, dFalloffPct: -1 },
-    'SMG':           { dDamage: 3, dFirerate: 2, dAcc: -0.4, dRec: -0.04, dMag: 6 },
-    'Shotgun':       { dDamage: 2, dMag: 3, dReloadS: -0.3, dAcc: -0.5, dRec: -0.07, actionOverride: 'semi' }, // +2 per pellet
-    'Sniper Rifle':  { dDamage: 4, dFirerate: -1, dMag: 5, dAcc: -0.3 },
-    // undecided in the doc → a modest across-the-board bump so gold still feels special
-    'DMR':           { dDamage: 6, dAcc: -0.3, dRec: -0.1, dMag: 4 },
-    'Pistol':        { dDamage: 6, dFirerate: 1, dMag: 3, dAcc: -0.3 },
-    'Carbine':       { dDamage: 4, dFirerate: 1, dMag: 5, dAcc: -0.3, dRec: -0.03 },
-    'Launcher':      { dDamage: 15, dReloadS: -0.4 },
+    'Assault Rifle': { dDamage: 1, dFirerate: 1, dMag: 10, dReloadS: -0.5, dAcc: -0.5, dRec: -0.06, dHandS: -0.06, dWeight: -3, dFalloffPct: -2 },
+    'Burst Rifle':   { dDamage: 2, dMag: 10, dReloadS: -0.4, dAcc: -0.5, dRec: -0.06, dHandS: -0.05, dWeight: -3, dFalloffPct: -2, dBurstDelayS: -0.04 },
+    /* No damage on these two. Their per-round figures are small enough that a
+       single point is a 7-13% jump, which is exactly the size that walks a
+       shots-to-kill count down a step — so their uplift goes into rate, which
+       shortens the kill continuously instead of in a jump. */
+    'LMG':           { dFirerate: 3, dMag: 50, dReloadS: -1.8, dAcc: -1, dRec: -0.04, dHandS: -0.1, dWeight: -4, dFalloffPct: -2 },
+    'SMG':           { dFirerate: 3, dMag: 12, dReloadS: -0.4, dAcc: -0.5, dRec: -0.05, dWeight: -2 },
+    // no extra pellet damage: a shotgun already one-shots at contact, so the
+    // gold version gets the semi-auto action and the reload instead
+    'Shotgun':       { dMag: 4, dReloadS: -0.5, dAcc: -0.6, dRec: -0.08, actionOverride: 'semi' },
+    // it already kills in one — what it wants is more of them, faster
+    'Sniper Rifle':  { dMag: 6, dFirerate: 1, dReloadS: -0.8, dAcc: -0.4, dRec: -0.05, dHandS: -0.08 },
+    'DMR':           { dDamage: 2, dFirerate: 1, dAcc: -0.4, dRec: -0.12, dMag: 8, dReloadS: -0.4 },
+    'Pistol':        { dDamage: 3, dFirerate: 2, dMag: 6, dReloadS: -0.3, dAcc: -0.4 },
+    'Carbine':       { dDamage: 1, dFirerate: 1, dMag: 10, dReloadS: -0.5, dAcc: -0.4, dRec: -0.04, dWeight: -2 },
+    // one in the tube either way; what changes is how fast the next one is
+    'Launcher':      { dReloadS: -0.9, dAcc: -0.4, dHandS: -0.1 },
   };
 
   /* best weapon of a class = highest raw per-trigger damage in that class */

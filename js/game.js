@@ -78,6 +78,7 @@ const Game = (() => {
       crosshairSize: +s.crosshairSize || 10,
       crosshairColor: s.crosshairColor || '#7ff2c1',
       fov: +s.fov || 100,
+      flat: s.flatWorld === true,      // opt out of the standing-up world
     };
     // two crosshairs on screen is worse than either one alone
     if (canvas) canvas.style.cursor = view.crosshair === 'system' ? 'crosshair' : 'none';
@@ -169,7 +170,7 @@ const Game = (() => {
   let debugZoom = 0;      // non-zero pins the camera scale; see Game.debug.wideView
   let teamScores = [];
   let player = null;
-  let matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0 };
+  let matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0, shots: 0, hits: 0, heads: 0, assists: 0 };
   /* ---- what the last death is owed an explanation for ----
      Call of Duty's death recap, and for the same reason: dying with no idea
      what happened teaches you nothing. Filled in at the moment of death from
@@ -2271,7 +2272,7 @@ const Game = (() => {
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
     camTarget = player; camWasDead = false; camSnap = true;
-    matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0 };
+    matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0, shots: 0, hits: 0, heads: 0, assists: 0 };
     paused = false; running = true;
 
     document.getElementById('hud-gamemode').textContent =
@@ -2419,6 +2420,10 @@ const Game = (() => {
          and the click is swallowed so you do not put a round into the wall
          behind them. */
       if (e.button === 0 && itemPanelClick(input.mx, input.my)) { e.preventDefault(); return; }
+      /* Pinging used to reach only as far as you could see. Clicking the
+         minimap puts a mark anywhere on the map, which is the difference
+         between "enemy here" and "the whole squad is going to B". */
+      if (e.button === 0 && minimapPing(input.mx, input.my)) { e.preventDefault(); return; }
       if (e.button === 0) { input.shooting = true; input.fireEdge = true; }   // left = fire
       if (e.button === 1) { quickMark(); e.preventDefault(); }                // middle = quick ping
       if (e.button === 2) input.ads = true;                                    // right = aim
@@ -2556,7 +2561,11 @@ const Game = (() => {
     // a suppressor really does keep you quiet: bots only "hear" loud shots
     if ((!w.audio || w.audio > 0.5) && !Perks.mod(a, 'silent', false)) alertNearbyBots(a);
     logGunshot(a);
-    if (isYours(a)) { SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud(); }
+    if (isYours(a)) {
+      SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud();
+      // one trigger pull is one shot, whether it threw one round or nine pellets
+      if (!a.isDummy) matchStats.shots++;
+    }
   }
 
   /* Gunfire is a giveaway: bots within earshot of an unsuppressed shot look
@@ -2696,6 +2705,8 @@ const Game = (() => {
       victim: nameOf(victim, '?'),
       victimTeam: victim ? victim.team : -1,
       headshot: zone === 'head', mine, victimIsMe, t: KILL_FEED_LIFE,
+      // what did it — the feed was telling you who died but never how
+      weapon: (killer && killer.weapon && killer.weapon.name) || (zone === 'blast' ? 'Explosive' : ''),
     });
     if (killFeed.length > KILL_FEED_MAX) killFeed.length = KILL_FEED_MAX;
 
@@ -2717,6 +2728,23 @@ const Game = (() => {
         sub: zone === 'head' ? 'HEADSHOT' : '', good: false, t: 2.2,
       };
     }
+  }
+
+  /* A click inside the minimap is a ping at that place in the world, not a
+     shot at the wall behind it. Returns whether the click was consumed. */
+  function minimapPing(mx, my) {
+    if (!miniBox) return false;
+    const b = miniBox;
+    if (mx < b.x || mx > b.x + b.w || my < b.y || my > b.y + b.h) return false;
+    const wx = ((mx - b.x) / b.w) * MAP_W, wy = ((my - b.y) / b.h) * MAP_H;
+    // an objective near the click is what you meant, not the grass beside it
+    let kind = 'going', best = Infinity;
+    for (const o of objectives) {
+      const d = Math.hypot(o.x - wx, o.y - wy);
+      if (d < best && d < 320) { best = d; kind = o.owner === player.team ? 'defend' : 'attack'; }
+    }
+    sendMark(wx, wy, kind);
+    return true;
   }
 
   function updateKillFeed(dt) {
@@ -4921,7 +4949,12 @@ const Game = (() => {
       if (!a.aiTargetPt || a.aiRepath <= 0) {
         let bestObj = null, bo = Infinity;
         for (const obj of objectives) {
-          if (obj.owner === a.team && obj.progress >= 100) continue;
+          /* Skip points we already hold — unless somebody is taking one off
+             us, which is the one time a held point is the urgent one. (This
+             used to read `progress >= 100`, which was true of every held
+             point; now that progress means only "a capture is in flight" it
+             says what it always meant to.) */
+          if (obj.owner === a.team && !(obj.progress > 0 && obj.capTeam >= 0)) continue;
           const dd = dist2(a.x, a.y, obj.x, obj.y);
           if (dd < bo) { bo = dd; bestObj = obj; }
         }
@@ -5937,6 +5970,17 @@ const Game = (() => {
     }
     a.hp -= dmg;
     if (owner) a.lastHitBy = owner;      // credited if a last stand runs out
+    if (owner && owner.isPlayer && a !== owner) {
+      matchStats.hits++;
+      if (hit.zone === 'head') matchStats.heads++;
+    }
+    /* Everyone who put damage into this body in the last few seconds. An
+       assist is the difference between "I did nothing" and "I did everything
+       except land the last round", and the game was crediting neither. */
+    if (owner && owner !== a) {
+      if (!a.hurtBy) a.hurtBy = new Map();
+      a.hurtBy.set(owner, performance.now());
+    }
     /* Anyone can be shot at; only what happens to *you* needs explaining
        afterwards. Every hit the player takes goes into a short rolling log,
        which is what the death recap is assembled from. `hurtT` is a separate
@@ -5983,6 +6027,26 @@ const Game = (() => {
      bleeding out on the floor goes through exactly the same path — the score,
      the kill feed and the respawn clock should not depend on whether the last
      point of damage or the bleed timer was what finished it. */
+  /* You took someone to a sliver and a squadmate walked in and finished them.
+     Under the old scoring that was worth exactly nothing, which is why nobody
+     ever shot at a target they could not personally close out. An assist is
+     any damage inside ASSIST_WINDOW seconds that wasn't the killing blow. */
+  const ASSIST_WINDOW = 6;
+  function creditAssists(victim, killer) {
+    if (!victim.hurtBy) return;
+    const cut = performance.now() - ASSIST_WINDOW * 1000;
+    for (const [who, when] of victim.hurtBy) {
+      if (when < cut || who === killer || !who.alive) continue;
+      if (who.team === victim.team) continue;          // friendly fire isn't help
+      who.assists = (who.assists || 0) + 1;
+      if (who.isPlayer) {
+        matchStats.assists++;
+        hudMsg('+ assist on ' + nameOf(victim, 'them'));
+      }
+    }
+    victim.hurtBy.clear();
+  }
+
   function killAgent(a, owner, zone) {
     if (!a.alive) return;
     a.hp = 0; a.alive = false;
@@ -5991,6 +6055,7 @@ const Game = (() => {
     a.standT = 0;
     spawnFx(a.x, a.y, teamInk(a.team), 14);
     if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
+    creditAssists(a, owner);
     pushKill(owner, a, zone);
     if (a.isPlayer) {
       matchStats.deaths++;
@@ -6185,23 +6250,37 @@ const Game = (() => {
         if (dist2(a.x, a.y, obj.x, obj.y) < obj.r * obj.r) { counts[a.team] = (counts[a.team] || 0) + 1; }
       }
       const teamsPresent = Object.keys(counts);
+      /* `progress` is the capture bar and nothing else.
+         It used to be left sitting at 100 after a capture, and the decay only
+         ran on neutral points — so a held point stayed pinned at 100 forever,
+         and the moment an enemy stepped on it the very next frame pushed it
+         over the line again. Objectives flipped instantly and the whole
+         contest was decided by who walked in last.
+         Now it is zeroed on capture, and it decays whenever the team it was
+         counting for is no longer the only team standing there. */
       if (teamsPresent.length === 1) {
         const t = +teamsPresent[0];
         if (obj.owner !== t) {
-          // capture toward team t
-          if (obj.capTeam !== t) { obj.capTeam = t; }
+          // somebody else's push does not carry over into yours
+          if (obj.capTeam !== t) { obj.capTeam = t; obj.progress = 0; }
           obj.progress += 45 * dt * counts[t];
           if (obj.progress >= 100) {
-            obj.progress = 100; const prev = obj.owner; obj.owner = t;
+            obj.progress = 0; obj.capTeam = -1; obj.owner = t;
             // player capture credit
             const playerNear = dist2(player.x, player.y, obj.x, obj.y) < obj.r * obj.r;
             if (t === 0 && playerNear) { matchStats.captures++; }
             if (t === 0) SFX.capture();
             Toast.show(`${TEAM_NAMES[t]} captured objective ${obj.name}`);
           }
+        } else {
+          // your own point, and you are on it: whatever was building, isn't
+          obj.progress = Math.max(0, obj.progress - 30 * dt);
+          if (obj.progress === 0) obj.capTeam = -1;
         }
-      } else if (teamsPresent.length === 0 && obj.owner === -1) {
+      } else {
+        // contested, or abandoned — either way the bar bleeds back down
         obj.progress = Math.max(0, obj.progress - 20 * dt);
+        if (obj.progress === 0) obj.capTeam = -1;
       }
       // owned objectives generate score
       if (obj.owner >= 0) teamScores[obj.owner] += 4 * dt;
@@ -6317,6 +6396,8 @@ const Game = (() => {
       kills: matchStats.kills, deaths: matchStats.deaths,
       streak: matchStats.bestStreak, captures: matchStats.captures,
       revives: matchStats.revives, resupplies: matchStats.resupplies,
+      shots: matchStats.shots, hits: matchStats.hits,
+      heads: matchStats.heads, assists: matchStats.assists,
     };
     if (!Array.isArray(profile.history)) profile.history = [];
     profile.history.unshift(entry);
@@ -6339,8 +6420,15 @@ const Game = (() => {
       + cell('Deaths', e.deaths, false)
       + cell('K/D', kd, false)
       + cell('Best streak', e.streak, b.streak)
+      + cell('Assists', e.assists || 0, false)
       + cell('Captures', e.captures, false)
-      + cell('Squad assists', e.revives + e.resupplies, false);
+      /* Accuracy is the one number that tells you whether the match went the
+         way it did because of your aim or in spite of it, and the game was
+         quietly throwing it away every round. Old entries have no shot count,
+         so they read as a dash rather than as 0%. */
+      + cell('Accuracy', e.shots ? Math.round((e.hits / e.shots) * 100) + '%' : '—', false)
+      + cell('Headshots', e.heads || 0, false)
+      + cell('Squad support', e.revives + e.resupplies, false);
   }
 
   function endMatch(won, roster) {
@@ -6454,8 +6542,16 @@ const Game = (() => {
     const s = hudSubject();
     const name = s.isVehicle ? `${vehicleDef(s).icon} ${s.weapon.name}` : s.weapon.name;
     document.getElementById('hud-weapon').textContent = name;
-    document.getElementById('hud-ammo').textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
+    const ammoEl = document.getElementById('hud-ammo');
+    ammoEl.textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
     document.getElementById('hud-ammomax').textContent = '/' + s.weapon.mag;
+    /* Running dry mid-fight is the most common avoidable death in the game and
+       nothing told you it was coming — the count was the same colour at 30 as
+       at 2. Under a quarter of a magazine the readout goes amber and pulses;
+       empty, it goes red. Reloading is exempt: it is already being fixed. */
+    const frac = s.weapon.mag > 0 ? s.ammo / s.weapon.mag : 1;
+    const state = s.reloadTimer > 0 ? '' : s.ammo === 0 ? 'empty' : frac <= 0.25 ? 'low' : '';
+    if (ammoEl.dataset.ammo !== state) ammoEl.dataset.ammo = state;
   }
 
   /* ---------------- hosted-match chip ----------------
@@ -6552,8 +6648,10 @@ const Game = (() => {
       ctx.beginPath(); ctx.arc(obj.x, obj.y, obj.r, 0, Math.PI * 2);
       ctx.fillStyle = hexA(col, 0.10); ctx.fill();
       ctx.lineWidth = 3; ctx.strokeStyle = hexA(col, 0.5); ctx.stroke();
-      // capture ring
-      if (obj.owner === -1 && obj.progress > 0) {
+      /* The ring used to be drawn only on a neutral point, so taking a point
+         off an enemy — the thing the whole mode is about — gave no feedback
+         at all until it flipped. Any progress draws. */
+      if (obj.progress > 0) {
         ctx.beginPath();
         ctx.arc(obj.x, obj.y, obj.r - 6, -Math.PI / 2, -Math.PI / 2 + (obj.progress / 100) * Math.PI * 2);
         ctx.lineWidth = 6; ctx.strokeStyle = obj.capTeam >= 0 ? TEAM_COLORS[obj.capTeam] : '#fff'; ctx.stroke();
@@ -6807,6 +6905,7 @@ const Game = (() => {
 
     drawTacticalHud();
     drawSoundPings();
+    drawCaptureBar();       // standing on a point: how it is going, and who with
     drawMinimap();
     drawCompass();          // which way to turn, as opposed to where things are
     drawEdgeIndicators();   // squad and objectives that are off the screen
@@ -7077,6 +7176,88 @@ const Game = (() => {
     s.x + s.w >= viewX0 && s.x <= viewX1 && s.y + s.h >= viewY0 && s.y <= viewY1;
 
   /* offset silhouettes of every solid wall, drawn before the walls themselves */
+  /* ================= height =================
+     The world is drawn from above, and until now everything in it was flat:
+     a wall was a rectangle the same as a painted line was a rectangle, and the
+     only cues that one of them was six feet tall were its shadow and the fact
+     that you could not walk through it.
+
+     This gives every solid thing a body. The trick is the standard one for
+     top-down games and it is genuinely a projection, not a texture: the camera
+     sits above the middle of the screen, so the *top* of a tall object is
+     displaced away from that point in proportion to its height. Things near
+     the centre stand straight up; things at the edge lean outward, and you see
+     the side of them that faces away from the middle.
+
+     Two rules keep it honest:
+
+       • THE FOOTPRINT DOES NOT MOVE. Collision, aiming, shadows and the fog
+         all still work off the rect on the ground. Only the drawing is lifted,
+         which is why nothing else in the game had to change.
+
+       • MODEST HEIGHTS. A wall stands 26px, not 80. Draw order in this
+         renderer is by category rather than by depth, so a tall enough object
+         could overlap something it should be behind; keeping the lift small
+         keeps that below the threshold where anyone would notice.
+
+     Off by default is wrong — it is better with it on — but it is a setting,
+     because it is a taste question and because a flat map is easier to read
+     for some people. */
+  const HEIGHT_OF = { high: 26, low: 9, under: 0 };
+  /* Anything you can walk through has no body to draw — a bush, a tent flap, a
+     traffic cone. Extruding those turned them into large solid-looking slabs
+     that read as cover they are not. */
+  const heightOf = (k) => (view.flat || k.passable ? 0 : (HEIGHT_OF[k.height] || 0));
+
+  /* Where the top of something `h` tall above (x, y) lands on screen. */
+  function lift(x, y, h) {
+    if (!h) return { x, y };
+    const cx = camX + (W / zoom) / 2, cy = camY + (H / zoom) / 2;
+    /* The lean is capped as well as scaled. At h/260 a wall near the edge of a
+       wide screen displaced sixty pixels, which stopped reading as height and
+       started reading as the wall being somewhere else — and at that size the
+       lack of depth sorting becomes visible. Gentler, and clamped. */
+    const k = h / 620;
+    const dx = clamp((x - cx) * k, -h * 1.1, h * 1.1);
+    const dy = clamp((y - cy) * k, -h * 1.1, h * 1.1);
+    return { x: x + dx, y: y + dy - h * 0.62 };
+  }
+
+  /* A box standing on the rect `s`, `h` tall: the two faces you can see from
+     here, then the cap on top. */
+  function drawRaisedBox(s, h, fill, stroke, rad) {
+    const a = lift(s.x, s.y, h), b = lift(s.x + s.w, s.y, h);
+    const c = lift(s.x + s.w, s.y + s.h, h), d = lift(s.x, s.y + s.h, h);
+    const corners = [
+      [{ x: s.x, y: s.y }, { x: s.x + s.w, y: s.y }, b, a],                 // north face
+      [{ x: s.x + s.w, y: s.y }, { x: s.x + s.w, y: s.y + s.h }, c, b],     // east
+      [{ x: s.x + s.w, y: s.y + s.h }, { x: s.x, y: s.y + s.h }, d, c],     // south
+      [{ x: s.x, y: s.y + s.h }, { x: s.x, y: s.y }, a, d],                 // west
+    ];
+    /* Faces pointing away from the camera are the ones you can see the side
+       of. Shade them by which way they look, so the light stays where the rest
+       of the art puts it — up and to the left. */
+    const shades = ['rgba(255,246,228,0.10)', 'rgba(10,14,24,0.34)',
+      'rgba(10,14,24,0.46)', 'rgba(10,14,24,0.22)'];
+    for (let i = 0; i < 4; i++) {
+      const q = corners[i];
+      ctx.beginPath();
+      ctx.moveTo(q[0].x, q[0].y); ctx.lineTo(q[1].x, q[1].y);
+      ctx.lineTo(q[2].x, q[2].y); ctx.lineTo(q[3].x, q[3].y);
+      ctx.closePath();
+      ctx.fillStyle = fill; ctx.fill();
+      ctx.fillStyle = shades[i]; ctx.fill();
+    }
+    // the cap, which is the face the old flat renderer was drawing all along
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y);
+    ctx.closePath();
+    ctx.fillStyle = fill; ctx.fill();
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
+    return { a, b, c, d };
+  }
+
   function drawStructureShadows() {
     ctx.fillStyle = SHADOW;
     for (const s of structureRects()) {
@@ -7884,10 +8065,32 @@ const Game = (() => {
     if (s.isProp) {
       const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
       const hurt = s.maxHp ? clamp(1 - s.hp / s.maxHp, 0, 1) : 0;
-      ctx.save();
-      if (hurt > 0.02) ctx.globalAlpha = 1 - hurt * 0.35;
-      Sprites.draw(ctx, k.prop, cx, cy, (s.scale || 1) * (1 - hurt * 0.12), s.rot * 0.25);
-      ctx.restore();
+      /* A prop is its sprite raised onto a short body. The sprite is the top of
+         the thing — a crate seen from above — so what was missing was the
+         couple of feet of crate underneath it. */
+      const ph = heightOf(k);
+      if (ph > 0) {
+        const top = lift(cx, cy, ph);
+        ctx.save();
+        // a narrow column, not a slab: enough to read as "this thing has a
+        // side" without inventing a footprint it does not have
+        const half = Math.min(s.w, s.h) * 0.34;
+        ctx.fillStyle = hexA(k.stroke || '#2a2f3a', 0.62);
+        ctx.beginPath();
+        ctx.moveTo(cx - half, cy); ctx.lineTo(cx + half, cy);
+        ctx.lineTo(top.x + half, top.y); ctx.lineTo(top.x - half, top.y);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+        ctx.save();
+        if (hurt > 0.02) ctx.globalAlpha = 1 - hurt * 0.35;
+        Sprites.draw(ctx, k.prop, top.x, top.y, (s.scale || 1) * (1 - hurt * 0.12), s.rot * 0.25);
+        ctx.restore();
+      } else {
+        ctx.save();
+        if (hurt > 0.02) ctx.globalAlpha = 1 - hurt * 0.35;
+        Sprites.draw(ctx, k.prop, cx, cy, (s.scale || 1) * (1 - hurt * 0.12), s.rot * 0.25);
+        ctx.restore();
+      }
       if (hurt > 0.35) {                       // cracks show before it goes
         ctx.strokeStyle = `rgba(255,90,70,${hurt * 0.7})`;
         ctx.lineWidth = 2;
@@ -8014,8 +8217,20 @@ const Game = (() => {
       return;
     }
 
+    const hgt = heightOf(k);
+    if (hgt > 0) {
+      /* Standing up. The cap is where the old flat drawing went, so everything
+         below — the grain, the damage bleed, the inner line — is drawn onto it
+         through the same transform rather than being reimplemented. */
+      drawRaisedBox(s, hgt, k.fill, k.stroke);
+      const top = lift(s.x, s.y, hgt);
+      ctx.save();
+      ctx.translate(top.x - s.x, top.y - s.y);
+      const grew = 1 + hgt / 260;
+      ctx.translate(s.x, s.y); ctx.scale(grew, grew); ctx.translate(-s.x, -s.y);
+    }
     roundRect(s.x, s.y, s.w, s.h, k.height === 'low' ? 3 : 5);
-    ctx.fillStyle = k.fill; ctx.fill();
+    if (!hgt) { ctx.fillStyle = k.fill; ctx.fill(); }
     ctx.lineWidth = k.height === 'low' ? 1.5 : 2;
     ctx.strokeStyle = k.stroke; ctx.stroke();
     // reinforced/metal get a bright inner line so ricochet walls are readable
@@ -8029,6 +8244,7 @@ const Game = (() => {
       if (along) ctx.fillRect(s.x + 1, s.y + 1, (s.w - 2) * dmg, Math.max(2, s.h - 2));
       else ctx.fillRect(s.x + 1, s.y + 1, Math.max(2, s.w - 2), (s.h - 2) * dmg);
     }
+    if (hgt > 0) ctx.restore();
   }
 
   /* ---- what a wall is made of ----
@@ -8779,6 +8995,34 @@ const Game = (() => {
     roundRect(x, y, w, h, 12); ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1.5; ctx.stroke();
 
+    /* The rest of the squad, in a strip above the panel.
+       Cycling blind through teammates one at a time to find one who is both
+       alive and not under fire is the worst part of being dead. This shows all
+       of them at once — health, who you are watching, and who is a legal
+       deploy — so the next press of [D] is an informed one. */
+    if (list.length) {
+      const cw = 74, gap = 6, tot = list.length * cw + (list.length - 1) * gap;
+      let cx0 = (W - tot) / 2, cy0 = y - 40;
+      for (const m of list) {
+        const on = m === t;
+        ctx.fillStyle = on ? 'rgba(255,207,74,0.16)' : 'rgba(10,14,24,0.72)';
+        roundRect(cx0, cy0, cw, 30, 7); ctx.fill();
+        ctx.strokeStyle = on ? 'rgba(255,207,74,0.8)'
+          : deployTargetOk(m) ? 'rgba(127,242,193,0.45)' : 'rgba(255,255,255,0.10)';
+        ctx.lineWidth = 1.2; ctx.stroke();
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = on ? '#fff' : 'rgba(220,230,248,0.8)';
+        ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif';
+        const nm = nameOf(m, '—');
+        ctx.fillText(nm.length > 9 ? nm.slice(0, 8) + '…' : nm, cx0 + 7, cy0 + 11);
+        const f = clamp(m.hp / m.maxHp, 0, 1);
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(cx0 + 7, cy0 + 20, cw - 14, 4);
+        ctx.fillStyle = f > 0.35 ? '#4be08a' : '#ff4b5c';
+        ctx.fillRect(cx0 + 7, cy0 + 20, (cw - 14) * f, 4);
+        cx0 += cw + gap;
+      }
+    }
+
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     if (t) {
       // who, in their own colour
@@ -8979,7 +9223,15 @@ const Game = (() => {
       const wk = ctx.measureText(killer).width;
       const wv = ctx.measureText(victim).width;
       const wa = ctx.measureText(arrow).width;
-      const boxW = wk + wa + wv + 20;
+      /* The weapon, set smaller and dimmer after the victim. Knowing that the
+         player who just took your squadmate did it with a Barrett from across
+         the map is different information from knowing they did it with a
+         shotgun, and it should not need a killcam to find out. */
+      const gun = k.weapon || '';
+      ctx.font = '11px Azeret Mono, ui-monospace, monospace';
+      const wg = gun ? ctx.measureText(gun).width + 8 : 0;
+      ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
+      const boxW = wk + wa + wv + wg + 20;
       const x0 = left;
 
       // rows you're in are called out; everything else is quiet background
@@ -9001,7 +9253,13 @@ const Game = (() => {
       ctx.fillStyle = k.headshot ? '#ffcf4a' : 'rgba(207,216,238,0.9)';
       ctx.fillText(arrow, x, y); x += wa;
       ctx.fillStyle = k.victimIsMe ? '#fff' : teamInk(k.victimTeam);
-      ctx.fillText(victim, x, y);
+      ctx.fillText(victim, x, y); x += wv;
+      if (gun) {
+        ctx.font = '11px Azeret Mono, ui-monospace, monospace';
+        ctx.fillStyle = 'rgba(207,216,238,0.55)';
+        ctx.fillText(gun, x + 8, y + 0.5);
+        ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
+      }
 
       y += rowH + 4;
     }
@@ -9390,10 +9648,66 @@ const Game = (() => {
     ctx.restore();
   }
 
+  /* ---------------- capture bar ----------------
+     Standing on a contested point, the only feedback was a ring on the ground
+     under your own feet — which you cannot see while you are looking at the
+     people shooting at you. This is the same information at eye level: whose
+     point it is, how far the bar has moved, and whether it is moving at all.
+     Contested points say so, because "nothing is happening" and "you are
+     winning slowly" look identical otherwise. */
+  function drawCaptureBar() {
+    if (!player || !player.alive || mode !== 'domination') return;
+    let here = null;
+    for (const o of objectives) {
+      if (dist2(player.x, player.y, o.x, o.y) < o.r * o.r) { here = o; break; }
+    }
+    if (!here) return;
+
+    // is anyone else on it, and are they with us?
+    let mine = 0, theirs = 0;
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle) continue;
+      if (dist2(a.x, a.y, here.x, here.y) >= here.r * here.r) continue;
+      if (a.team === player.team) mine++; else theirs++;
+    }
+    const contested = mine > 0 && theirs > 0;
+    const held = here.owner === player.team && !here.progress;
+
+    const w = 230, h = 8, x = (W - w) / 2, y = 92;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
+    ctx.fillStyle = contested ? '#ff9f43' : held ? 'rgba(127,242,193,0.9)' : '#e9f0ff';
+    ctx.fillText(
+      contested ? 'CONTESTED — ' + here.name
+        : held ? 'HOLDING ' + here.name
+          : (here.capTeam === player.team ? 'CAPTURING ' : 'LOSING ') + here.name,
+      W / 2, y - 12);
+
+    if (!held) {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, w, h, 4); ctx.fill();
+      const frac = clamp(here.progress / 100, 0, 1);
+      ctx.fillStyle = contested ? '#ff9f43'
+        : here.capTeam >= 0 ? TEAM_COLORS[here.capTeam] : '#8ea0c9';
+      roundRect(x, y, Math.max(2, w * frac), h, 4); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+      roundRect(x, y, w, h, 4); ctx.stroke();
+      // how many bodies on each side — capture speed scales with headcount
+      ctx.font = '10px Azeret Mono, ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(200,212,232,0.65)';
+      ctx.fillText(mine + ' vs ' + theirs, W / 2, y + h + 10);
+    }
+    ctx.restore();
+  }
+
   const MINIMAP_W = 180;
+  /* Where the minimap ended up last frame, so a click can be turned back into
+     a world position without recomputing the layout in two places. */
+  let miniBox = null;
   function drawMinimap() {
     const mw = MINIMAP_W, mh = mw * (MAP_H / MAP_W), pad = 16;
     const ox = W - mw - pad, oy = pad + 40;
+    miniBox = { x: ox, y: oy, w: mw, h: mh };
     ctx.save();
     ctx.fillStyle = 'rgba(26,38,66,0.78)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
     ctx.strokeStyle = 'rgba(175,210,255,0.55)'; ctx.lineWidth = 1; ctx.stroke();
@@ -9404,10 +9718,28 @@ const Game = (() => {
       if (kindOf(s).height !== 'high') continue;
       ctx.fillRect(ox + s.x * sx, oy + s.y * sy, Math.max(1, s.w * sx), Math.max(1, s.h * sy));
     }
+    /* Objectives get their letter, not just a dot. "Push B" means nothing if
+       the minimap will not tell you which of the three dots B is, and the
+       world markers carry the letter already — the minimap was the one place
+       you had to have memorised the layout. */
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 9px Azeret Mono, ui-monospace, monospace';
     for (const obj of objectives) {
-      ctx.beginPath(); ctx.arc(ox + obj.x * sx, oy + obj.y * sy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#8ea0c9'; ctx.fill();
+      const px = ox + obj.x * sx, py = oy + obj.y * sy;
+      const ink = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#8ea0c9';
+      // being taken right now: a ring that fills as the bar does
+      if (obj.progress > 0 && obj.capTeam >= 0) {
+        ctx.beginPath();
+        ctx.arc(px, py, 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(obj.progress / 100, 0, 1));
+        ctx.strokeStyle = TEAM_COLORS[obj.capTeam]; ctx.lineWidth = 2; ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2);
+      ctx.fillStyle = ink; ctx.fill();
+      ctx.fillStyle = obj.owner >= 0 ? '#08101f' : '#0d1526';
+      ctx.fillText(obj.name, px, py + 0.5);
     }
+    ctx.restore();
     /* Your squad, always. Enemies only when something is showing them to you —
        a radio tower, a command centre, or a squadmate's ping.
 
@@ -11697,6 +12029,27 @@ const Game = (() => {
         neutralVehicles: agents.filter(a => a.isVehicle && a.neutral).length,
       };
     },
+    // the running tally the after-action report is built from
+    stats: () => ({ ...matchStats }),
+    running: () => running,
+    marks: () => marks.length,
+    // objectives as the capture rules see them, for testing that a point
+    // cannot be flipped faster than the bar allows
+    objectives: () => objectives.map(o =>
+      ({ name: o.name, owner: o.owner, progress: Math.round(o.progress), capTeam: o.capTeam })),
+    // where the minimap ended up, so a click can be aimed at it
+    miniBox: () => miniBox && { ...miniBox },
+    // put someone of another team on the first point, and nobody else
+    stackPoint(team) {
+      const o = objectives[0];
+      if (!o) return null;
+      for (const a of agents) if (!a.isVehicle) { a.x = -9e4; a.y = -9e4; }
+      const bots = agents.filter(a => !a.isVehicle && a.alive && a.team === team).slice(0, 1);
+      for (const a of bots) { a.x = o.x; a.y = o.y; }
+      return { name: o.name, owner: o.owner, progress: Math.round(o.progress), moved: bots.length };
+    },
+    // the kill feed, including the weapon each row now carries
+    feed: () => killFeed.map(k => ({ killer: k.killer, victim: k.victim, weapon: k.weapon })),
   };
 
   return {

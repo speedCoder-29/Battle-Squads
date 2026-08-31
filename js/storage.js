@@ -144,6 +144,11 @@ const DB = (() => {
       crosshairColor: '#7ff2c1',
       // How much of the world is on screen; 100 is the tuned default.
       fov: 100,
+      /* Walls and props stand up and cast their own sides, which is what makes
+         a building read as a building from above. It costs a little to draw
+         and it hides a sliver of floor behind each wall, so it can be turned
+         off for a flat, strictly top-down world. */
+      flatWorld: false,
     }, read(KEY_SETTINGS, {})),
     saveSettings: (s) => write(KEY_SETTINGS, s),
     freshProfile,
