@@ -51,6 +51,10 @@ const DB = (() => {
       // missions (regenerated daily)
       missions: null,
       missionsDate: null,
+      /* Whether this account has been through Basic Training. Only the home
+         screen reads it, to stop recommending the tutorial to somebody who
+         has already taken it. `hydrate` fills it in for older profiles. */
+      tutorialDone: false,
     };
   }
 

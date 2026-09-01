@@ -222,6 +222,20 @@
           </button>
         </div>
 
+        <!-- Where a new player starts. A guided match that teaches one
+             mechanic at a time, and a written reference beside it for the
+             systems a match cannot stop to explain. -->
+        <div class="rangebar rangebar--train" id="trainbar">
+          <div class="rangebar__text">
+            <b>🎓 Basic Training<span class="tag tag--new" id="train-badge" hidden>START HERE</span></b>
+            <span>Guided, step by step: move, shoot, loot, capture, fight. Ten minutes.</span>
+          </div>
+          <div class="rangebar__actions">
+            <button class="btn btn--ghost" id="btn-howto">How to Play</button>
+            <button class="btn btn--primary" id="btn-tutorial">Start Training</button>
+          </div>
+        </div>
+
         <!-- Somewhere to try a gun before you take it into a match. Not a
              queue: it starts straight away, alone, with targets at known
              distances. -->
@@ -522,6 +536,28 @@
     </div>
   </div>
 
+  <!-- ============ HOW TO PLAY ============
+       The written half of the tutorial: the rules, the numbers and the tables
+       a guided match has no time to stop and explain. Every panel is rendered
+       by js/screens.js from the game's own data, so it cannot drift from what
+       the game actually does. -->
+  <div id="modal-howto" class="modal">
+    <div class="modal__box modal__box--wide">
+      <div class="modal__head">
+        <h2>How to play</h2>
+        <button class="icon-btn" id="btn-howto-x">✕</button>
+      </div>
+      <div class="modal__body">
+        <div class="howto__tabs" id="howto-tabs"></div>
+        <div class="howto" id="howto-body"></div>
+      </div>
+      <div class="modal__foot">
+        <button class="btn btn--ghost" id="btn-howto-train">🎓 Start Basic Training</button>
+        <button class="btn btn--primary" id="btn-howto-done">Done</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ MATCH FOUND OVERLAY ============ -->
   <div id="overlay-found" class="overlay">
     <div class="found">
@@ -664,6 +700,8 @@
   <script src="js/progression.js"></script>
   <script src="js/screens.js"></script>
   <script src="js/matchmaking.js"></script>
+  <!-- the guided first match; game.js calls into it when mode is 'tutorial' -->
+  <script src="js/tutorial.js"></script>
   <script src="js/game.js"></script>
   <script src="js/main.js"></script>
 </body>

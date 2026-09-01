@@ -218,6 +218,12 @@ const Screens = (() => {
         ? `Connecting to ${url} when you deploy. Falls back to bots if it's unreachable.`
         : 'No multiplayer server configured. See server/README.md, or add ?server=wss://your-host to the URL.';
     }
+    /* Until somebody has been through training once, the home screen says so.
+       After that it is just another thing on the menu. */
+    const badge = document.getElementById('train-badge');
+    if (badge) badge.hidden = !!p.tutorialDone;
+    const trainbar = document.getElementById('trainbar');
+    if (trainbar) trainbar.classList.toggle('is-recommended', !p.tutorialDone);
     bindPointerGlow();
     renderCareer(p);
     renderKit(p);
@@ -1015,6 +1021,189 @@ const Screens = (() => {
     if (typeof Game !== 'undefined' && Game.refreshView) Game.refreshView();
   }
 
+  /* ============================================================
+     HOW TO PLAY — the written half of the tutorial.
+
+     Basic Training teaches the verbs by making you do them. This is
+     everything a match has no time to stop and explain: the two win
+     conditions, the ten classes, the damage model, what the ground and the
+     walls do to you. It is generated from the game's own tables — Controls,
+     Classes, Combat, Items — rather than written out by hand, so a rebound
+     key or a retuned vest shows up here instead of quietly going stale.
+     ============================================================ */
+  const HOWTO_TABS = [
+    { id: 'basics',   label: 'Basics' },
+    { id: 'controls', label: 'Controls' },
+    { id: 'modes',    label: 'Modes' },
+    { id: 'classes',  label: 'Classes' },
+    { id: 'combat',   label: 'Damage' },
+    { id: 'world',    label: 'The map' },
+    { id: 'tips',     label: 'Tips' },
+  ];
+  let howtoTab = 'basics';
+
+  const hSection = (title, lede, body) =>
+    `<section class="howto__sec"><h3>${title}</h3>${lede ? `<p class="howto__lede">${lede}</p>` : ''}${body}</section>`;
+  const hTable = (heads, rows) =>
+    `<div class="howto__tablewrap"><table class="howto__table"><thead><tr>${
+      heads.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${
+      rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const hList = (items) => `<ul class="howto__list">${items.map(i => `<li>${i}</li>`).join('')}</ul>`;
+  const kbd = (t) => `<kbd>${t}</kbd>`;
+  const kAct = (id) => (Controls.all()[id] || []).map(k => kbd(Controls.label(k))).join(' <i>/</i> ') || '—';
+  const pct = (v) => Math.round(v * 100) + '%';
+
+  const HOWTO_BODY = {
+    basics: () => hSection('The thirty-second version',
+      'Two squads or six, one island, and a fight over either ground or survival.',
+      hList([
+        'Pick a mode, check your loadout, hit <b>Deploy</b>. Offline you fight bots; online you fight whoever is in the room.',
+        'The <b>weapon you equip is your class</b> — it decides your speed, your tool on ' + kAct('tool') + ' and the consumable you spawn with. Change the gun and all three change with it.',
+        'You have <b>100 HP</b> and no regeneration. Healing comes out of your kit on ' + kAct('heal') + ', armour comes out of crates, and both are worth going out of your way for.',
+        'Everything on the map is solid and most of it is destructible — walls, doors, trees, crates, barrels. Cover is where fights are won.',
+        'Go <b>down</b> before you die: a squadmate standing over you for a few seconds picks you back up. Alone, you bleed out.',
+      ]) +
+      hSection('Your first ten minutes',
+        '',
+        hList([
+          'Run <b>Basic Training</b> — it walks you through every key in a real match with nobody shooting at you.',
+          'Take the <b>Firing Range</b> to feel out a gun at 10–120 m before you take it into a match.',
+          'Start in <b>Domination</b>: you respawn, so a mistake costs seconds rather than the whole game.',
+          'Turn bot difficulty down in <b>Settings</b> (⚙️) until the fights feel fair. Level 1 is a distracted rookie, level 10 reacts in 90 ms.',
+        ]))),
+
+    controls: () => hSection('Keyboard',
+      'These are your bindings, live — change any of them in Settings (⚙️) and this table changes with them.',
+      ['Movement', 'Combat', 'World'].map(group => hTable(
+        [group, 'Key'],
+        Controls.ACTIONS.filter(a => a.group === group).map(a => [a.name, kAct(a.id)]),
+      )).join('')) +
+      hSection('Mouse', 'Fixed, and deliberately: these three never move.', hTable(
+        ['Action', 'Button'],
+        [
+          ['Fire — hold for automatics, click for everything else', kbd('Left')],
+          ['Aim down sights — tighter cone, slower feet', kbd('Right')],
+          ['Ping what you are looking at, for the whole squad', kbd('Middle')],
+        ])),
+
+    modes: () => hSection('Domination', 'The long game, and the forgiving one.', hList([
+      'Three capture points. Stand inside a ring to take it; more of you on it takes it faster, and one enemy standing there stops you dead.',
+      'Held points score continuously. First squad to the cap wins, and the clock decides it if nobody gets there.',
+      '<b>You respawn.</b> Dying costs you a few seconds and the walk back, not the match.',
+      'Down and waiting? ' + kAct('deploy') + ' over a squadmate deploys you on them instead of at your own lines.',
+    ])) +
+      hSection('Elimination', 'Six squads of four, one life each.', hList([
+        'No respawns and no timer worth waiting on: the last squad with anybody standing wins.',
+        'Loot early, fight late. Armour and a full kit matter far more here than in Domination.',
+        'Being downed is not being dead — but only if somebody is close enough to pick you up.',
+      ])) +
+      hSection('Practice', '', hList([
+        '<b>Basic Training</b> — a guided match, one mechanic at a time, nobody shooting until the last lesson.',
+        '<b>Firing Range</b> — targets at 10–120 m with a damage and time-to-kill readout, so you can feel out a gun before you commit to it.',
+      ])),
+
+    classes: () => hSection('Ten classes, and your gun picks one',
+      'Every weapon in the roster belongs to a class. Equip an M16 and you deploy as a Rifleman; equip a P90 and you are Assault. Speed is a multiplier on the weapon’s own.',
+      hTable(['Class', 'Speed', 'Tool (' + Controls.labelFor('tool') + ')', 'Spawns with'],
+        Classes.list.map(c => [
+          `${c.icon} <b>${c.name}</b><span class="howto__sub">${c.desc}</span>`,
+          c.speed + '×',
+          `${c.tool.icon || ''} ${c.tool.name}<span class="howto__sub">${(c.tool.effects || []).join(', ')}</span>`,
+          `${Classes.startFor(c, 0, 'none')}× ${(Items.CONSUMABLES[c.consumable] || {}).name || c.consumable}`,
+        ]))),
+
+    combat: () => hSection('What a hit is worth',
+      'Every point of damage in the game goes through one calculation: raw damage, then the damage type against what it hit, then the hit zone, then armour, then adrenaline.',
+      hTable(['Target', 'HP'].concat(['normal', 'ap', 'explosive', 'heat'].map(t => t.toUpperCase())),
+        Object.values(Combat.TARGETS).map(t =>
+          [t.name, t.hp].concat(['normal', 'ap', 'explosive', 'heat'].map(k => pct(t.mult[k])))))
+      + '<p class="howto__note">A tank is not tough because of its health bar — rifle rounds do literally nothing to it. Bring HEAT (the RPG-7) or at least explosives.</p>') +
+      hSection('Hit zones', 'There is no vertical aim in a top-down game, so each hit rolls a zone by size. They average to exactly 1× — zones add variance and a headshot payoff, not power.',
+        hTable(['Zone', 'Damage', 'Chance'],
+          Combat.HIT_ZONES.map(z => [z.zone, z.mult + '×', pct(z.size)]))) +
+      hSection('Armour', 'Out of crates. Vests scale body damage, helmets replace the 200% headshot multiplier, and both cost you speed. Penetration does nothing against armour.',
+        hTable(['Tier', 'Vest', 'Speed', 'Helmet', 'Speed'],
+          [1, 2, 3].map(t => [
+            'T' + t,
+            pct(Combat.VESTS[t].body) + ' body damage', pct(Combat.VESTS[t].speed),
+            pct(Combat.HELMETS[t].head) + ' head damage', pct(Combat.HELMETS[t].speed),
+          ]))) +
+      hSection('Adrenaline', 'From pills, soda, stim or a planted flag. It is a ladder — each band keeps everything below it.',
+        hList([
+          '<b>25</b> — Adren/2 movement speed, 5% damage reduction.',
+          '<b>50</b> — and Adren/2 reload speed, 15% reduction.',
+          '<b>75</b> — and Adren/2 handling speed, 30% reduction.',
+          '<b>100</b> — and a last stand: seconds of life at 0 HP.',
+        ])),
+
+    world: () => hSection('The ground', 'Every island is generated fresh, and what you are standing on changes how fast you cross it.',
+      hTable(['Surface', 'Speed'], [
+        ['Road', '1.12× — the fast way across the map'],
+        ['Grass / bridge', 'normal'],
+        ['Beach', '0.92× — sand drags'],
+        ['River', '0.55×, swimming'],
+        ['Ocean', '0.45×, swimming — the map border'],
+      ])) +
+      hSection('Walls, and what breaks them',
+        'Every wall, tree, crate and barrel has health and a <b>toughness</b>, and toughness decides what can get through it at all.',
+        hTable(['Toughness', 'What gets through'],
+          Object.keys(Combat.TOUGHNESS_MEANING).map(k => ['T' + k, Combat.TOUGHNESS_MEANING[k]]))
+        + hList([
+          'Thin wood lets rounds <b>through</b>, bleeding damage. Metal and reinforced walls <b>ricochet</b> them back at you.',
+          'Normal rounds only demolish the flimsiest cover — you can shoot through a house, but you cannot level one with a rifle.',
+          'Doors open and close with ' + kAct('interact') + '. So do crates, vehicles and the climb over low cover.',
+          'Barrels cook off for heavy damage and set off any barrel near them. A fuel depot goes up in a chain.',
+          'Bushes hide anyone standing still inside them — which is exactly what the Sniper’s ghillie suit does out in the grass.',
+        ])) +
+      hSection('Loot', '',
+        hList([
+          'Crates come in <b>regular, silver and gold</b>. Gold can drop a legendary version of the best gun in your class, or a vehicle token.',
+          'Armour, ammo, heals, grenades and tactical gear all come out of crates — and out of lockers, shelves and desks inside buildings.',
+          'Nothing is ever silently destroyed: picking up more than you can carry drops the excess at your feet.',
+          'A <b>supply drop</b> parachutes in mid-match and is worth the fight over it.',
+        ])),
+
+    tips: () => hSection('Things nobody tells you', '', hList([
+      'Firing while moving opens your cone of fire. Stop, or aim down sights — it halves the penalty.',
+      'Reload in cover. A magazine is the longest you are ever defenceless, and ' + kAct('reload') + ' keeps the rounds already in the mag.',
+      'Fights are decided by who is behind something. Break line of sight and heal rather than trading the last 20 HP.',
+      'Unsuppressed shots make nearby bots turn and investigate. A suppressor genuinely keeps you quiet.',
+      'Grenades land where your cursor is, not at a fixed range — point further out to throw further.',
+      'In Domination, a point you are standing on cannot be taken off you. Bodies on the point beat kills anywhere else.',
+      'Check the minimap for the letters, not the dots: it tells you which point is which.',
+      Controls.labelFor('scoreboard') + ' shows the scoreboard mid-match; ' + kAct('ping') + ' opens the ping wheel and ' + kAct('emote') + ' the emotes.',
+      'Your tool is not decoration. A fire axe opens a wall, a hammer builds one, a spade digs a trench that halves incoming fire.',
+    ])),
+  };
+
+  function renderHowTo() {
+    const tabs = document.getElementById('howto-tabs');
+    const body = document.getElementById('howto-body');
+    if (!tabs || !body) return;
+    tabs.innerHTML = HOWTO_TABS.map(t =>
+      `<button class="howto__tab ${t.id === howtoTab ? 'is-active' : ''}" data-howto="${t.id}">${t.label}</button>`).join('');
+    tabs.querySelectorAll('[data-howto]').forEach(b => b.addEventListener('click', () => {
+      howtoTab = b.dataset.howto; SFX.click(); renderHowTo();
+      body.scrollTop = 0;
+    }));
+    try { body.innerHTML = (HOWTO_BODY[howtoTab] || HOWTO_BODY.basics)(); }
+    catch (e) { console.warn('[howto]', e); body.innerHTML = '<p>Nothing to show here.</p>'; }
+  }
+
+  function openHowTo(tab) {
+    if (tab) howtoTab = tab;
+    renderHowTo();
+    document.getElementById('modal-howto').classList.add('is-open');
+  }
+  const closeHowTo = () => document.getElementById('modal-howto').classList.remove('is-open');
+
+  /* Starting the guided match from anywhere that offers it. */
+  function startTutorial() {
+    SFX.click();
+    closeHowTo();
+    Game.start('tutorial');
+  }
+
   function init() {
     // nav
     document.querySelectorAll('.topnav__btn').forEach(b =>
@@ -1054,6 +1243,24 @@ const Screens = (() => {
     // the firing range starts immediately — there is nothing to queue for
     const range = document.getElementById('btn-range');
     if (range) range.addEventListener('click', () => { SFX.click(); Game.start('range'); });
+    // ...and so does training, for the same reason
+    const train = document.getElementById('btn-tutorial');
+    if (train) train.addEventListener('click', startTutorial);
+    const trainFromHowTo = document.getElementById('btn-howto-train');
+    if (trainFromHowTo) trainFromHowTo.addEventListener('click', startTutorial);
+    const howto = document.getElementById('btn-howto');
+    if (howto) howto.addEventListener('click', () => { SFX.click(); openHowTo(); });
+    ['btn-howto-x', 'btn-howto-done'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) b.addEventListener('click', () => { SFX.click(); closeHowTo(); });
+    });
+    // clicking the backdrop, and Escape, both close it — a reference nobody
+    // can get out of is worse than no reference
+    const howtoModal = document.getElementById('modal-howto');
+    if (howtoModal) howtoModal.addEventListener('click', (e) => { if (e.target === howtoModal) closeHowTo(); });
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape' && howtoModal && howtoModal.classList.contains('is-open')) closeHowTo();
+    });
     document.getElementById('btn-keys-reset').addEventListener('click', () => {
       cancelCapture(); Controls.reset(); renderKeybinds();
       keyHint('Back to the defaults.'); Toast.show('Keybinds reset.');
@@ -1079,5 +1286,5 @@ const Screens = (() => {
     });
   }
 
-  return { show, enterHome, renderAll, init, getSelectedMode, closeSettings };
+  return { show, enterHome, renderAll, init, getSelectedMode, closeSettings, openHowTo, startTutorial };
 })();

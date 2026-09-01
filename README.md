@@ -7,6 +7,9 @@ A fast-paced **2D browser team shooter** with two game modes:
 - **💀 Elimination** — 6 squads of 4 across a 3200×2200 arena; last squad standing,
   no respawns (like Fortnite).
 
+…plus two solo modes to learn in: **🎓 Basic Training**, a guided eighteen-step tutorial
+in a real match, and the **🎯 Firing Range**.
+
 A complete front end (home page, accounts, settings, daily missions, battle pass,
 loadout, gunsmith, shop, matchmaking) plus a genuinely playable game for both modes —
 offline against ten levels of bot, or online through the authoritative server in
@@ -29,6 +32,35 @@ npx serve .
 ```
 
 Then create an account (or hit **Play as Guest**), pick a mode, and **Deploy**.
+
+### New here? Start with Basic Training
+
+The Play screen leads with **🎓 Basic Training** and a **How to Play** panel beside it.
+
+**Basic Training** ([js/tutorial.js](js/tutorial.js)) is a guided match, not a video: an
+ordinary offline game with a cleared training field in the middle of it, running one
+lesson at a time. Eighteen steps take you from "these are the movement keys" to a
+three-on-one firefight, and each one watches the world until you have actually done the
+thing — walked to the marker, held the crosshair on a target, opened the door, taken the
+capture point.
+
+| | The lessons |
+|---|---|
+| **Move & fight** | move, aim, shoot, reload, aim down sights, dash |
+| **The world** | destructible cover, doors and buildings, loot crates |
+| **Your kit** | class tool, grenades, tactical deploys, healing |
+| **The match** | squad pings, capturing an objective, three live hostiles |
+
+Nothing in it is faked. The barricade has the wall table's HP, the crate rolls off the
+real loot table, the capture point runs the real capture code, and the hostiles are
+ordinary bots held at a gentle difficulty. **Enter** skips a step you already know and
+**Esc** leaves; finishing it drops you straight into a real match.
+
+**How to Play** is the written half: the two win conditions, your live keybinds, all ten
+classes, the damage model (types, hit zones, armour, adrenaline), what each surface and
+each wall toughness does, and a page of things nobody tells you. Every table in it is
+generated from the game's own data — `Controls`, `Classes`, `Combat`, `Items` — so a
+rebound key or a retuned vest shows up there rather than quietly going stale.
 
 ### Controls
 | Action | Key |
@@ -88,6 +120,7 @@ battle-squads/
 │   ├── progression.js  # weapons, missions, battle pass, XP & rewards
 │   ├── screens.js      # navigation, home rendering, settings, toasts
 │   ├── matchmaking.js  # queue flow + "match found" overlay (simulated)
+│   ├── tutorial.js     # Basic Training: the guided first match, lesson by lesson
 │   ├── game.js         # the 2D shooter: both modes, bots, HUD, scoring
 │   └── main.js         # bootstrap + animated background particles
 ├── server/             # authoritative multiplayer server (deploy separately)

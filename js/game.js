@@ -2125,6 +2125,181 @@ const Game = (() => {
     invalidateRects();
   }
 
+  /* ================= basic training =================
+     The tutorial is not a scripted cutscene: it is an ordinary offline match
+     with a cleared field in the middle of it and one lesson running at a time.
+     Everything it teaches with is the real thing — the barricade has the wall
+     table's HP, the crate rolls off the real loot table, and the hostiles at
+     the end are ordinary bots on a gentle difficulty.
+
+     game.js owns the ground; js/tutorial.js owns the teaching. The only thing
+     that crosses between them is `tutorialApi` at the bottom of this block: a
+     read-only view of the world, plus the three things a lesson may change. */
+  let tutorialArena = null;
+
+  /* Where to put it. The island has a river, a coastline and twenty buildings
+     on it, and dropping the training field on any of those makes somebody's
+     first five minutes of the game a swim. Sample a grid over the field's
+     footprint at the map centre and at a ring of offsets, take the clearest. */
+  function tutorialGround() {
+    const score = (cx, cy) => {
+      let ok = 0, n = 0;
+      for (let dx = -900; dx <= 800; dx += 170) {
+        for (let dy = -450; dy <= 600; dy += 175) {
+          n++;
+          if (!terrain || Terrain.isBuildable(terrain, cx + dx, cy + dy, 30)) ok++;
+        }
+      }
+      return ok / n;
+    };
+    let best = { x: MAP_W / 2, y: MAP_H / 2, s: score(MAP_W / 2, MAP_H / 2) };
+    for (const r of [700, 1300]) {
+      for (let i = 0; i < 8 && best.s < 0.99; i++) {
+        const x = clamp(MAP_W / 2 + Math.cos(i * Math.PI / 4) * r, 1200, MAP_W - 1200);
+        const y = clamp(MAP_H / 2 + Math.sin(i * Math.PI / 4) * r, 900, MAP_H - 900);
+        const sc = score(x, y);
+        if (sc > best.s) best = { x, y, s: sc };
+      }
+      if (best.s >= 0.99) break;
+    }
+    return best;
+  }
+
+  /* The people in it: you, and three targets that stand there and take it at
+     the distances the lessons quote. Tagged rather than found by position, so
+     a lesson asks for "the far target" and cannot be given the wrong one. */
+  const TUTOR_TARGETS = [['near', 10], ['mid', 18], ['far', 30]];
+  function setupTutorial() {
+    const profile = DB.getProfile();
+    const playerWeapon = (profile && Weapons.byId[profile.weapon]) ? profile.weapon : Weapons.default;
+    nTeams = 2;
+    teamScores = [0, 0];
+    objectives = [];
+    agents = [];
+
+    const g = tutorialGround();
+    tutorialArena = {
+      cx: g.x, cy: g.y,
+      spawn: { x: g.x - 680, y: g.y },
+      walk: { x: g.x - 380, y: g.y },
+      rect: { x: g.x - 980, y: g.y - 520, w: 1780, h: 1240 },
+      wall: null, door: null, crate: null,
+    };
+
+    player = makeAgent(0, true, playerWeapon);
+    player.x = tutorialArena.spawn.x; player.y = tutorialArena.spawn.y; player.angle = 0;
+    agents.push(player);
+
+    for (const [tag, m] of TUTOR_TARGETS) {
+      const d = makeAgent(1, false, playerWeapon);
+      d.isDummy = true; d.tutorTag = tag; d.rangeM = m;
+      // off the walking line, so a target is never standing in a lesson's way
+      d.x = player.x + m * PX_PER_M; d.y = g.y - 170;
+      d.angle = Math.PI;
+      d.name = 'Target';
+      agents.push(d);
+    }
+  }
+
+  /* Clear the field and furnish it, once the generators have all run — the
+     same ordering the firing range needs, and for the same reason: anything
+     built earlier can have a warehouse dropped back on top of it. */
+  function buildTutorialArena() {
+    if (mode !== 'tutorial' || !player || !tutorialArena) return;
+    const A = tutorialArena, cx = A.cx, cy = A.cy, rect = A.rect;
+
+    for (let x = rect.x; x <= rect.x + rect.w; x += 150) {
+      for (let y = rect.y; y <= rect.y + rect.h; y += 150) bulldoze(x, y, 135);
+    }
+    const hits = (o) => padOverlap(rect, o, 0);
+    const inside = (o) => o.x > rect.x && o.x < rect.x + rect.w && o.y > rect.y && o.y < rect.y + rect.h;
+    buildings = buildings.filter(b => !hits(b));
+    basements = basements.filter(b => !hits(b));
+    upperFloors = upperFloors.filter(b => !hits(b));
+    decor = decor.filter(d => !inside(d));
+    crates = crates.filter(c => !inside(c));
+    trenches = trenches.filter(t => !inside(t));
+
+    /* A barricade to shoot down.
+
+       It has to be toughness 1, because that is the only rung plain rifle fire
+       can demolish (Combat.canDamageStructure) — and the lesson is that cover
+       comes down, so it has to be cover that comes down for whatever gun this
+       player happens to have brought. A wood wall is not it: wood is toughness
+       2 at anything over 0.2 thickness, so a barricade of planks would stand
+       there absorbing a magazine and teach the opposite of the lesson. */
+    const wall = Structures.seg('barricade', cx - 260, cy + 210, 3, 'h', 0.3);
+    obstacles.push(wall);
+    A.wall = wall;
+
+    /* A one-room hut with one door, for the door lesson, with the crate inside
+       it so opening the door and looting it are the same short trip. */
+    const hx = cx + 170, hy = cy - 110, hw = 380, hh = 320;
+    const parts = Structures.shell(hx, hy, hw, hh, 'wood', 0.3,
+      [{ side: 'w', at: hh / 2 - 30, type: 'door' }]);
+    for (const seg of parts) obstacles.push(seg);
+    A.door = parts.find(seg => Structures.isDoor(seg)) || null;
+    A.crate = { x: hx + hw / 2, y: hy + hh / 2, tier: 'silver', opened: false };
+    crates.push(A.crate);
+
+    /* One capture point, so Domination can be taught rather than described. */
+    objectives = [{ name: 'A', x: cx - 520, y: cy + 470, r: 150, owner: -1, progress: 0, capTeam: -1 }];
+    clearObjectiveSite(objectives[0]);
+    invalidateRects();
+  }
+
+  /* The last lesson. Ordinary bots, held at a gentle difficulty whatever the
+     settings say — this is somebody's first fight, not a benchmark — and
+     flagged so the respawn rules leave them down once they are beaten. */
+  function spawnTutorialHostiles(n) {
+    const A = tutorialArena;
+    const out = [];
+    if (!A) return out;
+    for (let i = 0; i < n; i++) {
+      const a = makeAgent(1, false, pickBotWeapon());
+      a.diff = BotAI.individual(Math.min(3, botLevel));
+      a.lives = 1; a.noRespawn = true;
+      a.name = 'Hostile-' + (i + 1);
+      a.x = A.cx + 620; a.y = A.cy - 240 + i * 240;
+      for (let k = 0; k < 6 && pointInObstacle(a.x, a.y); k++) resolveObstacles(a);
+      agents.push(a);
+      out.push(a);
+    }
+    return out;
+  }
+
+  /* What js/tutorial.js is allowed to see and do. Everything is a getter, so
+     the module reads the live world rather than a copy taken at start — and so
+     nothing in here is evaluated before the constants it names exist. */
+  const tutorialApi = {
+    get PX_PER_M() { return PX_PER_M; },
+    get player() { return player; },
+    get agents() { return agents; },
+    get obstacles() { return obstacles; },
+    get crates() { return crates; },
+    get objectives() { return objectives; },
+    get deployables() { return deployables; },
+    get grenades() { return grenades; },
+    get marks() { return marks; },
+    get input() { return input; },
+    get arena() { return tutorialArena; },
+    msg: (t) => hudMsg(t),
+    /* The heal lesson needs somebody to heal. Floored well clear of death, so
+       the lesson cannot kill the person taking it. */
+    hurtPlayer(n) {
+      player.hp = Math.max(15, player.hp - n);
+      player.hurtT = 0;
+      SFX.hurt();
+      spawnFx(player.x, player.y, '#ff4b5c', 6);
+    },
+    spawnHostiles: (n) => spawnTutorialHostiles(n),
+    /* "I am done — put me in a real match", off the last card. */
+    deploy() {
+      Tutorial.stop();
+      start(typeof Screens !== 'undefined' ? Screens.getSelectedMode() : 'domination');
+    },
+  };
+
   /* Stand a knocked-down target back up, where it was, at full health. */
   function resetDummy(d) {
     d.alive = true; d.hp = d.maxHp;
@@ -2142,6 +2317,8 @@ const Game = (() => {
 
     if (mode === 'range') {
       setupRange();
+    } else if (mode === 'tutorial') {
+      setupTutorial();
     } else if (mode === 'domination') {
       teamScores = new Array(nTeams).fill(0);
       for (let t = 0; t < nTeams; t++) {
@@ -2191,6 +2368,11 @@ const Game = (() => {
         hudMsg('Squad deploy unavailable — back at your own lines');
       }
       deployAnchor = null;      // one respawn, one decision
+    }
+    /* Training happens in one cleared field. Coming back at the island's edge
+       would mean a walk of half a map back to the lesson you were on. */
+    if (mode === 'tutorial' && tutorialArena && !a.isDummy) {
+      sp = a.isPlayer ? { x: tutorialArena.spawn.x, y: tutorialArena.spawn.y } : { x: a.x, y: a.y };
     }
     /* Re-roll rather than landing inside a building — or, now that the island
        has a real coastline, in the sea. `isBuildable` is the inland test, so it
@@ -2257,7 +2439,8 @@ const Game = (() => {
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
     for (const o of objectives) clearObjectiveSite(o);
-    clearRangeLane();    // firing range only: nothing between you and the targets
+    clearRangeLane();      // firing range only: nothing between you and the targets
+    buildTutorialArena();  // basic training only: the cleared field and its props
     stampWorldIds();     // the wall list is final, so it can be named now
     buildNav();          // the world is final now, so the grid matches it
     // starting tactical kit = whatever your class deploys with
@@ -2269,14 +2452,23 @@ const Game = (() => {
     if (kit) addItem(kit.cat, player.cls.consumable, Classes.startFor(player.cls, carryTier(player), player.perk));
     // everyone also deploys with a couple of bandages so you're never stranded
     if (kit && kit.cat !== 'heal') addItem('heal', 'bandage', 2);
+    /* Training carries one of everything the lessons need on top of the class
+       kit, so no loadout can skip a lesson for want of an item to use. */
+    if (mode === 'tutorial') {
+      addItem('grenade', 'frag', 2);
+      addItem('tactical', 'barricade', 2);
+      addItem('heal', 'bandage', 3);
+    }
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
     timeLeft = MATCH_SECONDS;
     camTarget = player; camWasDead = false; camSnap = true;
     matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0, shots: 0, hits: 0, heads: 0, assists: 0 };
+    botLootCount = 0;
     paused = false; running = true;
 
     document.getElementById('hud-gamemode').textContent =
-      mode === 'domination' ? 'DOMINATION' : mode === 'range' ? 'FIRING RANGE' : 'ELIMINATION';
+      mode === 'domination' ? 'DOMINATION' : mode === 'range' ? 'FIRING RANGE'
+        : mode === 'tutorial' ? 'BASIC TRAINING' : 'ELIMINATION';
     document.getElementById('game-pause').classList.remove('is-open');
     document.getElementById('game-results').classList.remove('is-open');
     // legend is loud for the first few seconds, then fades back (hover to read)
@@ -2286,6 +2478,9 @@ const Game = (() => {
     setTimeout(() => hint.classList.add('is-faded'), 12000);
     updateWeaponHud();
 
+    if (mode === 'tutorial') Tutorial.begin(tutorialApi);
+    else if (typeof Tutorial !== 'undefined') Tutorial.stop();
+
     lastTime = performance.now();
     requestAnimationFrame(loop);
   }
@@ -2293,6 +2488,14 @@ const Game = (() => {
   /* The on-screen legend, written from the bindings actually in force. It used
      to be hardcoded markup, so rebinding a key left the HUD confidently
      telling you to press the wrong one. */
+  /* What to call the match we are in, in one place: three separate ternaries
+     used to answer this and none of them had heard of the modes added since. */
+  const MODE_TITLES = {
+    domination: 'Domination', elimination: 'Elimination',
+    range: 'Firing Range', tutorial: 'Basic Training',
+  };
+  const modeTitle = () => MODE_TITLES[mode] || 'Elimination';
+
   function renderHint() {
     const hint = document.getElementById('hud-hint');
     if (!hint) return;
@@ -2323,6 +2526,7 @@ const Game = (() => {
 
   function quitMatch() {
     running = false; paused = false;
+    if (typeof Tutorial !== 'undefined') Tutorial.stop();
     /* Leaving an online match has to hang up, not just walk away from the
        screen. A host that stayed registered kept handing its code out to a
        room nobody was simulating; a guest that stayed connected left a body
@@ -3042,7 +3246,7 @@ const Game = (() => {
   const SUPPLY_MAX = 3;           // per match, so it stays an event
 
   function updateSupplyDrop(dt) {
-    if (online || mode === 'range' || !running) return;
+    if (online || mode === 'range' || mode === 'tutorial' || !running) return;
     // the crate on the ground is a normal crate once it lands; this is the fall
     if (supplyDrop) {
       supplyDrop.t -= dt;
@@ -3869,6 +4073,65 @@ const Game = (() => {
     }
     return best;
   }
+
+  /* ---------------- bots and boxes ----------------
+     A bot only goes looting when it has nothing better to do — no squadmate
+     down, no enemy on the floor to finish — and only for a box that is worth
+     the walk, which means one it can actually use. A bot on full health with a
+     full magazine has no reason to cross a car park for a bandage.
+
+     `botWants` is what makes them read as people rather than as vacuum
+     cleaners: they go for the crate when they are hurt or dry, and otherwise
+     they get on with the match. */
+  const BOT_LOOT_RANGE = 760;
+  const BOT_LOOT_COOL = 5;
+  function botWants(a) {
+    return a.hp < a.maxHp * 0.8
+      || a.ammo < a.weapon.mag * 0.5
+      || (a.vest || 0) < 2;
+  }
+  function botLootPoint(a) {
+    if (mode === 'tutorial' || mode === 'range') return null;
+    a.lootCool = (a.lootCool || 0) - 0.6;         // this runs on the tactic cadence
+    if (a.lootCool > 0 || !botWants(a)) return null;
+    let best = null, bd = BOT_LOOT_RANGE * BOT_LOOT_RANGE;
+    for (const c of crates) {
+      // a crate that wants a perk stays shut for a bot, exactly as for you
+      if (c.opened || c.needs) continue;
+      const dd = dist2(a.x, a.y, c.x, c.y);
+      if (dd < bd) { bd = dd; best = c; }
+    }
+    if (!best) { a.lootCool = BOT_LOOT_COOL; return null; }
+    return { x: best.x, y: best.y, crate: best };
+  }
+
+  /* What a bot gets out of a box.
+
+     Not grantLoot: that writes into the player's inventory, hud messages and
+     all, and a bot has no inventory to write into. It has the four things the
+     simulation actually reads off it — rounds, health, a vest and a helmet —
+     so that is what a crate pays it, scaled by tier the same way yours is.
+     The box is consumed either way, so a looted map is a looted map whoever
+     got there first. */
+  function botOpenCrate(a, c) {
+    if (!c || c.opened) return;
+    c.opened = true;
+    a.lootCool = BOT_LOOT_COOL;
+    a.ammo = a.weapon.mag;
+    const rich = c.tier === 'gold' || c.tier === 'chest' || c.tier === 'airdrop';
+    const mid = c.tier === 'silver';
+    a.hp = Math.min(a.maxHp, a.hp + (rich ? 45 : mid ? 28 : 14));
+    if (rich) {
+      a.vest = Math.min(3, (a.vest || 0) + 1);
+      a.helmet = Math.min(3, (a.helmet || 0) + 1);
+    } else if (mid && Math.random() < 0.6) {
+      a.vest = Math.min(2, (a.vest || 0) + 1);
+    }
+    // the same puff of light the player's crate gives, so you can see it happen
+    spawnFx(c.x, c.y, '#ffd257', 8);
+    botLootCount++;
+  }
+  let botLootCount = 0;
 
   /* Put a bot in the driver's seat. Offline only — online the room decides who
      is driving what, and a client claiming a seat for a bot it does not own is
@@ -4913,6 +5176,14 @@ const Game = (() => {
             if (dd < kd) { kd = dd; kill = q; }
           }
           if (kill) a.tacticPt = { x: kill.x, y: kill.y, finish: true };
+          /* Nothing to do about anybody on the floor: go and open a box.
+
+             Every crate on the map was the player's, and bots walked past
+             them for the whole match. That is not just a missed behaviour —
+             it is why the map felt static, and why a bot that had been in one
+             firefight stayed at the health and the empty magazine it came out
+             of, with a medical crate ten feet away. */
+          else a.tacticPt = botLootPoint(a);
         }
       }
       /* Walking to a downed body outranks the objective, but never outranks
@@ -4920,7 +5191,9 @@ const Game = (() => {
       if (a.tacticPt && !(enemy && d < 300)) {
         const tp = a.tacticPt;
         const near = dist2(a.x, a.y, tp.x, tp.y) < (tp.revive ? 60 * 60 : 90 * 90);
-        if (!near && ensurePath(a, tp.x, tp.y)) {
+        // arrived at a box: open it, and the errand is over
+        if (near && tp.crate) { botOpenCrate(a, tp.crate); a.tacticPt = null; }
+        else if (!near && ensurePath(a, tp.x, tp.y)) {
           /* followPath returns a unit vector, not an angle. Passing it to
              Math.cos gives NaN, and `a.x += NaN` makes the bot's position NaN
              for the rest of the match — which is why bots never once reached a
@@ -5343,7 +5616,8 @@ const Game = (() => {
        guess for most of every 50ms between snapshots, and a player who joined
        late sat on 8:00 until the first one landed. */
     if (online) timeLeft = onlineClock();
-    else if (mode !== 'range') timeLeft -= dt;   // the range has no clock to beat
+    // neither a range nor a lesson is a match you can run out of time in
+    else if (mode !== 'range' && mode !== 'tutorial') timeLeft -= dt;
     if (input.dashCd > 0) input.dashCd -= dt;
 
     // player status timers
@@ -5367,6 +5641,7 @@ const Game = (() => {
     if (hudMessageT > 0) hudMessageT -= dt;
     updateKillFeed(dt);
     if (rangeShot && (rangeShot.life -= dt) <= 0) rangeShot = null;
+    if (mode === 'tutorial') Tutorial.update(dt);   // one lesson at a time
     updateSoundPings(dt);
     updateBuildingEffect(dt);
     updateBuildingFog();
@@ -5485,7 +5760,11 @@ const Game = (() => {
         }
       }
       if (!a.alive) {
-        if ((mode === 'domination' || mode === 'range') && !a.isVehicle) {
+        /* In training the targets stand back up and so do you, but the
+           hostiles of the last lesson stay down — beating them is the lesson. */
+        const comesBack = mode === 'domination' || mode === 'range'
+          || (mode === 'tutorial' && !a.noRespawn);
+        if (comesBack && !a.isVehicle) {
           a.respawnTimer -= dt;
           if (a.respawnTimer <= 0) { a.isDummy ? resetDummy(a) : respawnAgent(a); }
         }
@@ -5501,7 +5780,33 @@ const Game = (() => {
          else could see, and then the next snapshot dragged it back. */
       if (online) continue;
       if (a.isDummy) { a.vx = a.vy = 0; continue; }   // a target stands there and takes it
-      if (!a.isPlayer && !a.driver) updateBot(a, dt);
+
+      /* Who is actually being simulated when a bot is in a jeep.
+
+         This used to read `if (!a.isPlayer && !a.driver) updateBot(a, dt)`,
+         which got both halves of that question wrong:
+
+           • THE RIDER still ran its own on-foot AI. `a.driver` is only set on
+             hulls, so a bot sitting in a jeep was never excluded — it walked
+             off across the map under its own steam while the renderer skipped
+             it for being `riding`. That is the invisible bot: a body with a
+             gun, shooting and being shot at, drawn nowhere.
+
+           • THE HULL was excluded, because it now had a driver. So the jeep a
+             bot had just climbed into sat exactly where it was parked. Bots
+             claimed vehicles and then never drove them.
+
+         The rider is carried by the hull and does not think for itself; the
+         hull thinks with its driver's AI. A vehicle is an agent like any
+         other, which is what the boarding code always assumed. */
+      if (a.riding) {
+        const v = a.riding;
+        a.x = v.x; a.y = v.y; a.angle = v.angle;
+        a.vx = a.vy = 0;
+        continue;
+      }
+      if (a.driver && a.driver.isPlayer) continue;    // driveVehicle has the wheel
+      if (!a.isPlayer) updateBot(a, dt);
     }
 
     // bullets
@@ -5586,7 +5891,7 @@ const Game = (() => {
 
     // objectives (domination) — online the host owns them, and the snapshot
     // brings back who holds what
-    if (mode === 'domination' && !online) updateObjectives(dt);
+    if ((mode === 'domination' || mode === 'tutorial') && !online) updateObjectives(dt);
 
     // tactical layer
     updateComms(dt);
@@ -5968,6 +6273,7 @@ const Game = (() => {
       if (owner && owner.isPlayer) hudMsg(`${Combat.targetOf(a).name} shrugs it off — you need ${a.klass === 'tank' ? 'HEAT' : 'explosives'}`);
       return;
     }
+    if (a.isPlayer && debugNoDamage) return;
     a.hp -= dmg;
     if (owner) a.lastHitBy = owner;      // credited if a last stand runs out
     if (owner && owner.isPlayer && a !== owner) {
@@ -6071,7 +6377,9 @@ const Game = (() => {
       matchStats.bestStreak = Math.max(matchStats.bestStreak, owner.streak || 0);
       earnStreaks(owner.streak || 0);
     }
-    if (mode === 'domination' || mode === 'range') a.respawnTimer = a.isDummy ? DUMMY_RESPAWN : 3;
+    if (mode === 'domination' || mode === 'range' || mode === 'tutorial') {
+      a.respawnTimer = a.isDummy ? DUMMY_RESPAWN : 3;
+    }
     if (a.isPlayer) SFX.hurt();
     // brewed up with someone inside: throw the driver clear rather than
     // leaving them welded to a dead agent with no way out
@@ -6247,6 +6555,8 @@ const Game = (() => {
       let contenders = 0;
       for (const a of agents) {
         if (!a.alive) continue;
+        // riders sit at their hull's position; the hull is already counted
+        if (a.riding) continue;
         if (dist2(a.x, a.y, obj.x, obj.y) < obj.r * obj.r) { counts[a.team] = (counts[a.team] || 0) + 1; }
       }
       const teamsPresent = Object.keys(counts);
@@ -6289,7 +6599,8 @@ const Game = (() => {
 
   function checkWinConditions() {
     if (!running) return;
-    if (mode === 'range') return;      // nothing to win: you leave when you're done
+    // neither has a win condition: you leave a range, and you finish training
+    if (mode === 'range' || mode === 'tutorial') return;
     if (mode === 'domination') {
       for (let t = 0; t < teamScores.length; t++) {
         if (teamScores[t] >= SCORE_CAP) return endMatch(t === 0);
@@ -6537,14 +6848,26 @@ const Game = (() => {
     }
   }
 
+  /* The weapon block: name, rounds left, magazine size.
+     This used to be called only when you fired or reloaded, while the health
+     bar beside it refreshed every frame — so the moment the subject changed
+     under it (spectating a squadmate, or climbing into a vehicle) the name and
+     the magazine size stayed on the last gun you personally held and only the
+     round count moved. It reads "M16 25/20" against a squadmate's FAMAS.
+     It runs every frame now, and writes only what actually changed. */
   function updateWeaponHud() {
     if (!player) return;
     const s = hudSubject();
+    if (!s || !s.weapon) return;
     const name = s.isVehicle ? `${vehicleDef(s).icon} ${s.weapon.name}` : s.weapon.name;
-    document.getElementById('hud-weapon').textContent = name;
+    const nameEl = document.getElementById('hud-weapon');
+    if (nameEl.textContent !== name) nameEl.textContent = name;
     const ammoEl = document.getElementById('hud-ammo');
-    ammoEl.textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
-    document.getElementById('hud-ammomax').textContent = '/' + s.weapon.mag;
+    const shown = s.reloadTimer > 0 ? '⟳' : String(s.ammo);
+    if (ammoEl.textContent !== shown) ammoEl.textContent = shown;
+    const maxEl = document.getElementById('hud-ammomax');
+    const max = '/' + s.weapon.mag;
+    if (maxEl.textContent !== max) maxEl.textContent = max;
     /* Running dry mid-fight is the most common avoidable death in the game and
        nothing told you it was coming — the count was the same colour at 30 as
        at 2. Under a quarter of a magazine the readout goes amber and pulses;
@@ -6604,7 +6927,7 @@ const Game = (() => {
       hpWrap.classList.toggle('is-hurt', frac <= 0.55 && frac > 0.25);
       hpWrap.classList.toggle('is-critical', frac <= 0.25);
     }
-    document.getElementById('hud-ammo').textContent = s.reloadTimer > 0 ? '⟳' : s.ammo;
+    updateWeaponHud();     // name, rounds and magazine, all from the same subject
     // timer
     const t = Math.max(0, Math.floor(timeLeft));
     document.getElementById('hud-gametimer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
@@ -6614,10 +6937,12 @@ const Game = (() => {
     /* Past a handful of squads the pills need to be smaller as well as
        wrapped, or twenty of them push the timer off the top of the screen. */
     if (wrap) wrap.classList.toggle('hud-scores--many', nTeams > 6);
-    if (mode === 'range') {
-      // nobody is winning a firing range; the pills would be reporting on
-      // targets, which is not a score
-      wrap.innerHTML = '<div class="score-pill">🎯 Practice</div>';
+    if (mode === 'range' || mode === 'tutorial') {
+      // nobody is winning a firing range or a lesson; the pills would be
+      // reporting on targets, which is not a score
+      wrap.innerHTML = mode === 'tutorial'
+        ? '<div class="score-pill">🎓 Basic Training</div>'
+        : '<div class="score-pill">🎯 Practice</div>';
     } else if (mode === 'domination') {
       wrap.innerHTML = teamScores.map((s, t) =>
         `<div class="score-pill ${t === 0 ? 'is-you' : ''}"><span class="dot" style="background:${TEAM_COLORS[t]}"></span>${Math.round(s)}</div>`
@@ -6752,6 +7077,15 @@ const Game = (() => {
       ctx.lineWidth = 2;
     }
     drawGrenades();
+    /* The unexplored part of a building goes down *before* the units do.
+
+       It used to be painted after them, at 84% opacity, which meant an enemy
+       standing in a room you had not walked into yet was covered over while
+       still perfectly able to shoot you — a bot you could hear and be killed
+       by and never see. The fog is about the architecture you have not
+       scouted, not about people who are in front of you. Rooms stay dark;
+       anybody in one is drawn on top of it. */
+    drawBuildingFog();
 
     // agents
     for (const a of agents) {
@@ -6766,7 +7100,16 @@ const Game = (() => {
       if (a.riding) continue;                 // inside the hull, not on the field
       const hidden = camouflaged(a);
       if (!hidden) drawUnitShadow(a.x, a.y, a.r);
-      if (hidden) ctx.globalAlpha = a.isPlayer ? 0.45 : 0.12;   // ghillied: barely there
+      /* Ghillied. This was 0.12 for anybody but you — twelve per cent of a
+         body on grass is not concealment, it is absence, and being killed by
+         something you cannot see even when you are looking straight at it is
+         the complaint every game with a ghillie suit eventually gets. It
+         fades in as you close: still very hard to pick out across a field,
+         findable once they are near enough to matter. */
+      if (hidden) {
+        const near = a.isPlayer ? 1 : clamp((820 - Math.hypot(a.x - player.x, a.y - player.y)) / 700, 0, 1);
+        ctx.globalAlpha = a.isPlayer ? 0.45 : 0.22 + near * 0.33;
+      }
       // tool swing arc
       if (a.swingT > 0) {
         const reach = a.tool.range + a.r;
@@ -6858,6 +7201,8 @@ const Game = (() => {
     drawVisionTools();   // heat / night vision markers sit over the units
     drawMarks();         // your squad's pings, over the world they point at
     drawEmotes();        // and what everyone is saying about it
+    // training markers sit on the ground, under the units standing on them
+    if (mode === 'tutorial') Tutorial.drawWorld(ctx, performance.now());
 
     // damage numbers
     for (const d of dmgNums) {
@@ -6871,7 +7216,6 @@ const Game = (() => {
     ctx.globalAlpha = 1;
 
     drawBuildingShadows();   // the roofs' own shadows, under them
-    drawBuildingFog();       // the part of this building you have not been into
     perfMark('roofs', drawRoofs);   // roofs hide interiors until you step inside
     drawSmokes();   // smoke sits above units to obscure them
 
@@ -6910,6 +7254,7 @@ const Game = (() => {
     drawCompass();          // which way to turn, as opposed to where things are
     drawEdgeIndicators();   // squad and objectives that are off the screen
     drawRangeHud();         // firing range only: target distances and the readout
+    if (mode === 'tutorial') Tutorial.drawHud(ctx, W, H, performance.now());
     drawStreakChips();      // scorestreaks you are holding
     drawKillFeed();
     drawKillBanner();
@@ -7203,51 +7548,119 @@ const Game = (() => {
      Off by default is wrong — it is better with it on — but it is a setting,
      because it is a taste question and because a flat map is easier to read
      for some people. */
-  const HEIGHT_OF = { high: 26, low: 9, under: 0 };
+  /* Test scaffolding only, and off unless a harness turns it on: a probe that
+     measures whether a shot registers cannot also be losing the fight it is
+     standing in, or it measures aliveness instead. */
+  let debugNoDamage = false;
+
+  const HEIGHT_OF = { high: 30, low: 11, under: 0 };
+  /* Not everything of a given class is the same height, and pretending it is
+     was most of what made the scene read flat: a window stood as tall as the
+     wall it was cut into, and a shipping container no taller than a fence.
+     A multiplier on the class height, by what the thing actually is. */
+  const RISE = {
+    'Window': 0.5,               // you can see over a window, that is the point
+    'Door': 0.88, 'Reinforced Door': 0.88, 'Garage Door': 0.94,
+    'Metal': 1.06, 'Reinforced Wall': 1.12, 'Rock': 1.08,
+    'Container': 1.45, 'Tree': 1.7, 'Palm': 1.8,
+    'Support Post': 1.5, 'Timber Pillar': 1.3,
+  };
   /* Anything you can walk through has no body to draw — a bush, a tent flap, a
      traffic cone. Extruding those turned them into large solid-looking slabs
      that read as cover they are not. */
-  const heightOf = (k) => (view.flat || k.passable ? 0 : (HEIGHT_OF[k.height] || 0));
+  const heightOf = (k) => (view.flat || k.passable
+    ? 0
+    : (HEIGHT_OF[k.height] || 0) * (RISE[k.name] || 1));
 
-  /* Where the top of something `h` tall above (x, y) lands on screen. */
+  /* Which way the light comes from, as a unit vector pointing *at* the source.
+     Up and to the left, matching the sprite lighting and the direction the
+     ground shadows are thrown. Faces are shaded against this rather than by a
+     fixed north/east/south/west table, so a face is bright because of the way
+     it happens to be turned and not because of which side of the rect it is. */
+  const LIGHT = { x: -0.75, y: -0.66 };
+
+  /* Where the top of something `h` tall above (x, y) lands on screen.
+
+     The camera sits above the middle of the screen, so the top of a tall thing
+     is displaced away from that point in proportion to its height — things at
+     the centre stand straight up, things at the edge lean out and show you
+     their side.
+
+     The displacement used to be hard-clamped, which meant that past a certain
+     distance from the centre every object leaned by exactly the same amount:
+     the gradient that sells the depth stopped, and the outer half of the
+     screen went flat again. It eases into its limit now instead of hitting a
+     wall — linear where it matters, asymptotic where it would get silly. */
   function lift(x, y, h) {
     if (!h) return { x, y };
     const cx = camX + (W / zoom) / 2, cy = camY + (H / zoom) / 2;
-    /* The lean is capped as well as scaled. At h/260 a wall near the edge of a
-       wide screen displaced sixty pixels, which stopped reading as height and
-       started reading as the wall being somewhere else — and at that size the
-       lack of depth sorting becomes visible. Gentler, and clamped. */
-    const k = h / 620;
-    const dx = clamp((x - cx) * k, -h * 1.1, h * 1.1);
-    const dy = clamp((y - cy) * k, -h * 1.1, h * 1.1);
-    return { x: x + dx, y: y + dy - h * 0.62 };
+    const k = h / 400;
+    const cap = h * 1.7;
+    const ease = (v) => v / (1 + Math.abs(v) / cap);
+    return { x: x + ease((x - cx) * k), y: y + ease((y - cy) * k) - h * 0.70 };
   }
 
-  /* A box standing on the rect `s`, `h` tall: the two faces you can see from
-     here, then the cap on top. */
+  /* How bright a face turned `n` is, as two overlay colours: a warm wash on
+     the faces that catch the light and a cool one on those that don't. Grazing
+     faces get very little of either, which is what gives a box a readable
+     corner instead of two flat tones meeting at a line. */
+  function faceShade(nx, ny) {
+    const lum = nx * LIGHT.x + ny * LIGHT.y;      // -1 (away) .. 1 (into the light)
+    return lum > 0
+      ? `rgba(255,247,231,${(0.04 + lum * 0.15).toFixed(3)})`
+      : `rgba(9,13,23,${(0.16 + -lum * 0.30).toFixed(3)})`;
+  }
+
+  /* A box standing on the rect `s`, `h` tall.
+
+     Three things do the work here, and the previous version had none of them:
+
+       • ONLY THE FACES YOU CAN SEE. A box shows one or two sides, never four.
+         Drawing all four meant the two facing the camera were folded back
+         underneath the cap — invisible, but paid for, and it guaranteed every
+         box carried both a lit face and a shadowed one however it was turned,
+         which is exactly the cue that was supposed to vary.
+
+       • SHADED BY THEIR NORMAL, not by which side of the rect they are. The
+         old table had the west face dark and the north face lit, which is two
+         different light sources.
+
+       • A BEVEL AND A CONTACT LINE. The lit edges of the cap are picked out
+         bright and the far ones dark, and the bottom of each visible side gets
+         a dark line where it meets the ground. The bevel is what makes the top
+         read as a surface; the contact line is what stops the whole thing
+         looking pasted onto the floor. */
   function drawRaisedBox(s, h, fill, stroke, rad) {
-    const a = lift(s.x, s.y, h), b = lift(s.x + s.w, s.y, h);
-    const c = lift(s.x + s.w, s.y + s.h, h), d = lift(s.x, s.y + s.h, h);
-    const corners = [
-      [{ x: s.x, y: s.y }, { x: s.x + s.w, y: s.y }, b, a],                 // north face
-      [{ x: s.x + s.w, y: s.y }, { x: s.x + s.w, y: s.y + s.h }, c, b],     // east
-      [{ x: s.x + s.w, y: s.y + s.h }, { x: s.x, y: s.y + s.h }, d, c],     // south
-      [{ x: s.x, y: s.y + s.h }, { x: s.x, y: s.y }, a, d],                 // west
+    const x1 = s.x + s.w, y1 = s.y + s.h;
+    const a = lift(s.x, s.y, h), b = lift(x1, s.y, h);
+    const c = lift(x1, y1, h), d = lift(s.x, y1, h);
+    // where the camera is looking, so a face can be asked if it faces away
+    const vx = camX + (W / zoom) / 2, vy = camY + (H / zoom) / 2;
+    const mx = s.x + s.w / 2, my = s.y + s.h / 2;
+
+    /* base pair, top pair, outward normal — in draw order back to front, so
+       that at a corner where two faces are visible the nearer one wins */
+    const F = [
+      [s.x, s.y, x1, s.y, a, b, 0, -1],      // north
+      [x1, s.y, x1, y1, b, c, 1, 0],         // east
+      [x1, y1, s.x, y1, c, d, 0, 1],         // south
+      [s.x, y1, s.x, s.y, d, a, -1, 0],      // west
     ];
-    /* Faces pointing away from the camera are the ones you can see the side
-       of. Shade them by which way they look, so the light stays where the rest
-       of the art puts it — up and to the left. */
-    const shades = ['rgba(255,246,228,0.10)', 'rgba(10,14,24,0.34)',
-      'rgba(10,14,24,0.46)', 'rgba(10,14,24,0.22)'];
-    for (let i = 0; i < 4; i++) {
-      const q = corners[i];
+    for (const [bx0, by0, bx1, by1, t0, t1, nx, ny] of F) {
+      // a face is visible only when it is turned away from the middle of the view
+      if (nx * (mx - vx) + ny * (my - vy) <= 0) continue;
       ctx.beginPath();
-      ctx.moveTo(q[0].x, q[0].y); ctx.lineTo(q[1].x, q[1].y);
-      ctx.lineTo(q[2].x, q[2].y); ctx.lineTo(q[3].x, q[3].y);
+      ctx.moveTo(bx0, by0); ctx.lineTo(bx1, by1);
+      ctx.lineTo(t1.x, t1.y); ctx.lineTo(t0.x, t0.y);
       ctx.closePath();
       ctx.fillStyle = fill; ctx.fill();
-      ctx.fillStyle = shades[i]; ctx.fill();
+      ctx.fillStyle = faceShade(nx, ny); ctx.fill();
+      // where it meets the floor
+      ctx.beginPath();
+      ctx.moveTo(bx0, by0); ctx.lineTo(bx1, by1);
+      ctx.strokeStyle = 'rgba(8,11,20,0.42)'; ctx.lineWidth = 1.5; ctx.stroke();
     }
+
     // the cap, which is the face the old flat renderer was drawing all along
     ctx.beginPath();
     ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
@@ -7255,7 +7668,48 @@ const Game = (() => {
     ctx.closePath();
     ctx.fillStyle = fill; ctx.fill();
     if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
+
+    /* The bevel. One stroke per cap edge, bright into the light and dark away
+       from it — a hairline, but it is the difference between a coloured
+       quadrilateral and the top of something. */
+    const E = [[a, b, 0, -1], [b, c, 1, 0], [c, d, 0, 1], [d, a, -1, 0]];
+    ctx.lineWidth = 1.5;
+    for (const [p, q, nx, ny] of E) {
+      const lum = nx * LIGHT.x + ny * LIGHT.y;
+      if (Math.abs(lum) < 0.2) continue;                  // grazing: leave it alone
+      ctx.strokeStyle = lum > 0
+        ? `rgba(255,250,238,${(lum * 0.30).toFixed(3)})`
+        : `rgba(6,9,17,${(-lum * 0.26).toFixed(3)})`;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    }
     return { a, b, c, d };
+  }
+
+  /* The same idea for something round — a tree, a barrel, a post. A box body
+     under a tree trunk is worse than no body at all; this sweeps the footprint
+     ellipse up to where the top lands and fills the silhouette between them,
+     which is a cylinder. */
+  function drawRaisedColumn(cx, cy, rx, ry, h, fill) {
+    const t = lift(cx, cy, h);
+    const ang = Math.atan2(t.y - cy, t.x - cx);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, ang - Math.PI / 2, ang + Math.PI / 2, false);
+    ctx.ellipse(t.x, t.y, rx, ry, 0, ang + Math.PI / 2, ang - Math.PI / 2, false);
+    ctx.closePath();
+    ctx.fillStyle = fill; ctx.fill();
+    /* A cylinder is lit across its width, not in flat panels, so the shading
+       is a gradient running along the light rather than one tone per face. */
+    const g = ctx.createLinearGradient(cx - LIGHT.x * rx, cy - LIGHT.y * ry,
+      cx + LIGHT.x * rx, cy + LIGHT.y * ry);
+    g.addColorStop(0, 'rgba(9,13,23,0.42)');
+    g.addColorStop(0.62, 'rgba(9,13,23,0.06)');
+    g.addColorStop(1, 'rgba(255,247,231,0.16)');
+    ctx.fillStyle = g; ctx.fill();
+    // planted, not floating
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, ang - Math.PI / 2, ang + Math.PI / 2, false);
+    ctx.strokeStyle = 'rgba(8,11,20,0.38)'; ctx.lineWidth = 1.5; ctx.stroke();
+    return t;
   }
 
   function drawStructureShadows() {
@@ -8070,17 +8524,17 @@ const Game = (() => {
          couple of feet of crate underneath it. */
       const ph = heightOf(k);
       if (ph > 0) {
-        const top = lift(cx, cy, ph);
-        ctx.save();
-        // a narrow column, not a slab: enough to read as "this thing has a
-        // side" without inventing a footprint it does not have
-        const half = Math.min(s.w, s.h) * 0.34;
-        ctx.fillStyle = hexA(k.stroke || '#2a2f3a', 0.62);
-        ctx.beginPath();
-        ctx.moveTo(cx - half, cy); ctx.lineTo(cx + half, cy);
-        ctx.lineTo(top.x + half, top.y); ctx.lineTo(top.x - half, top.y);
-        ctx.closePath(); ctx.fill();
-        ctx.restore();
+        /* A body under the sprite. This used to be a two-point strip — a
+           quadrilateral with no sides of its own — which read as a cardboard
+           standee however tall it was. A round prop gets a cylinder and a
+           square one gets a box, both shaded off the same light as the walls,
+           so a tree and a crate no longer stand up the same way. */
+        const half = Math.min(s.w, s.h) * 0.36;
+        const body = hexA(k.stroke || '#2a2f3a', 0.62);
+        const top = k.round
+          ? drawRaisedColumn(cx, cy, half, half * 0.86, ph, body)
+          : (drawRaisedBox({ x: cx - half, y: cy - half, w: half * 2, h: half * 2 },
+              ph, body, null), lift(cx, cy, ph));
         ctx.save();
         if (hurt > 0.02) ctx.globalAlpha = 1 - hurt * 0.35;
         Sprites.draw(ctx, k.prop, top.x, top.y, (s.scale || 1) * (1 - hurt * 0.12), s.rot * 0.25);
@@ -8226,7 +8680,8 @@ const Game = (() => {
       const top = lift(s.x, s.y, hgt);
       ctx.save();
       ctx.translate(top.x - s.x, top.y - s.y);
-      const grew = 1 + hgt / 260;
+      // matches the cap's own scale in lift(), or the grain slides off the top
+      const grew = 1 + hgt / 400;
       ctx.translate(s.x, s.y); ctx.scale(grew, grew); ctx.translate(-s.x, -s.y);
     }
     roundRect(s.x, s.y, s.w, s.h, k.height === 'low' ? 3 : 5);
@@ -8983,12 +9438,28 @@ const Game = (() => {
      actually want while waiting: who you are watching, what they are holding,
      how they are doing, how to look at somebody else, and how long until you
      are back in it. */
+  /* Where the spectator panel starts, so anything else drawn at the bottom of
+     the screen can keep out of it. Shares the layout with drawSpectateUi
+     rather than restating it. */
+  const SPECTATE_FOOT = 92;
+  function spectateTop() {
+    const t = camTarget && camTarget !== player && camTarget.alive ? camTarget : null;
+    const stripH = spectatable().length ? 38 : 0;
+    return H - ((t ? 108 : 62) + stripH) - SPECTATE_FOOT;
+  }
+
   function drawSpectateUi() {
     if (!player || player.alive) return;
     const t = camTarget && camTarget !== player && camTarget.alive ? camTarget : null;
     const list = spectatable();
-    const w = 460, h = t ? 108 : 62;   // taller than it was: the deploy line lives here now
-    const x = (W - w) / 2, y = H - h - 92;
+    /* Room for the squad strip inside the panel.
+       It was drawn floating above the panel to begin with, where it landed on
+       top of the objective distance markers that ring the bottom of the
+       screen — two unrelated things fighting for the same forty pixels. Inside
+       the panel it has an opaque background of its own and cannot collide. */
+    const stripH = list.length ? 38 : 0;
+    const w = 460, h = (t ? 108 : 62) + stripH;
+    const x = (W - w) / 2, y = H - h - SPECTATE_FOOT;
 
     ctx.save();
     ctx.fillStyle = 'rgba(10,14,24,0.82)';
@@ -9001,8 +9472,9 @@ const Game = (() => {
        of them at once — health, who you are watching, and who is a legal
        deploy — so the next press of [D] is an informed one. */
     if (list.length) {
-      const cw = 74, gap = 6, tot = list.length * cw + (list.length - 1) * gap;
-      let cx0 = (W - tot) / 2, cy0 = y - 40;
+      const cw = Math.min(96, (w - 28 - (list.length - 1) * 6) / list.length);
+      const gap = 6, tot = list.length * cw + (list.length - 1) * gap;
+      let cx0 = (W - tot) / 2, cy0 = y + 6;
       for (const m of list) {
         const on = m === t;
         ctx.fillStyle = on ? 'rgba(255,207,74,0.16)' : 'rgba(10,14,24,0.72)';
@@ -9023,25 +9495,27 @@ const Game = (() => {
       }
     }
 
+    // everything below the strip is offset by its height
+    const y0 = y + stripH;
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     if (t) {
       // who, in their own colour
       ctx.fillStyle = teamInk(t.team);
-      ctx.beginPath(); ctx.arc(x + 26, y + 28, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 26, y0 + 28, 9, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Outfit, Segoe UI, sans-serif';
-      ctx.fillText(nameOf(t, 'Teammate'), x + 46, y + 27);
+      ctx.fillText(nameOf(t, 'Teammate'), x + 46, y0 + 27);
       ctx.fillStyle = 'rgba(200,212,232,0.7)'; ctx.font = '11px Outfit, Segoe UI, sans-serif';
-      ctx.fillText('SPECTATING', x + 46 + ctx.measureText(nameOf(t, 'Teammate')).width + 74, y + 27);
+      ctx.fillText('SPECTATING', x + 46 + ctx.measureText(nameOf(t, 'Teammate')).width + 74, y0 + 27);
 
       // what they are holding, and how much of it is left
       const sub = t.riding || t;
       ctx.fillStyle = '#e9f0ff'; ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
-      ctx.fillText(sub.weapon ? sub.weapon.name : '—', x + 46, y + 52);
+      ctx.fillText(sub.weapon ? sub.weapon.name : '—', x + 46, y0 + 52);
       ctx.fillStyle = 'rgba(200,212,232,0.85)'; ctx.font = '13px Outfit, Segoe UI, sans-serif';
       const ammo = sub.reloading ? 'reloading' : (sub.ammo + '/' + (sub.weapon ? sub.weapon.mag : 0));
-      ctx.fillText(ammo, x + 46 + 190, y + 52);
+      ctx.fillText(ammo, x + 46 + 190, y0 + 52);
       // their health, as a bar rather than a number
-      const bw = 120, bx = x + w - bw - 22, by = y + 46;
+      const bw = 120, bx = x + w - bw - 22, by = y0 + 46;
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, 8);
       ctx.fillStyle = t.hp / t.maxHp > 0.35 ? '#4be08a' : '#ff4b5c';
       ctx.fillRect(bx, by, bw * clamp(t.hp / t.maxHp, 0, 1), 8);
@@ -9406,9 +9880,13 @@ const Game = (() => {
        bar and the key legend. The insets are the HUD's own furniture — the
        compass above, the item slots and hint text below. */
     const bandL = 74, bandR = W - 74, bandT = 138;
-    // dead, the spectator bar takes the bottom of the screen, so the arrows
-    // have to give it more room than the action bar needs
-    const bandB = H - (player && !player.alive ? 260 : 160);
+    /* Dead, the spectator panel takes the bottom of the screen and the arrows
+       have to clear it. Measured off the panel rather than guessed at: the
+       panel grew when the squad strip moved inside it, and a hard-coded inset
+       silently stopped clearing anything. 22px of slack is the arrow's own
+       label and its distance, which hang below it and can stagger to avoid
+       each other. */
+    const bandB = (player && !player.alive) ? spectateTop() - 48 : H - 160;
 
     const items = [];
     for (const a of agents) {
@@ -9656,7 +10134,7 @@ const Game = (() => {
      Contested points say so, because "nothing is happening" and "you are
      winning slowly" look identical otherwise. */
   function drawCaptureBar() {
-    if (!player || !player.alive || mode !== 'domination') return;
+    if (!player || !player.alive || (mode !== 'domination' && mode !== 'tutorial')) return;
     let here = null;
     for (const o of objectives) {
       if (dist2(player.x, player.y, o.x, o.y) < o.r * o.r) { here = o; break; }
@@ -9673,7 +10151,10 @@ const Game = (() => {
     const contested = mine > 0 && theirs > 0;
     const held = here.owner === player.team && !here.progress;
 
-    const w = 230, h = 8, x = (W - w) / 2, y = 92;
+    /* Below the compass strip, not on top of it: the compass owns y=96..122,
+       and a bar drawn at 92 put its headcount line straight through the
+       bearings. Both are centred, so they have to be stacked, not shared. */
+    const w = 230, h = 8, x = (W - w) / 2, y = 148;
     ctx.save();
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
@@ -9862,7 +10343,7 @@ const Game = (() => {
 
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#dce8ff'; ctx.font = 'bold 15px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'left';
-    ctx.fillText(mode === 'domination' ? 'DOMINATION' : 'ELIMINATION', x + 16, y + 20);
+    ctx.fillText(modeTitle().toUpperCase(), x + 16, y + 20);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#9fb4d8'; ctx.font = '12px Outfit, Segoe UI, sans-serif';
     ctx.fillText(online ? `${online.ping}ms · ${rows.length} players` : `${rows.length} operators`, x + w - 16, y + 20);
@@ -10102,7 +10583,7 @@ const Game = (() => {
       nTeams = (TEAM_SETUP[mode] || TEAM_SETUP.domination).teams;
       teamScores = new Array(nTeams).fill(0);
       document.getElementById('hud-gamemode').textContent =
-        mode === 'domination' ? 'DOMINATION' : 'ELIMINATION';
+        modeTitle().toUpperCase();
     }
     if (hostMap && hostMap.w && hostMap.h) { MAP_W = hostMap.w; MAP_H = hostMap.h; }
     buildMap();
@@ -10780,7 +11261,7 @@ const Game = (() => {
     if (codeEl) codeEl.textContent = info.local ? 'LOCAL' : (info.code || '-----');
     document.getElementById('lobby-count').textContent =
       `${roster.length} ${roster.length === 1 ? 'player' : 'players'}${cap ? ` · room fits ${cap}` : ''}`
-      + ` · ${mode === 'domination' ? 'Domination' : 'Elimination'}`;
+      + ` · ${modeTitle()}`;
 
     const host = info.hosting;
     const sub = document.getElementById('lobby-sub');
@@ -11484,8 +11965,32 @@ const Game = (() => {
       lastShot: rangeShot && { dmg: rangeShot.dmg, m: rangeShot.m, ttk: rangeShot.ttk, shots: rangeShot.shots },
       view: Object.assign({}, view),
       zoom: +zoom.toFixed(3),
+      // where the camera actually is, so a harness can work out where on the
+      // screen a world point has ended up without reading pixels back
+      cam: { x: Math.round(camX), y: Math.round(camY) },
       stats: Object.assign({}, matchStats),
     }),
+    /* ---- the training ground ----
+       Where its props ended up and which lesson is on screen, so the tutorial
+       can be checked from a harness or the console rather than by playing it
+       through eighteen times. Null in every other mode. */
+    tutorial() {
+      if (mode !== 'tutorial' || !tutorialArena) return null;
+      const A = tutorialArena;
+      const at = (o) => (o ? { x: Math.round(o.x), y: Math.round(o.y) } : null);
+      return {
+        step: typeof Tutorial !== 'undefined' ? Tutorial.stepId() : null,
+        spawn: at(A.spawn), walk: at(A.walk),
+        wall: A.wall && { ...at(A.wall), hp: Math.round(A.wall.hp), standing: obstacles.indexOf(A.wall) >= 0 },
+        door: A.door && { ...at(A.door), open: !!A.door.open },
+        crate: A.crate && { ...at(A.crate), opened: !!A.crate.opened },
+        objective: objectives[0] && { ...at(objectives[0]), owner: objectives[0].owner, progress: Math.round(objectives[0].progress) },
+        targets: agents.filter(a => a.tutorTag).map(a => ({ tag: a.tutorTag, alive: a.alive, m: a.rangeM, ...at(a) })),
+        hostiles: agents.filter(a => a.noRespawn).map(a => ({ alive: a.alive, hp: Math.round(a.hp), ...at(a) })),
+        player: at(player),
+      };
+    },
+
     /* Walk a streak up to n and see what it paid out. */
     giveStreak(n) {
       if (!player) return [];
@@ -11495,7 +12000,8 @@ const Game = (() => {
     fireStreak() { useStreak(); return streakBank.slice(); },
     /* Die to an actual opponent, so the recap has someone to name. */
     dieToEnemy() {
-      const foe = agents.find(a => a.alive && !a.isVehicle && a.team !== player.team);
+      // on foot: a rider is pinned to its hull every frame and would snap back
+      const foe = agents.find(a => a.alive && !a.isVehicle && !a.riding && a.team !== player.team);
       if (!foe) return 'no enemy';
       foe.x = player.x + 400; foe.y = player.y; foe.hp = foe.maxHp * 0.4;
       // realistic hits, so the recap shows the numbers a real burst would
@@ -12043,13 +12549,137 @@ const Game = (() => {
     stackPoint(team) {
       const o = objectives[0];
       if (!o) return null;
-      for (const a of agents) if (!a.isVehicle) { a.x = -9e4; a.y = -9e4; }
+      for (const a of agents) if (!a.isVehicle && !a.isPlayer) { a.x = -9e4; a.y = -9e4; }
       const bots = agents.filter(a => !a.isVehicle && a.alive && a.team === team).slice(0, 1);
       for (const a of bots) { a.x = o.x; a.y = o.y; }
       return { name: o.name, owner: o.owner, progress: Math.round(o.progress), moved: bots.length };
     },
     // the kill feed, including the weapon each row now carries
     feed: () => killFeed.map(k => ({ killer: k.killer, victim: k.victim, weapon: k.weapon })),
+    /* Stand an enemy in front of the player at point-blank range, facing away,
+       so a shot cannot miss. Accuracy, headshots and assists are only worth
+       counting if a hit can be made to happen on demand. */
+    enemyInFront(dist = 90) {
+      const foe = agents.find(a => a.alive && !a.isVehicle && a.team !== player.team);
+      if (!foe) return null;
+      foe.x = player.x + Math.cos(player.angle) * dist;
+      foe.y = player.y + Math.sin(player.angle) * dist;
+      if (!foe.frozen) foe.hp = foe.maxHp;   // repositioning must not also heal
+      foe.frozen = true;
+      // a full magazine, or the probe measures a reload instead of a hit
+      player.ammo = player.weapon.mag; player.reloadTimer = 0;                 // stand still long enough to be shot
+      return { name: foe.name, hp: foe.hp, team: foe.team, dist,
+        px: Math.round(player.x), py: Math.round(player.y),
+        fx: Math.round(foe.x), fy: Math.round(foe.y),
+        angle: +player.angle.toFixed(2), alive: foe.alive, pAlive: player.alive };
+    },
+    /* Park the camera on the biggest building on the map, at a fixed zoom, so
+       a rendering change can be compared frame to frame instead of against a
+       different corner of a different island every run. */
+    poseAtBuilding(i = 0, z = 1, reveal = true) {
+      const b = buildings.slice().sort((p, q) => (q.w * q.h) - (p.w * p.h))[i];
+      if (!b) return null;
+      // the fog is not what is being looked at here
+      if (reveal) {
+        const f = fogFor(b);
+        f.seen.fill(1); f.any = true; f.dirty = true;
+      }
+      player.x = b.x + b.w / 2; player.y = b.y + b.h / 2;
+      player.angle = -Math.PI / 4;
+      camX = player.x - (W / z) / 2; camY = player.y - (H / z) / 2;
+      return { name: b.name, w: Math.round(b.w), h: Math.round(b.h) };
+    },
+    weather: () => { const w = weatherNow(); return w ? w.id : 'clear'; },
+    /* Every alive bot, and whether anything on screen would actually show it.
+       "Invisible bot" is a claim you can check: a body that is being simulated
+       but drawn nowhere. */
+    bodies() {
+      const out = { alive: 0, riding: 0, ridingDetached: 0, camo: 0, drawn: 0 };
+      for (const a of agents) {
+        if (!a.alive || a.isVehicle || a.isPlayer) continue;
+        out.alive++;
+        if (a.riding) {
+          out.riding++;
+          // a rider that is not where its hull is, is a body walking around loose
+          if (Math.hypot(a.x - a.riding.x, a.y - a.riding.y) > 4) out.ridingDetached++;
+          continue;
+        }
+        if (camouflaged(a)) out.camo++;
+        out.drawn++;
+      }
+      return out;
+    },
+    // hulls with a bot at the wheel, and whether they are going anywhere
+    hulls() {
+      return agents.filter(v => v.isVehicle && v.alive && v.driver && !v.driver.isPlayer)
+        .map(v => ({ x: Math.round(v.x), y: Math.round(v.y), team: v.team,
+          driver: v.driver.name, speed: Math.round(Math.hypot(v.vx || 0, v.vy || 0)) }));
+    },
+    lootedByBots: () => botLootCount,
+    cratesLeft: () => crates.filter(c => !c.opened).length,
+    // hand every bot a reason to go looting, so the errand can be observed
+    makeBotsWant() {
+      let n = 0;
+      for (const a of agents) {
+        if (!a.alive || a.isVehicle || a.isPlayer) continue;
+        a.hp = a.maxHp * 0.5; a.ammo = 0; a.lootCool = 0; n++;
+      }
+      return n;
+    },
+    // a full magazine on demand, so a probe measures the shot and not a reload
+    topUp() { if (player && player.weapon) { player.ammo = player.weapon.mag; player.reloadTimer = 0; } return player ? player.ammo : 0; },
+    noDamage(on) { debugNoDamage = !!on; if (on && player) { player.hp = player.maxHp; } return debugNoDamage; },
+    /* Somewhere outdoors with a decent crowd of props in shot — trees, rocks,
+       barrels — which is where the round bodies have to be judged. */
+    poseOutdoors() {
+      let best = null, bn = -1;
+      for (const s2 of structureRects()) {
+        if (!s2.isProp) continue;
+        let n = 0;
+        for (const t of structureRects()) {
+          if (t.isProp && dist2(t.x, t.y, s2.x, s2.y) < 420 * 420) n++;
+        }
+        if (n > bn) { bn = n; best = s2; }
+      }
+      if (!best) return null;
+      player.x = best.x; player.y = best.y; player.angle = -Math.PI / 4;
+      camX = player.x - W / 2; camY = player.y - H / 2;
+      return { props: bn, x: Math.round(player.x), y: Math.round(player.y) };
+    },
+    // stand the player in the middle of the first objective, for the capture bar
+    standOnPoint(alone = true) {
+      const o = objectives[0];
+      if (!o) return null;
+      // clear the point first, or "contested" is what the bar will say
+      if (alone) {
+        for (const a of agents) {
+          if (a.isPlayer || a.isVehicle) continue;
+          if (dist2(a.x, a.y, o.x, o.y) < (o.r + 200) * (o.r + 200)) { a.x = -9e4; a.y = -9e4; }
+        }
+      }
+      player.x = o.x; player.y = o.y;
+      return { name: o.name, owner: o.owner };
+    },
+    mode: () => mode,
+    onPoint() {
+      const o = objectives.find(o2 => dist2(player.x, player.y, o2.x, o2.y) < o2.r * o2.r);
+      return { mode, alive: player.alive, on: o ? o.name : null,
+        progress: o ? Math.round(o.progress) : null, capTeam: o ? o.capTeam : null };
+    },
+    magSize: () => (player && player.weapon ? player.weapon.mag : 0),
+    killPlayer() { killAgent(player, null, 'body'); return !player.alive; },
+    // the health of whatever enemyInFront put down, to prove rounds landed
+    frozenHp: () => {
+      const foe = agents.find(a => a.frozen);
+      return foe ? { hp: Math.round(foe.hp), max: foe.maxHp, alive: foe.alive } : null;
+    },
+    // who has assist credit banked against that same target
+    // against the target enemyInFront put down, not against whoever happens to
+    // have been shot at somewhere on the map this second
+    hurtByCount: () => {
+      const foe = agents.find(a => a.frozen) || agents.find(a => a.hurtBy && a.hurtBy.size);
+      return foe && foe.hurtBy ? foe.hurtBy.size : 0;
+    },
   };
 
   return {

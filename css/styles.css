@@ -1198,7 +1198,7 @@ p  { text-wrap: pretty; }
 .aar {
   /* auto-fit rather than a fixed six: the report grew past one row, and a
      hard column count either squeezes the cells or strands them. */
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 6px; margin: 16px 0 4px; padding-top: 14px;
   border-top: 1px solid var(--line);
 }
@@ -1319,3 +1319,65 @@ p  { text-wrap: pretty; }
 .hud__ammo b { font-size: 19px; }
 
 @media (prefers-reduced-motion: reduce) { .hud__health.is-critical { animation: none; } }
+
+/* ---------- basic training bar ----------
+   The same shape as the firing range bar below it, in the accent that means
+   "start here" rather than the mint that means "practice". The recommendation
+   only stands until the tutorial has been taken once. */
+.rangebar--train { border-left-color: var(--accent, #e8763f); }
+.rangebar--train.is-recommended {
+  background: rgba(232, 118, 63, 0.10);
+  border-color: rgba(232, 118, 63, 0.35);
+}
+.rangebar__actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.tag--new {
+  margin-left: 8px; padding: 2px 7px; border-radius: 5px;
+  font-size: 9px; font-weight: 900; letter-spacing: 1.2px;
+  background: var(--accent, #e8763f); color: #161009;
+}
+
+/* ---------- how to play ----------
+   A reference, so it is dense on purpose: tables of the real numbers rather
+   than paragraphs about them. The box is wider than the settings modal
+   because several of those tables have five columns. */
+.modal__box--wide { width: min(880px, 96vw); }
+.howto__tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.howto__tab {
+  padding: 7px 13px; border-radius: 8px; font-size: 12px; font-weight: 700;
+  border: 1px solid var(--line); background: rgba(0,0,0,0.25); color: var(--muted);
+  transition: 0.15s;
+}
+.howto__tab:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.howto__tab.is-active { color: #161009; background: var(--accent, #e8763f); border-color: transparent; }
+.howto { display: flex; flex-direction: column; gap: 22px; max-height: 58vh; overflow-y: auto; padding-right: 4px; }
+.howto__sec h3 { font-size: 15px; margin: 0 0 6px; }
+.howto__lede { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin: 0 0 10px; max-width: 72ch; }
+.howto__note { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: 8px 0 0; max-width: 72ch; }
+.howto__list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
+.howto__list li { font-size: 12.5px; line-height: 1.55; color: var(--text); }
+.howto__list li b { color: var(--accent-2, #7ff2c1); }
+/* Wide tables scroll inside themselves rather than pushing the modal out. */
+.howto__tablewrap { overflow-x: auto; margin: 10px 0; }
+.howto__table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.howto__table th {
+  text-align: left; padding: 7px 10px; color: var(--muted);
+  font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
+  border-bottom: 1px solid var(--line-strong); white-space: nowrap;
+}
+.howto__table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.howto__table tr:last-child td { border-bottom: none; }
+.howto__sub { display: block; margin-top: 2px; color: var(--muted); font-size: 10.5px; line-height: 1.4; max-width: 44ch; }
+.howto kbd {
+  display: inline-block; min-width: 22px; padding: 2px 6px; margin: 0 1px;
+  border-radius: 5px; border: 1px solid rgba(127,242,193,0.45);
+  background: rgba(127,242,193,0.12); color: var(--accent-2, #7ff2c1);
+  font-family: 'Azeret Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700;
+  text-align: center;
+}
+.howto i { color: var(--muted); font-style: normal; }
+
+@media (max-width: 720px) {
+  .rangebar--train { flex-direction: column; align-items: flex-start; }
+  .rangebar__actions { width: 100%; }
+  .rangebar__actions .btn { flex: 1; }
+}
