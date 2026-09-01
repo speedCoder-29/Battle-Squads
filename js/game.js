@@ -35,6 +35,22 @@ const Game = (() => {
   let MAP_W = MAP_SIZES.domination.w, MAP_H = MAP_SIZES.domination.h;
   const SCORE_CAP = 1000;             // domination win score
   const MATCH_SECONDS = 8 * 60;      // time limit
+
+  /* ---------------- the guided match ----------------
+     The first real game after training: an ordinary offline Domination match
+     with a coach watching it (js/coach.js). Everything about it is real — the
+     bots, the score, the XP — but it is deliberately smaller and shorter than
+     a full lobby, because a new player's first match should be legible: six
+     people, three points, five minutes, and gentle opposition.
+
+     `coached` is set by start()'s options and cleared by every other start, so
+     no later match can inherit it. */
+  let coached = false;
+  const COACH_SETUP = { teams: 2, perTeam: 3 };
+  const COACH_SCORE_CAP = 400;
+  const COACH_SECONDS = 5 * 60;
+  const COACH_BOTS = 3;               // difficulty, whatever the settings say
+  const scoreCap = () => (coached ? COACH_SCORE_CAP : SCORE_CAP);
   /* Twenty squads, twenty colours, twenty names.
 
      There were six of each, and every read is `TEAM_COLORS[t % length]` — so a
@@ -2268,10 +2284,11 @@ const Game = (() => {
     return out;
   }
 
-  /* What js/tutorial.js is allowed to see and do. Everything is a getter, so
-     the module reads the live world rather than a copy taken at start — and so
-     nothing in here is evaluated before the constants it names exist. */
-  const tutorialApi = {
+  /* What the assist layer — js/tutorial.js and js/coach.js — is allowed to see
+     and do. Everything is a getter, so those modules read the live world rather
+     than a copy taken at start, and so nothing in here is evaluated before the
+     constants it names exist. */
+  const assistApi = {
     get PX_PER_M() { return PX_PER_M; },
     get player() { return player; },
     get agents() { return agents; },
@@ -2283,6 +2300,16 @@ const Game = (() => {
     get marks() { return marks; },
     get input() { return input; },
     get arena() { return tutorialArena; },
+    /* ...and the match around it, which is what the coach reads */
+    get mode() { return mode; },
+    get coached() { return coached; },
+    get teamScores() { return teamScores; },
+    get timeLeft() { return timeLeft; },
+    get scoreCap() { return scoreCap(); },
+    get stats() { return matchStats; },
+    get drops() { return drops; },
+    get deathRecap() { return deathRecap; },
+    hasLOS: (x1, y1, x2, y2) => hasLOS(x1, y1, x2, y2),
     msg: (t) => hudMsg(t),
     /* The heal lesson needs somebody to heal. Floored well clear of death, so
        the lesson cannot kill the person taking it. */
@@ -2293,10 +2320,11 @@ const Game = (() => {
       spawnFx(player.x, player.y, '#ff4b5c', 6);
     },
     spawnHostiles: (n) => spawnTutorialHostiles(n),
-    /* "I am done — put me in a real match", off the last card. */
+    /* "I am done" — off training's last card, and into the guided match:
+       a real game, with the coach watching it rather than nothing at all. */
     deploy() {
       Tutorial.stop();
-      start(typeof Screens !== 'undefined' ? Screens.getSelectedMode() : 'domination');
+      start('domination', undefined, { coached: true });
     },
   };
 
@@ -2312,7 +2340,7 @@ const Game = (() => {
     const profile = DB.getProfile();
     const playerWeapon = (profile && Weapons.byId[profile.weapon]) ? profile.weapon : Weapons.default;
 
-    const setup = setupFor(mode);
+    const setup = coached ? COACH_SETUP : setupFor(mode);
     nTeams = setup.teams;
 
     if (mode === 'range') {
@@ -2401,8 +2429,9 @@ const Game = (() => {
   }
 
   /* ---------------- start / stop ---------------- */
-  function start(selectedMode, seed) {
+  function start(selectedMode, seed, opts) {
     mode = selectedMode;
+    coached = !!(opts && opts.coached);
     Screens.show('game');
     if (!canvas) {
       canvas = document.getElementById('game-canvas');
@@ -2419,7 +2448,10 @@ const Game = (() => {
     const size = MAP_SIZES[mode] || MAP_SIZES.elimination;
     MAP_W = size.w; MAP_H = size.h;
     worldSeed = (seed >>> 0) || ((Math.random() * 0xffffffff) >>> 0);
-    botLevel = DB.getSettings().botLevel || BotAI.DEFAULT;
+    /* A guided match holds the bots at a gentle level whatever the settings
+       say: it is somebody's first real game, and level 9 teaches nothing
+       except that the game is unfair. */
+    botLevel = coached ? COACH_BOTS : (DB.getSettings().botLevel || BotAI.DEFAULT);
     squadIntel = [];
     buildMap();
     setupTeams();
@@ -2460,17 +2492,22 @@ const Game = (() => {
       addItem('heal', 'bandage', 3);
     }
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
-    timeLeft = MATCH_SECONDS;
+    timeLeft = coached ? COACH_SECONDS : MATCH_SECONDS;
     camTarget = player; camWasDead = false; camSnap = true;
     matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0, shots: 0, hits: 0, heads: 0, assists: 0 };
     botLootCount = 0;
     paused = false; running = true;
 
     document.getElementById('hud-gamemode').textContent =
-      mode === 'domination' ? 'DOMINATION' : mode === 'range' ? 'FIRING RANGE'
-        : mode === 'tutorial' ? 'BASIC TRAINING' : 'ELIMINATION';
+      (mode === 'domination' ? 'DOMINATION' : mode === 'range' ? 'FIRING RANGE'
+        : mode === 'tutorial' ? 'BASIC TRAINING' : 'ELIMINATION')
+      + (coached ? ' · GUIDED' : '');
     document.getElementById('game-pause').classList.remove('is-open');
     document.getElementById('game-results').classList.remove('is-open');
+    /* The last match's debrief must not be sitting behind this one's results,
+       waiting to be shown again for a match the coach never watched. */
+    const oldDebrief = document.getElementById('res-debrief');
+    if (oldDebrief) { oldDebrief.innerHTML = ''; oldDebrief.hidden = true; }
     // legend is loud for the first few seconds, then fades back (hover to read)
     const hint = document.getElementById('hud-hint');
     renderHint();
@@ -2478,8 +2515,10 @@ const Game = (() => {
     setTimeout(() => hint.classList.add('is-faded'), 12000);
     updateWeaponHud();
 
-    if (mode === 'tutorial') Tutorial.begin(tutorialApi);
+    if (mode === 'tutorial') Tutorial.begin(assistApi);
     else if (typeof Tutorial !== 'undefined') Tutorial.stop();
+    if (coached) Coach.begin(assistApi);
+    else if (typeof Coach !== 'undefined') Coach.stop();
 
     lastTime = performance.now();
     requestAnimationFrame(loop);
@@ -2527,6 +2566,7 @@ const Game = (() => {
   function quitMatch() {
     running = false; paused = false;
     if (typeof Tutorial !== 'undefined') Tutorial.stop();
+    if (typeof Coach !== 'undefined') Coach.stop();
     /* Leaving an online match has to hang up, not just walk away from the
        screen. A host that stayed registered kept handing its code out to a
        room nobody was simulating; a guest that stayed connected left a body
@@ -4055,6 +4095,21 @@ const Game = (() => {
 
   /* The nearest hull this bot could take: unclaimed, or its own squad's. */
   function botNearestRide(a, range) {
+    /* One in three of a squad, at most.
+
+       Fetching a vehicle used to fail so often that no cap was needed. Now
+       that bots can actually path to one, twelve of fifteen ended up behind
+       the wheel at once and the infantry fight stopped happening. A squad with
+       a couple of hulls moving is armour support; a squad entirely inside
+       hulls is a convoy. Asked once, before looking at any vehicle. */
+    let mine = 0, mounted = 0;
+    for (const q of agents) {
+      if (!q.alive || q.isVehicle || q.team !== a.team) continue;
+      mine++;
+      if (q.riding || (q.rideWant && q !== a)) mounted++;
+    }
+    if (mounted >= Math.max(1, Math.floor(mine / 3))) return null;
+
     let best = null, bd = range * range;
     for (const v of agents) {
       if (!v.isVehicle || !v.alive || v.driver) continue;
@@ -4140,6 +4195,16 @@ const Game = (() => {
     if (online || v.driver || !v.alive) return;
     a.riding = v; v.driver = a;
     v.team = a.team; v.neutral = false;
+    /* Release the parking brake.
+
+       An unclaimed hull is pinned with `aiHold = Infinity` so that the local
+       AI does not go joyriding in vehicles nobody owns. The player's
+       boardVehicle clears it on the way in; this did not, so every jeep a bot
+       climbed into stayed held forever and the update loop skipped it on every
+       single frame — measured, 940 consecutive skips and 0 AI ticks. Bots were
+       boarding correctly and then sitting in a parked car for the rest of the
+       match. */
+    v.aiHold = 0;
     a.path = null; a.pathTarget = null;
   }
 
@@ -5433,13 +5498,21 @@ const Game = (() => {
      so twenty-odd bots don't all run A* on the same frame. */
   let navGrid = null;
   let pathBudget = 0;
+  /* A* cells the whole game may expand this frame, shared by every bot. About
+     three milliseconds' worth on the machine this was tuned on. */
+  const NAV_NODES_PER_FRAME = 9000;
+  let navNodeBudget = NAV_NODES_PER_FRAME;
   let navDirty = false, navRebuildIn = 0, navChanges = 0;
 
   function buildNav() {
     /* Doors are a way in, not a wall. Route through them and open them on
        arrival — otherwise every building is sealed, and since the capture
        points sit inside buildings, nothing could reach an objective at all. */
-    navGrid = Nav.build(MAP_W, MAP_H, solidRects().filter(s => !Structures.isDoor(s)));
+    const solids = solidRects();
+    navGrid = Nav.build(MAP_W, MAP_H, solids.filter(s => !Structures.isDoor(s)));
+    /* ...and then say so out loud. Leaving the doorway to be discovered by
+       sampling left most rooms in the map cut off from the rest of it. */
+    Nav.openDoorways(navGrid, solids.filter(s => Structures.isDoor(s)));
     if (!terrain) return;
     // Stamp costs by walking the paths rather than asking the terrain about
     // every cell: surfaceAt does a distance-to-polyline test, and running that
@@ -5496,19 +5569,43 @@ const Game = (() => {
      Urgent requests draw on a small separate allowance, so a committed bot
      gets its route without letting the general case run unbounded. */
   let ridePathBudget = 0;
+  /* How the pathing is actually doing, so "bots navigate badly" can be a
+     measurement. Reset with the match. */
+  let navStat = { ask: 0, reuse: 0, starved: 0, solved: 0, failed: 0, ms: 0 };
+
   function ensurePath(a, tx, ty, urgent) {
     if (!navGrid) return false;
+    navStat.ask++;
     const moved = !a.pathTarget || dist2(a.pathTarget.x, a.pathTarget.y, tx, ty) > 240 * 240;
     a.pathAge = (a.pathAge || 0) - 1;
-    if (a.path && a.path.length && !moved && a.pathAge > 0) return true;
+    if (a.path && a.path.length && !moved && a.pathAge > 0) { navStat.reuse++; return true; }
     if (pathBudget <= 0) {
-      if (!urgent || ridePathBudget <= 0) return !!(a.path && a.path.length);
+      if (!urgent || ridePathBudget <= 0) { navStat.starved++; return !!(a.path && a.path.length); }
       ridePathBudget--;
     } else pathBudget--;
+    /* A target that could not be reached a moment ago still cannot be. The
+       expensive searches are the ones that fail, and re-running the same
+       hopeless one every couple of seconds for the whole match is where the
+       pathing budget was actually going. */
+    if (a.pathFailAt && dist2(a.pathFailAt.x, a.pathFailAt.y, tx, ty) < 200 * 200
+        && (a.pathFailT || 0) > 0) { a.pathFailT -= 1 / 60; navStat.starved++; return false; }
     a.pathTarget = { x: tx, y: ty };
     a.pathAge = 90 + Math.floor(Math.random() * 60);           // ~1.5-2.5s
-    a.path = Nav.findPath(navGrid, a.x, a.y, tx, ty) || null;
+    /* Budgeted in nodes, not in searches.
+
+       Two searches a frame was a fine cap while a search cost 0.4ms because it
+       bailed after 6000 nodes. Once the map was properly connected and the
+       node ceiling went up to match, a single search could expand 20,000 cells
+       and take 5ms — so the same "two a frame" was suddenly ten milliseconds
+       of A* in a sixteen millisecond frame, and the frame rate halved. What
+       has to be capped is the work, so that is what is counted. */
+    const t0 = performance.now();
+    a.path = Nav.findPath(navGrid, a.x, a.y, tx, ty, navNodeBudget) || null;
+    navNodeBudget -= Nav.lastSteps();
+    navStat.ms += performance.now() - t0;
     a.pathI = 0;
+    if (a.path && a.path.length) { navStat.solved++; a.pathFailT = 0; }
+    else { navStat.failed++; a.pathFailAt = { x: tx, y: ty }; a.pathFailT = 4; }
     return !!(a.path && a.path.length);
   }
 
@@ -5610,6 +5707,7 @@ const Game = (() => {
     updateToolRings(dt);
     invalidateRects();
     pathBudget = 2;      // at most two A* runs a frame, spread across the bots
+    navNodeBudget = NAV_NODES_PER_FRAME;
     ridePathBudget = 2;  // ...plus two reserved for bots already fetching a vehicle          // walls can be built, blown up or opened any frame
     /* Online the match clock belongs to whoever is hosting, and we only read
        it. Counting down locally as well meant the displayed time was our own
@@ -5642,6 +5740,7 @@ const Game = (() => {
     updateKillFeed(dt);
     if (rangeShot && (rangeShot.life -= dt) <= 0) rangeShot = null;
     if (mode === 'tutorial') Tutorial.update(dt);   // one lesson at a time
+    if (coached) Coach.update(dt);                  // ...and one piece of advice at a time
     updateSoundPings(dt);
     updateBuildingEffect(dt);
     updateBuildingFog();
@@ -5806,6 +5905,8 @@ const Game = (() => {
         continue;
       }
       if (a.driver && a.driver.isPlayer) continue;    // driveVehicle has the wheel
+      // test scaffolding: a target a probe has pinned down stays pinned down
+      if (a.frozen) { a.vx = a.vy = 0; continue; }
       if (!a.isPlayer) updateBot(a, dt);
     }
 
@@ -6603,7 +6704,7 @@ const Game = (() => {
     if (mode === 'range' || mode === 'tutorial') return;
     if (mode === 'domination') {
       for (let t = 0; t < teamScores.length; t++) {
-        if (teamScores[t] >= SCORE_CAP) return endMatch(t === 0);
+        if (teamScores[t] >= scoreCap()) return endMatch(t === 0);
       }
       if (timeLeft <= 0) {
         const maxScore = Math.max(...teamScores);
@@ -6745,6 +6846,14 @@ const Game = (() => {
   function endMatch(won, roster) {
     if (!running) return;
     running = false;
+    /* The coach's read on the match, written before its sampling is thrown
+       away by the next one. Empty and hidden in an ordinary match. */
+    const debriefBox = document.getElementById('res-debrief');
+    if (debriefBox) {
+      if (coached) Coach.renderDebrief(debriefBox);
+      else debriefBox.innerHTML = '';
+      debriefBox.hidden = !coached;
+    }
     input.shooting = false;
     showLobby(false);
     // snapshot the board before `online` is torn down by the caller
@@ -7203,6 +7312,7 @@ const Game = (() => {
     drawEmotes();        // and what everyone is saying about it
     // training markers sit on the ground, under the units standing on them
     if (mode === 'tutorial') Tutorial.drawWorld(ctx, performance.now());
+    if (coached) Coach.drawWorld(ctx, performance.now());
 
     // damage numbers
     for (const d of dmgNums) {
@@ -7255,6 +7365,7 @@ const Game = (() => {
     drawEdgeIndicators();   // squad and objectives that are off the screen
     drawRangeHud();         // firing range only: target distances and the readout
     if (mode === 'tutorial') Tutorial.drawHud(ctx, W, H, performance.now());
+    if (coached) Coach.drawHud(ctx, W, H);
     drawStreakChips();      // scorestreaks you are holding
     drawKillFeed();
     drawKillBanner();
@@ -11991,6 +12102,15 @@ const Game = (() => {
       };
     },
 
+    /* ---- the guided match ----
+       Whether one is running, what the coach last said, and what its debrief
+       would read if the match ended now. */
+    coach() {
+      if (!coached) return null;
+      return Object.assign({ mode, timeLeft: Math.round(timeLeft), cap: scoreCap(), scores: teamScores.map(Math.round) },
+        typeof Coach !== 'undefined' ? Coach.debug() : {});
+    },
+
     /* Walk a streak up to n and see what it paid out. */
     giveStreak(n) {
       if (!player) return [];
@@ -12562,8 +12682,22 @@ const Game = (() => {
     enemyInFront(dist = 90) {
       const foe = agents.find(a => a.alive && !a.isVehicle && a.team !== player.team);
       if (!foe) return null;
-      foe.x = player.x + Math.cos(player.angle) * dist;
-      foe.y = player.y + Math.sin(player.angle) * dist;
+      /* Somewhere the player can actually shoot.
+
+         This used to drop the target on the player's current bearing and hope.
+         Inside a building that bearing is often a wall, so twelve rounds at
+         ninety pixels would land nothing and the probe would report that hit
+         registration was broken when what was broken was the probe. Sweep for
+         a heading with a clear line and turn the player to face it. */
+      let ang = player.angle, found = false;
+      for (let k = 0; k < 24 && !found; k++) {
+        const t = player.angle + (k % 2 ? -1 : 1) * Math.floor(k / 2) * (Math.PI / 12);
+        const tx = player.x + Math.cos(t) * dist, ty = player.y + Math.sin(t) * dist;
+        if (hasLOS(player.x, player.y, tx, ty)) { ang = t; found = true; }
+      }
+      player.angle = ang;
+      foe.x = player.x + Math.cos(ang) * dist;
+      foe.y = player.y + Math.sin(ang) * dist;
       if (!foe.frozen) foe.hp = foe.maxHp;   // repositioning must not also heal
       foe.frozen = true;
       // a full magazine, or the probe measures a reload instead of a hit
@@ -12586,10 +12720,107 @@ const Game = (() => {
       }
       player.x = b.x + b.w / 2; player.y = b.y + b.h / 2;
       player.angle = -Math.PI / 4;
+      debugZoom = z; zoom = z; zoomTarget = z;
       camX = player.x - (W / z) / 2; camY = player.y - (H / z) / 2;
-      return { name: b.name, w: Math.round(b.w), h: Math.round(b.h) };
+      return { name: b.name, w: Math.round(b.w), h: Math.round(b.h), rooms: (b.rooms || []).length };
     },
     weather: () => { const w = weatherNow(); return w ? w.id : 'clear'; },
+    nav: () => ({ ...navStat, astar: Nav.stats() }),
+    /* Is the map one place or several? Flood-fills the nav grid from the
+       player and reports how much of the walkable world is actually reachable
+       from where they stand. Anything under 100% is a room nobody can path
+       into or out of. */
+    connectivity() {
+      const g = navGrid; if (!g) return null;
+      const n = g.cols * g.rows;
+      let open = 0;
+      for (let i = 0; i < n; i++) if (!g.blocked[i]) open++;
+      const [px, py] = Nav.cellOf(player.x, player.y);
+      const st = Nav.nearestOpen(g, px, py);
+      if (!st) return { open, reached: 0 };
+      const seen = new Uint8Array(n);
+      const q = [st[1] * g.cols + st[0]];
+      seen[q[0]] = 1;
+      let reached = 0;
+      while (q.length) {
+        const cur = q.pop(); reached++;
+        const cx = cur % g.cols, cy = (cur / g.cols) | 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
+          const ni = ny * g.cols + nx;
+          if (seen[ni] || g.blocked[ni]) continue;
+          if (dx && dy && (g.blocked[cy * g.cols + cx + dx] || g.blocked[(cy + dy) * g.cols + cx])) continue;
+          seen[ni] = 1; q.push(ni);
+        }
+      }
+      return { open, reached, pct: +(reached / open * 100).toFixed(1) };
+    },
+    /* What the unreachable pockets actually are: how many, how big, and
+       whether they are inside a building or out in the world. */
+    pockets() {
+      const g = navGrid; if (!g) return null;
+      const n = g.cols * g.rows;
+      const comp = new Int32Array(n).fill(-1);
+      const sizes = [];
+      for (let start = 0; start < n; start++) {
+        if (g.blocked[start] || comp[start] >= 0) continue;
+        const id = sizes.length;
+        let size = 0;
+        const q = [start]; comp[start] = id;
+        let sx = 0, sy = 0;
+        while (q.length) {
+          const cur = q.pop(); size++;
+          const cx = cur % g.cols, cy = (cur / g.cols) | 0;
+          sx += cx; sy += cy;
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
+            const ni = ny * g.cols + nx;
+            if (comp[ni] >= 0 || g.blocked[ni]) continue;
+            if (dx && dy && (g.blocked[cy * g.cols + cx + dx] || g.blocked[(cy + dy) * g.cols + cx])) continue;
+            comp[ni] = id; q.push(ni);
+          }
+        }
+        const wx = (sx / size) * Nav.CELL, wy = (sy / size) * Nav.CELL;
+        const b = buildings.find(bb => wx > bb.x && wx < bb.x + bb.w && wy > bb.y && wy < bb.y + bb.h);
+        sizes.push({ size, x: Math.round(wx), y: Math.round(wy), inside: b ? b.name : null });
+      }
+      sizes.sort((a2, b2) => b2.size - a2.size);
+      const total = sizes.reduce((t, c) => t + c.size, 0);
+      return { components: sizes.length, biggest: sizes[0].size, total,
+        next: sizes.slice(1, 9) };
+    },
+    // how many doorways have no walkable cell in them at all
+    doorGaps() {
+      const g = navGrid; if (!g) return null;
+      let doors = 0, sealed = 0;
+      for (const s2 of structureRects()) {
+        if (!Structures.isDoor(s2)) continue;
+        doors++;
+        const [cx, cy] = Nav.cellOf(s2.x + s2.w / 2, s2.y + s2.h / 2);
+        let anyOpen = false;
+        for (let dy = -1; dy <= 1 && !anyOpen; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!Nav.isBlocked(g, cx + dx, cy + dy)) { anyOpen = true; break; }
+        }
+        if (!anyOpen) sealed++;
+      }
+      return { doors, sealed };
+    },
+    navReset() { navStat = { ask: 0, reuse: 0, starved: 0, solved: 0, failed: 0, ms: 0 }; Nav.resetStats(); },
+    // how many bots are inside a building right now, and how many are stuck
+    indoors() {
+      let inside = 0, stuck = 0, total = 0;
+      for (const a of agents) {
+        if (!a.alive || a.isVehicle || a.isPlayer || a.riding) continue;
+        total++;
+        if (buildings.some(b => insideBuilding(b, a))) inside++;
+        if ((a.stuckT || 0) > 0.7) stuck++;
+      }
+      return { total, inside, stuck };
+    },
     /* Every alive bot, and whether anything on screen would actually show it.
        "Invisible bot" is a claim you can check: a body that is being simulated
        but drawn nowhere. */
@@ -12613,7 +12844,8 @@ const Game = (() => {
     hulls() {
       return agents.filter(v => v.isVehicle && v.alive && v.driver && !v.driver.isPlayer)
         .map(v => ({ x: Math.round(v.x), y: Math.round(v.y), team: v.team,
-          driver: v.driver.name, speed: Math.round(Math.hypot(v.vx || 0, v.vy || 0)) }));
+          driver: v.driver.name, speed: Math.round(Math.hypot(v.vx || 0, v.vy || 0)),
+          goal: v.aiTargetPt ? 1 : 0, path: v.path ? v.path.length : 0 }));
     },
     lootedByBots: () => botLootCount,
     cratesLeft: () => crates.filter(c => !c.opened).length,

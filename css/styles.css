@@ -1381,3 +1381,89 @@ p  { text-wrap: pretty; }
   .rangebar__actions { width: 100%; }
   .rangebar__actions .btn { flex: 1; }
 }
+
+/* ---------- the coach's debrief ----------
+   Sits above the after-action tiles on the results panel, and only in a
+   guided match. Each row is one thing to do differently, with the number it
+   was derived from, so it reads as evidence rather than as a horoscope. */
+.debrief {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 16px 0 4px; padding: 14px 16px;
+  border: 1px solid var(--line); border-left: 3px solid var(--accent-2, #7ff2c1);
+  border-radius: 10px; background: rgba(0,0,0,0.24); text-align: left;
+}
+.debrief__title {
+  margin: 0 0 2px; font-size: 10px; font-weight: 900;
+  letter-spacing: 2px; text-transform: uppercase; color: var(--muted);
+}
+.debrief__row { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid transparent; }
+.debrief__row b { font-size: 13px; }
+.debrief__row span { font-size: 12px; line-height: 1.5; color: var(--muted); max-width: 76ch; }
+.debrief__row--good { border-left-color: #4be08a; }
+.debrief__row--good b { color: #4be08a; }
+.debrief__row--warn { border-left-color: #ffcf4a; }
+.debrief__row--warn b { color: #ffcf4a; }
+.debrief__row--bad { border-left-color: #ff7a7a; }
+.debrief__row--bad b { color: #ff7a7a; }
+
+/* ---------- deployment screen ----------
+   Between pressing deploy and standing on the island there is a screen swap,
+   a world to generate and a first frame to draw. None of that was covered:
+   the interface froze on the menu and then cut straight to a match already in
+   progress. This sits over the whole thing, states what is happening, and
+   fades out once the first frame is up.
+
+   Deliberately not a spinner. A spinner says "something is happening"; the
+   phase line says which thing, and the bar says roughly how far in. */
+.loading {
+  position: fixed; inset: 0; z-index: 90;
+  display: grid; place-items: center;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(232,118,63,0.10), transparent 60%),
+    var(--bg, #0f1115);
+  opacity: 0; visibility: hidden;
+  transition: opacity 280ms ease, visibility 0s linear 280ms;
+}
+.loading.is-open { opacity: 1; visibility: visible; transition-delay: 0s; }
+.loading__inner { width: min(420px, 82vw); text-align: center; }
+
+/* Three bars that fill in sequence — a squad forming up, not a throbber. */
+.loading__mark { display: flex; gap: 6px; justify-content: center; margin-bottom: 22px; }
+.loading__mark span {
+  width: 34px; height: 4px; border-radius: 2px;
+  background: rgba(255,255,255,0.14);
+  animation: load-mark 1.5s ease-in-out infinite;
+}
+.loading__mark span:nth-child(2) { animation-delay: 0.18s; }
+.loading__mark span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes load-mark {
+  0%, 70%, 100% { background: rgba(255,255,255,0.14); }
+  30%           { background: var(--accent, #e8763f); }
+}
+
+.loading__title {
+  margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+.loading__sub {
+  margin: 6px 0 20px; font-size: 13px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.loading__bar {
+  height: 3px; border-radius: 2px; overflow: hidden;
+  background: rgba(255,255,255,0.10);
+}
+.loading__bar i {
+  display: block; height: 100%; width: 0%;
+  background: var(--accent, #e8763f);
+  transition: width 240ms ease;
+}
+.loading__tip {
+  margin: 20px 0 0; font-size: 12px; line-height: 1.5;
+  color: var(--muted); max-width: 34ch; margin-inline: auto;
+  text-wrap: pretty;
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading__mark span { animation: none; }
+  .loading, .loading__bar i { transition-duration: 0s; }
+}

@@ -340,10 +340,10 @@ const Tutorial = (() => {
     {
       id: 'done',
       title: 'Training complete',
-      body: () => 'That is the game. Domination: hold the three points to the score cap. '
-        + 'Elimination: last squad standing, no respawns. The weapon you pick in the '
-        + 'Loadout screen sets your class, your tool and your kit — all three at once.',
-      goal: 'Enter to deploy for real',
+      body: () => 'That is the game. Domination: hold the points to the score cap. '
+        + 'Elimination: last squad standing, no respawns. Next is a guided match — a real '
+        + 'game, three a side, five minutes, with a coach calling out what to do and why.',
+      goal: 'Enter — start the guided match',
       keys: () => ['Enter'],
       test: () => false,
       final: true,
@@ -551,7 +551,7 @@ const Tutorial = (() => {
     ctx.font = '10px Outfit, Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(200,212,232,0.45)';
     ctx.fillText(s.final
-      ? 'Enter — deploy into a real match   ·   ' + key('pause') + ' — back to base'
+      ? 'Enter — start the guided match   ·   ' + key('pause') + ' — back to base'
       : 'Enter — skip this step   ·   ' + key('pause') + ' — pause / leave',
       x + 18, y + h - 13);
 

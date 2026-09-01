@@ -55,6 +55,8 @@ const DB = (() => {
          screen reads it, to stop recommending the tutorial to somebody who
          has already taken it. `hydrate` fills it in for older profiles. */
       tutorialDone: false,
+      /* ...and whether they have played the guided match that follows it. */
+      guidedDone: false,
     };
   }
 

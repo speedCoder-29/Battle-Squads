@@ -28,7 +28,35 @@ const Nav = (() => {
      already caps. */
   const CELL = 45;
   const DIAG = Math.SQRT2;
-  const MAX_STEPS = 6000;            // A* node budget, so a hopeless path bails
+  /* A* node budget, so a hopeless path bails rather than hanging the frame.
+
+     6000 was far too small and it was failing silently. The domination grid is
+     165x165, and a uniform A* front that has expanded 6000 nodes is a disc
+     about 44 cells across — roughly 2000px. Every goal further away than that
+     ran out of budget and returned null, which is *most* of them: measured
+     over a real match, 4822 of 4929 searches failed. Bots were not navigating
+     badly, they were almost never navigating at all, and what looked like
+     pathing behaviour was the fallback steering underneath it. */
+  const MAX_STEPS = 20000;
+
+  /* Weighted A*. A weight of 1 is the textbook admissible heuristic: it
+     guarantees the shortest path and pays for that guarantee by expanding
+     almost every cell that is closer to the start than the goal is. Nothing
+     here needs the shortest path — it needs a sensible one, now, for fifteen
+     bots at once. Overweighting the heuristic makes the search drive at the
+     goal and only spread out when it hits something, which is what cuts the
+     expansions by an order of magnitude on an open map.
+
+     2.4 is high. At 1.6 the map was connected but the searches that still
+     failed were expanding 28,000 nodes each and costing 10ms a run, which is
+     not a budget fifteen bots can share. Overweighting further trades route
+     quality for reach, and route quality is not what is being asked for here:
+     nobody is grading a bot on whether it took the shortest way to B, only on
+     whether it got there without walking into a wall. */
+  const HEUR_W = 2.4;
+
+  /* Why searches fail, so the next person to ask does not have to guess. */
+  let stat = { runs: 0, solved: 0, noEnd: 0, exhausted: 0, steps: 0 };
 
   /* Half a player, plus a little. A cell counts as walkable when someone
      standing at its centre would actually fit there, so this is the distance
@@ -154,37 +182,64 @@ const Nav = (() => {
 
   /* ---------- A* ----------
      Returns world-space waypoints from (sx,sy) to (tx,ty), or null. */
-  function findPath(g, sx, sy, tx, ty) {
+  /* Working set for one search, kept on the grid and reused.
+
+     Three typed arrays of 27,000 entries were being allocated *and filled with
+     Infinity* on every single call — hundreds of times a second, all of it
+     garbage a moment later. A generation stamp does the same job for free: a
+     cell's score counts only if it was written during this run, so nothing has
+     to be cleared between runs. */
+  function scratch(g) {
+    if (!g._gScore || g._gScore.length !== g.cols * g.rows) {
+      const n = g.cols * g.rows;
+      g._gScore = new Float32Array(n);
+      g._fScore = new Float32Array(n);
+      g._came = new Int32Array(n);
+      g._seen = new Int32Array(n);
+      g._gen = 0;
+      g._heap = new MinHeap();
+    }
+    g._gen++;
+    g._heap.items.length = 0; g._heap.prio.length = 0;
+    return g._gen;
+  }
+
+  function findPath(g, sx, sy, tx, ty, budget) {
     if (!g) return null;
+    const cap = Math.max(400, Math.min(MAX_STEPS, budget || MAX_STEPS));
+    stat.runs++;
     let [scx, scy] = cellOf(sx, sy);
     let [tcx, tcy] = cellOf(tx, ty);
     const s = nearestOpen(g, scx, scy);
     const t = nearestOpen(g, tcx, tcy);
-    if (!s || !t) return null;
+    if (!s || !t) { stat.noEnd++; return null; }
     [scx, scy] = s; [tcx, tcy] = t;
     if (scx === tcx && scy === tcy) {
+      stat.solved++;
       return clearLine(g, { x: sx, y: sy }, { x: tx, y: ty }) ? [{ x: tx, y: ty }] : [centre(tcx, tcy)];
     }
 
-    const n = g.cols * g.rows;
-    const gScore = new Float32Array(n).fill(Infinity);
-    const fScore = new Float32Array(n).fill(Infinity);
-    const came = new Int32Array(n).fill(-1);
-    const open = new MinHeap();
+    const gen = scratch(g);
+    const gScore = g._gScore, fScore = g._fScore, came = g._came, seen = g._seen;
+    const open = g._heap;
 
     const start = idx(g, scx, scy), goal = idx(g, tcx, tcy);
     const heur = (cx, cy) => {
       const dx = Math.abs(cx - tcx), dy = Math.abs(cy - tcy);
       return (dx + dy) + (DIAG - 2) * Math.min(dx, dy);      // octile
     };
+    seen[start] = gen; came[start] = -1;
     gScore[start] = 0;
-    fScore[start] = heur(scx, scy);
+    fScore[start] = heur(scx, scy) * HEUR_W;
     open.push(start, fScore[start]);
 
     let steps = 0;
-    while (open.size && steps++ < MAX_STEPS) {
+    while (open.size && steps++ < cap) {
       const cur = open.pop();
-      if (cur === goal) return rebuild(g, came, cur, tx, ty);
+      if (cur === goal) {
+        stat.solved++; stat.steps += steps; stat.lastSteps = steps;
+        return rebuild(g, came, cur, tx, ty);
+      }
       const cx = cur % g.cols, cy = (cur / g.cols) | 0;
 
       for (let dy = -1; dy <= 1; dy++) {
@@ -199,14 +254,16 @@ const Nav = (() => {
           const ni = idx(g, nx, ny);
           const step = (dx && dy ? DIAG : 1) * g.cost[ni];
           const tentative = gScore[cur] + step;
-          if (tentative >= gScore[ni]) continue;
+          if (seen[ni] === gen && tentative >= gScore[ni]) continue;
+          seen[ni] = gen;
           came[ni] = cur;
           gScore[ni] = tentative;
-          fScore[ni] = tentative + heur(nx, ny);
+          fScore[ni] = tentative + heur(nx, ny) * HEUR_W;
           open.push(ni, fScore[ni]);
         }
       }
     }
+    stat.exhausted++; stat.steps += steps; stat.lastSteps = steps;
     return null;
   }
 
@@ -295,5 +352,58 @@ const Nav = (() => {
     }
   }
 
-  return { CELL, PAD, build, findPath, cellOf, centre, isBlocked, pointBlocked, nearestOpen, clearLine, MinHeap };
+  /* ---------- doorways ----------
+     A door is genuinely a way through, and the grid has to agree.
+
+     It did not. Measured on three maps, the nav grid came out in ~145
+     disconnected pieces, every one of them a room inside a building, with 12%
+     of the walkable world unreachable from where the player stood. No doorway
+     was *blocked* — each one had an open cell in it — but an open cell is not
+     a route. A doorway is 62px and a cell is 45px, so whether the two cells
+     either side of a door can reach each other depends on where the lattice
+     happens to fall relative to the jambs, and on a clear-line test between
+     centres 45px apart that passes within PAD of both of them. Often enough,
+     they could not, and the room behind was sealed.
+
+     So the doorway is opened explicitly rather than left to the sampling: the
+     cells across the gap are marked walkable and the moves between them are
+     unblocked, in a short line running perpendicular to the wall. This is not
+     a fudge — it is the grid being told a fact about the world that its
+     resolution is too coarse to discover on its own. */
+  function openDoorways(g, doors) {
+    if (!g) return 0;
+    let opened = 0;
+    for (const d of doors) {
+      const horizontal = d.w >= d.h;          // wall runs east-west: pass north-south
+      const mx = d.x + d.w / 2, my = d.y + d.h / 2;
+      const [dcx, dcy] = cellOf(mx, my);
+      /* Far enough either side to stand clear of the wall's own padding: the
+         jamb is PAD deep, so one cell each way is not always enough. */
+      const span = 2;
+      const line = [];
+      for (let k = -span; k <= span; k++) {
+        const cx = horizontal ? dcx : dcx + k;
+        const cy = horizontal ? dcy + k : dcy;
+        if (cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows) { line.length = 0; break; }
+        line.push([cx, cy]);
+      }
+      if (line.length < 2) continue;
+      // walkable...
+      for (const [cx, cy] of line) g.blocked[cy * g.cols + cx] = 0;
+      // ...and connected to each other, in both directions
+      for (let i = 0; i < line.length - 1; i++) {
+        const [ax, ay] = line[i];
+        const ai = ay * g.cols + ax;
+        if (horizontal) g.southWall[ai] = 0; else g.eastWall[ai] = 0;
+      }
+      opened++;
+    }
+    return opened;
+  }
+
+  const lastSteps = () => stat.lastSteps || 0;
+  const stats = () => ({ ...stat, avgSteps: stat.runs ? Math.round(stat.steps / stat.runs) : 0 });
+  const resetStats = () => { stat = { runs: 0, solved: 0, noEnd: 0, exhausted: 0, steps: 0 }; };
+
+  return { CELL, PAD, build, findPath, cellOf, centre, isBlocked, pointBlocked, nearestOpen, clearLine, MinHeap, stats, resetStats, openDoorways, lastSteps, MAX_STEPS };
 })();

@@ -7,8 +7,9 @@ A fast-paced **2D browser team shooter** with two game modes:
 - **💀 Elimination** — 6 squads of 4 across a 3200×2200 arena; last squad standing,
   no respawns (like Fortnite).
 
-…plus two solo modes to learn in: **🎓 Basic Training**, a guided eighteen-step tutorial
-in a real match, and the **🎯 Firing Range**.
+…plus three modes to learn in: **🎓 Basic Training**, a guided eighteen-step tutorial;
+the **Guided Match** it hands you to, which is a real game with a coach watching it; and
+the **🎯 Firing Range**.
 
 A complete front end (home page, accounts, settings, daily missions, battle pass,
 loadout, gunsmith, shop, matchmaking) plus a genuinely playable game for both modes —
@@ -54,7 +55,40 @@ capture point.
 Nothing in it is faked. The barricade has the wall table's HP, the crate rolls off the
 real loot table, the capture point runs the real capture code, and the hostiles are
 ordinary bots held at a gentle difficulty. **Enter** skips a step you already know and
-**Esc** leaves; finishing it drops you straight into a real match.
+**Esc** leaves.
+
+### …then the guided match
+
+Training teaches the verbs. It cannot teach *when* — when to break contact, when to
+reload, when to leave a fight you are winning because the score is somewhere else. So
+its last card hands you to the **Guided Match** ([js/coach.js](js/coach.js)), which is
+not a tutorial at all: it is an ordinary offline Domination game with real bots, a real
+scoreline and real XP, deliberately cut down so a first match is legible — **three a
+side, five minutes, a 400 score cap, and bots pinned to difficulty 3** whatever the
+settings say.
+
+What is added is a coach. It watches the match and says **one** thing at a time:
+
+| It notices | It says |
+|---|---|
+| You are at 30 HP with a heal in your kit | break line of sight and use it — you do not win this trade |
+| You are being shot at with nothing between you and them | get behind something and fight from it |
+| You are off the points | which point to take, how far away it is, and why kills elsewhere do not score |
+| A squadmate is down nearby | stand over them; a revive is worth more than the kill you are chasing |
+| You are behind and holding one point | one point does not catch up — take a second |
+| Ninety seconds left | what to do with them, depending on whether you are ahead |
+| You died | who killed you, from how far, and what they had left |
+
+Each prompt is a rule with a priority and a cooldown, so a more urgent one can interrupt
+a lesser one and nothing repeats itself into wallpaper.
+
+Afterwards the results screen carries a **debrief built from what you actually did**, not
+from the scoreline — the share of your match spent standing on a point, your accuracy over
+the rounds you fired, how many times you died with a heal still in the bag, whether you
+ever threw the grenades you were carrying. Every line quotes the number it came from.
+
+Both are replayable from the Play screen: **Basic Training** and **Guided Match** sit
+beside **How to Play**, and the bar recommends whichever one you have not done yet.
 
 **How to Play** is the written half: the two win conditions, your live keybinds, all ten
 classes, the damage model (types, hit zones, armour, adrenaline), what each surface and
@@ -121,6 +155,7 @@ battle-squads/
 │   ├── screens.js      # navigation, home rendering, settings, toasts
 │   ├── matchmaking.js  # queue flow + "match found" overlay (simulated)
 │   ├── tutorial.js     # Basic Training: the guided first match, lesson by lesson
+│   ├── coach.js        # the guided match: live coaching rules + the debrief
 │   ├── game.js         # the 2D shooter: both modes, bots, HUD, scoring
 │   └── main.js         # bootstrap + animated background particles
 ├── server/             # authoritative multiplayer server (deploy separately)

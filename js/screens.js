@@ -218,12 +218,13 @@ const Screens = (() => {
         ? `Connecting to ${url} when you deploy. Falls back to bots if it's unreachable.`
         : 'No multiplayer server configured. See server/README.md, or add ?server=wss://your-host to the URL.';
     }
-    /* Until somebody has been through training once, the home screen says so.
-       After that it is just another thing on the menu. */
+    /* The bar follows where you are in the onboarding: training first, then
+       the guided match, then it is just another thing on the menu. */
     const badge = document.getElementById('train-badge');
-    if (badge) badge.hidden = !!p.tutorialDone;
     const trainbar = document.getElementById('trainbar');
-    if (trainbar) trainbar.classList.toggle('is-recommended', !p.tutorialDone);
+    const next = !p.tutorialDone ? 'START HERE' : !p.guidedDone ? 'NEXT: GUIDED MATCH' : null;
+    if (badge) { badge.hidden = !next; badge.textContent = next || ''; }
+    if (trainbar) trainbar.classList.toggle('is-recommended', !!next);
     bindPointerGlow();
     renderCareer(p);
     renderKit(p);
@@ -1099,6 +1100,7 @@ const Screens = (() => {
       ])) +
       hSection('Practice', '', hList([
         '<b>Basic Training</b> — a guided match, one mechanic at a time, nobody shooting until the last lesson.',
+        '<b>Guided Match</b> — a real Domination game, three a side and five minutes, with a coach calling out what to do and a debrief at the end. This is the one to play first.',
         '<b>Firing Range</b> — targets at 10–120 m with a damage and time-to-kill readout, so you can feel out a gun before you commit to it.',
       ])),
 
@@ -1197,11 +1199,21 @@ const Screens = (() => {
   }
   const closeHowTo = () => document.getElementById('modal-howto').classList.remove('is-open');
 
-  /* Starting the guided match from anywhere that offers it. */
+  /* Starting either half of the onboarding from anywhere that offers it. */
   function startTutorial() {
     SFX.click();
     closeHowTo();
-    Game.start('tutorial');
+    Loading.run('Basic training', [['Setting up the range', 0.5, () => Game.start('tutorial')]]);
+  }
+  /* The sample game: a real Domination match, smaller and gentler than a full
+     lobby, with js/coach.js watching it and a debrief at the end. */
+  function startGuided() {
+    SFX.click();
+    closeHowTo();
+    Loading.run('Deploying', [
+      ['Generating the island', 0.3, () => {}],
+      ['Placing structures and loot', 0.75, () => Game.start('domination', undefined, { coached: true })],
+    ]);
   }
 
   function init() {
@@ -1242,10 +1254,12 @@ const Screens = (() => {
       document.getElementById(id).addEventListener('change', persistSettings));
     // the firing range starts immediately — there is nothing to queue for
     const range = document.getElementById('btn-range');
-    if (range) range.addEventListener('click', () => { SFX.click(); Game.start('range'); });
+    if (range) range.addEventListener('click', () => { SFX.click(); Loading.run('Firing range', [['Setting up the targets', 0.5, () => Game.start('range')]]); });
     // ...and so does training, for the same reason
     const train = document.getElementById('btn-tutorial');
     if (train) train.addEventListener('click', startTutorial);
+    const guided = document.getElementById('btn-guided');
+    if (guided) guided.addEventListener('click', startGuided);
     const trainFromHowTo = document.getElementById('btn-howto-train');
     if (trainFromHowTo) trainFromHowTo.addEventListener('click', startTutorial);
     const howto = document.getElementById('btn-howto');
@@ -1286,5 +1300,5 @@ const Screens = (() => {
     });
   }
 
-  return { show, enterHome, renderAll, init, getSelectedMode, closeSettings, openHowTo, startTutorial };
+  return { show, enterHome, renderAll, init, getSelectedMode, closeSettings, openHowTo, startTutorial, startGuided };
 })();

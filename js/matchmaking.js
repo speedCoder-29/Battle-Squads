@@ -76,7 +76,14 @@ const Matchmaking = (() => {
         clearInterval(cd);
         overlay.classList.remove('is-open');
         cancelQueue();
-        Game.start(mode);
+        /* Deploy behind the loading screen. Game.start builds a whole island
+           on the main thread; run bare, it froze the menu and then cut into a
+           match already in progress with nothing in between. */
+        Loading.run('Deploying', [
+          ['Generating the island', 0.25, () => {}],
+          ['Placing structures and loot', 0.6, () => Game.start(mode)],
+          ['Briefing the squads', 0.9, () => {}],
+        ]);
       } else {
         document.getElementById('found-count').textContent = count;
         SFX.click();
@@ -90,8 +97,10 @@ const Matchmaking = (() => {
     const overlay = document.getElementById('overlay-found');
     if (overlay) overlay.classList.remove('is-open');
     cancelQueue();
-    Toast.show('Squad deploying…');
-    Game.startOnline(socket, mode);
+    Loading.run('Joining squad', [
+      ['Connecting to the room', 0.4, () => {}],
+      ['Building the island', 0.8, () => Game.startOnline(socket, mode)],
+    ]);
   }
 
   function init() {

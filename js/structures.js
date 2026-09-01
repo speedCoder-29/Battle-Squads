@@ -1703,18 +1703,52 @@ const Structures = (() => {
         room('warehouse', ox + 420, oy + 20, 340, 220),
         room('warehouse', ox + 840, oy + 20, 340, 220),
       ];
-      /* The container yard: five columns by six rows of steel, alternating
-         loaded and empty so you can't tell which is which from outside. */
-      let n = 0;
-      for (let cy = 0; cy < 6; cy++) {
-        for (let cx = 0; cx < 5; cx++) {
-          const x = ox + 40 + cx * 215, y = oy + 320 + cy * 125;
-          out.push(seg('metal', x, y, 4.3, 'h', 0.45));
-          out.push(seg('metal', x, y + 86, 4.3, 'h', 0.45));
-          out.push(seg('metal', x, y, 2.15, 'v', 0.45));
-          rooms.push(room(n % 2 ? 'shippingCrate' : 'shippedCrate', x + 24, y + 18, 130, 52));
+      /* The container yard.
+
+         This used to be five columns by six rows on a fixed pitch: thirty
+         identical boxes in a perfect lattice, each holding an identical crate.
+         Nothing in it could be told from anything else, which meant there was
+         nothing to navigate by and no way to know whether you had already been
+         somewhere — it read as graph paper rather than as a yard, and clearing
+         it was thirty repetitions of the same twenty seconds.
+
+         A real yard stacks mixed lengths and keeps aisles open for the
+         handlers. So: twenty-, forty- and sixty-foot boxes in rows that do not
+         line up with each other, split into three blocks by two cross aisles
+         wide enough to fight down. Fourteen containers instead of thirty, each
+         one a different shape from its neighbour, and two long sightlines
+         through the middle that tell you which way you are facing.
+
+         The plan is a constant and not a dice roll: worldgen is seeded, and
+         every machine in the match has to build the same island. */
+      const YARD = [
+        [2, 3],          // block one
+        [3, 2],
+        0,               // cross aisle
+        [2, 2, 1],       // block two
+        [1, 3, 1],
+        0,
+        [3, 2],          // block three
+        [2, 3],
+      ];
+      const UNIT = 180;              // one twenty-foot box, plus the gap beside it
+      const ROW = 125, AISLE = 88;   // the aisle is two doorways wide on purpose
+      let n = 0, yy = oy + 320;
+      for (const rowPlan of YARD) {
+        if (!rowPlan) { yy += AISLE; continue; }
+        // rows start at alternating offsets, so no two courses line up
+        let x = ox + 40 + (n % 2 ? 46 : 0);
+        for (const len of rowPlan) {
+          const w = UNIT * len - 18;
+          out.push(seg('metal', x, yy, w / PX_PER_M, 'h', 0.45));
+          out.push(seg('metal', x, yy + 86, w / PX_PER_M, 'h', 0.45));
+          out.push(seg('metal', x, yy, 2.15, 'v', 0.45));
+          // loaded and empty alternate, so you cannot tell which from outside
+          rooms.push(room(n % 2 ? 'shippingCrate' : 'shippedCrate', x + 20, yy + 18, w - 38, 52));
+          x += UNIT * len;
           n++;
         }
+        yy += ROW;
       }
       // three quays along the seaward edge, and the crew facilities
       for (let i = 0; i < 3; i++) {
