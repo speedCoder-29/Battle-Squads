@@ -1,10 +1,17 @@
 /* ============================================================
    BATTLE SQUADS — stylesheet
    ============================================================ */
-/* Brightened theme: the old palette bottomed out near-black (#070b16), which
-   made panels and text sit in a very narrow band. Everything is lifted a few
-   stops — lighter grounds, stronger panel contrast, brighter body and muted
-   text — while keeping the same blue/orange identity. */
+/* Brightened theme, second pass. The first lift moved the ground off
+   near-black (#070b16 to #141b30); this one takes it further into daylight —
+   the grounds, the panels and the two structural lines all come up a stop, and
+   the two layers that were doing most of the darkening (the vignette and the
+   bloom's dark lobe) come down. Same blue/orange identity, same single light
+   source, roughly twice the surface luminance.
+
+   Body text was already near-white, so the panels moving up is what actually
+   changes the feel: a lighter surface under the same text reads as a lit room
+   rather than a dark one, and the muted text moves with it so the hierarchy
+   between the two survives the change. */
 /* ---------- tokens ----------
 
    Two rules govern this palette, and everything below follows from them.
@@ -21,21 +28,23 @@
    pile of unrelated greys. Shadows carry that hue too — a black shadow on a
    navy ground looks like a hole cut in the page. */
 :root {
-  --bg-0: #141b30;        /* the ground: off-black, tinted cool, never #000 */
-  --bg-1: #1b2440;
-  --bg-2: #2c3a60;
-  --panel: rgba(40, 55, 94, 0.76);
-  --panel-solid: #222f52;
-  --line: rgba(150, 190, 255, 0.20);
-  --line-strong: rgba(150, 190, 255, 0.42);
-  --text: #f2f6ff;
-  --muted: #a9b9dd;
-  --dim: #7e8fb8;
+  --bg-0: #1e2843;        /* the ground: deep blue, tinted cool, never #000 */
+  --bg-1: #27335a;
+  --bg-2: #3b4d7e;
+  --panel: rgba(62, 82, 134, 0.74);
+  --panel-solid: #31406b;
+  --line: rgba(168, 202, 255, 0.26);
+  --line-strong: rgba(168, 202, 255, 0.50);
+  --text: #f6f9ff;
+  --muted: #c0cee9;
+  --dim: #a8b7da;        /* clears 4.5:1 on the lifted panel; the old value did not */
 
-  /* the one accent, held under 80% saturation so it sits in the palette
-     instead of shouting over it */
-  --accent: #e8763f;
-  --accent-soft: rgba(232, 118, 63, 0.16);
+  /* The one accent. Lifted with the surfaces underneath it: orange at #f59155
+     scored 3.4:1 against the brighter panel, which is under the bar for text
+     and made every heading in it look tired. This clears 4.4:1 on the panel
+     and 8:1 against the dark ink used on accent-filled buttons. */
+  --accent: #f59155;
+  --accent-soft: rgba(245, 145, 85, 0.18);
 
   /* data colours — meaning, not decoration */
   --accent-2: #5fc0d8;    /* your own squad, on pills and markers */
@@ -51,9 +60,11 @@
   --radius-xs: 6px;
 
   /* shadows tinted with the ground's own hue, cast from a single light above */
-  --shadow: 0 18px 50px rgba(8, 13, 30, 0.58);
-  --shadow-sm: 0 6px 18px rgba(8, 13, 30, 0.42);
-  --shadow-accent: 0 12px 30px rgba(232, 118, 63, 0.30);
+  /* Softer as well as lighter: a heavy drop shadow on a bright surface is the
+     other half of what made the page feel dim. */
+  --shadow: 0 18px 50px rgba(10, 16, 38, 0.40);
+  --shadow-sm: 0 6px 18px rgba(10, 16, 38, 0.28);
+  --shadow-accent: 0 12px 30px rgba(245, 145, 85, 0.30);
 
   --font: 'Outfit', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'Azeret Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', monospace;
@@ -119,8 +130,10 @@ p  { text-wrap: pretty; }
 .bg__gradient {
   position: absolute; inset: -20%;
   background:
-    radial-gradient(70% 55% at 26% 8%, rgba(232, 118, 63, 0.13), transparent 62%),
-    radial-gradient(90% 70% at 70% 108%, rgba(20, 27, 48, 0.85), transparent 70%),
+    radial-gradient(70% 55% at 26% 8%, rgba(245, 145, 85, 0.16), transparent 62%),
+    /* the dark lobe grounds the bottom of the page; at 0.85 it was most of a
+       second vignette, and two of those is how a page gets murky */
+    radial-gradient(90% 70% at 70% 108%, rgba(22, 30, 56, 0.45), transparent 70%),
     linear-gradient(168deg, var(--bg-1), var(--bg-0) 62%);
   animation: drift 24s ease-in-out infinite alternate;
 }
@@ -140,8 +153,11 @@ p  { text-wrap: pretty; }
 #bg-particles { position: absolute; inset: 0; width: 100%; height: 100%; }
 .bg__vignette {
   position: absolute; inset: 0;
-  /* tinted with the ground's own hue rather than pure black */
-  box-shadow: inset 0 0 260px rgba(8, 13, 30, 0.72);
+  /* Tinted with the ground's own hue rather than pure black, and much lighter
+     than it was: at 0.72 over 260px the corners of every screen were darker
+     than the palette's darkest token, which is a vignette doing the job of a
+     background. */
+  box-shadow: inset 0 0 220px rgba(12, 18, 42, 0.38);
   pointer-events: none;
 }
 /* ---------- grain ----------
@@ -172,7 +188,7 @@ p  { text-wrap: pretty; }
   font-weight: 900; font-size: 26px; letter-spacing: 1px;
   background: linear-gradient(135deg, var(--accent), #ff9d3b);
   color: #1a0e04; border-radius: 16px;
-  box-shadow: 0 10px 30px rgba(232, 118, 63, 0.4);
+  box-shadow: 0 10px 30px rgba(245, 145, 85, 0.4);
 }
 .brand__mark--sm { width: 38px; height: 38px; font-size: 15px; border-radius: 10px; }
 .brand__name { font-weight: 900; letter-spacing: 3px; font-size: 30px; }
@@ -193,9 +209,9 @@ p  { text-wrap: pretty; }
 .btn--primary {
   background: linear-gradient(135deg, var(--accent), #ff9d3b);
   color: #1a0e04; border-color: transparent;
-  box-shadow: 0 10px 26px rgba(232, 118, 63, 0.35);
+  box-shadow: 0 10px 26px rgba(245, 145, 85, 0.35);
 }
-.btn--primary:hover { box-shadow: 0 14px 32px rgba(232, 118, 63, 0.5); }
+.btn--primary:hover { box-shadow: 0 14px 32px rgba(245, 145, 85, 0.5); }
 .btn--ghost { background: transparent; }
 .btn--full { width: 100%; }
 .btn--play {
@@ -204,7 +220,7 @@ p  { text-wrap: pretty; }
   font-size: 22px; font-weight: 900; letter-spacing: 3px;
   background: linear-gradient(135deg, var(--accent), #ff8f3b);
   color: #1a0e04; border: none; border-radius: 14px;
-  box-shadow: 0 14px 34px rgba(232, 118, 63, 0.45);
+  box-shadow: 0 14px 34px rgba(245, 145, 85, 0.45);
 }
 .btn--play:hover { transform: translateY(-3px) scale(1.02); }
 .btn--play.is-queuing { background: linear-gradient(135deg, #2a3a63, #1c2748); color: var(--text); box-shadow: none; }
@@ -228,7 +244,7 @@ p  { text-wrap: pretty; }
   flex: 1; padding: 10px; border: none; background: transparent;
   color: var(--muted); font-weight: 700; border-radius: 8px; transition: 0.2s;
 }
-.auth-tab.is-active { background: rgba(232, 118, 63, 0.16); color: var(--text); }
+.auth-tab.is-active { background: rgba(245, 145, 85, 0.16); color: var(--text); }
 .auth-form { display: none; flex-direction: column; gap: 14px; text-align: left; }
 .auth-form.is-active { display: flex; }
 .field { display: flex; flex-direction: column; gap: 6px; }
@@ -259,7 +275,7 @@ p  { text-wrap: pretty; }
   transition: 0.18s; position: relative;
 }
 .topnav__btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
-.topnav__btn.is-active { color: var(--text); background: rgba(232, 118, 63, 0.14); }
+.topnav__btn.is-active { color: var(--text); background: rgba(245, 145, 85, 0.14); }
 .topnav__btn.is-active::after {
   content: ''; position: absolute; left: 16px; right: 16px; bottom: -15px; height: 2px;
   background: var(--accent); border-radius: 2px;
@@ -1324,16 +1340,16 @@ p  { text-wrap: pretty; }
    The same shape as the firing range bar below it, in the accent that means
    "start here" rather than the mint that means "practice". The recommendation
    only stands until the tutorial has been taken once. */
-.rangebar--train { border-left-color: var(--accent, #e8763f); }
+.rangebar--train { border-left-color: var(--accent, #f59155); }
 .rangebar--train.is-recommended {
-  background: rgba(232, 118, 63, 0.10);
-  border-color: rgba(232, 118, 63, 0.35);
+  background: rgba(245, 145, 85, 0.10);
+  border-color: rgba(245, 145, 85, 0.35);
 }
 .rangebar__actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .tag--new {
   margin-left: 8px; padding: 2px 7px; border-radius: 5px;
   font-size: 9px; font-weight: 900; letter-spacing: 1.2px;
-  background: var(--accent, #e8763f); color: #161009;
+  background: var(--accent, #f59155); color: #161009;
 }
 
 /* ---------- how to play ----------
@@ -1348,7 +1364,7 @@ p  { text-wrap: pretty; }
   transition: 0.15s;
 }
 .howto__tab:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-.howto__tab.is-active { color: #161009; background: var(--accent, #e8763f); border-color: transparent; }
+.howto__tab.is-active { color: #161009; background: var(--accent, #f59155); border-color: transparent; }
 .howto { display: flex; flex-direction: column; gap: 22px; max-height: 58vh; overflow-y: auto; padding-right: 4px; }
 .howto__sec h3 { font-size: 15px; margin: 0 0 6px; }
 .howto__lede { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin: 0 0 10px; max-width: 72ch; }
@@ -1438,7 +1454,7 @@ p  { text-wrap: pretty; }
 .loading__mark span:nth-child(3) { animation-delay: 0.36s; }
 @keyframes load-mark {
   0%, 70%, 100% { background: rgba(255,255,255,0.14); }
-  30%           { background: var(--accent, #e8763f); }
+  30%           { background: var(--accent, #f59155); }
 }
 
 .loading__title {
@@ -1455,7 +1471,7 @@ p  { text-wrap: pretty; }
 }
 .loading__bar i {
   display: block; height: 100%; width: 0%;
-  background: var(--accent, #e8763f);
+  background: var(--accent, #f59155);
   transition: width 240ms ease;
 }
 .loading__tip {
@@ -1466,4 +1482,89 @@ p  { text-wrap: pretty; }
 @media (prefers-reduced-motion: reduce) {
   .loading__mark span { animation: none; }
   .loading, .loading__bar i { transition-duration: 0s; }
+}
+
+/* ---------- bot difficulty on the deploy bar ----------
+   Sized to sit beside the DEPLOY button without competing with it: the number
+   is the loud part, the name underneath is the explanation, and the whole
+   thing is one tap either way. The accent shifts green→red with the level, so
+   the setting reads before the word does. */
+.botpick {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: rgba(0,0,0,0.22);
+  flex-shrink: 0; cursor: default;
+}
+.botpick__k {
+  font-size: 9px; font-weight: 900; letter-spacing: 1.4px;
+  text-transform: uppercase; color: var(--muted);
+}
+.botpick__row { display: flex; align-items: center; gap: 6px; }
+.botpick__btn {
+  width: 22px; height: 22px; border-radius: 6px; line-height: 1;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.05);
+  color: var(--text); font-size: 14px; font-weight: 700;
+  transition: background 0.18s, border-color 0.18s, transform 0.14s;
+}
+.botpick__btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); transform: translateY(-1px); }
+.botpick__btn:disabled { opacity: 0.28; cursor: default; }
+.botpick__lvl {
+  min-width: 20px; text-align: center; font-size: 17px; font-weight: 800;
+  font-family: 'Azeret Mono', ui-monospace, monospace; color: var(--diff, #7ff2c1);
+}
+.botpick__name {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px;
+  color: var(--diff, #7ff2c1); white-space: nowrap;
+}
+/* One variable per band, so the number and the name never disagree. */
+.botpick[data-level="1"], .botpick[data-level="2"] { --diff: #4be08a; }
+.botpick[data-level="3"], .botpick[data-level="4"] { --diff: #7ff2c1; }
+.botpick[data-level="5"], .botpick[data-level="6"] { --diff: #ffe14a; }
+.botpick[data-level="7"], .botpick[data-level="8"] { --diff: #ff9d2e; }
+.botpick[data-level="9"], .botpick[data-level="10"] { --diff: #ff4b5c; }
+/* Online, bots are not who you are playing: keep the control, drop its claim. */
+.botpick.is-moot { opacity: 0.45; }
+
+@media (max-width: 720px) {
+  .queue-bar { flex-wrap: wrap; }
+  .botpick { order: 3; }
+}
+
+/* ---------- the base tour ----------
+   One element carries both the hole and the dimming: the ring is positioned
+   over whatever is being talked about, and a very large box-shadow darkens
+   everything outside it. Four panels round a rectangle would seam. */
+.tour { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+.tour.is-open { pointer-events: auto; }
+.tour__ring {
+  position: absolute; border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(4, 7, 16, 0.74), 0 0 0 2px var(--accent-2, #7ff2c1) inset;
+  outline: 2px solid var(--accent-2, #7ff2c1); outline-offset: -1px;
+  transition: left 0.22s ease, top 0.22s ease, width 0.22s ease, height 0.22s ease;
+  pointer-events: none;
+}
+.tour__card {
+  position: absolute; width: min(400px, 92vw);
+  background: var(--panel-solid); border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent-2, #7ff2c1);
+  border-radius: 12px; padding: 16px 18px 14px; box-shadow: var(--shadow);
+  transition: left 0.22s ease, top 0.22s ease;
+}
+.tour__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.tour__label, .tour__count {
+  font-size: 9px; font-weight: 900; letter-spacing: 1.6px;
+  text-transform: uppercase; color: var(--muted);
+}
+.tour__count { font-family: 'Azeret Mono', ui-monospace, monospace; letter-spacing: 0.5px; }
+.tour__title { margin: 0 0 6px; font-size: 17px; }
+.tour__body { margin: 0 0 14px; font-size: 13px; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+.tour__foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.tour__nav { display: flex; gap: 8px; }
+.tour__hint {
+  display: block; margin-top: 10px; text-align: right;
+  font-size: 10px; color: var(--muted); opacity: 0.7;
+}
+
+@media (max-width: 720px) {
+  .tour__card { width: min(94vw, 400px); }
 }

@@ -56,7 +56,7 @@ const Nav = (() => {
   const HEUR_W = 2.4;
 
   /* Why searches fail, so the next person to ask does not have to guess. */
-  let stat = { runs: 0, solved: 0, noEnd: 0, exhausted: 0, steps: 0 };
+  let stat = { runs: 0, solved: 0, noEnd: 0, exhausted: 0, partial: 0, steps: 0 };
 
   /* Half a player, plus a little. A cell counts as walkable when someone
      standing at its centre would actually fit there, so this is the distance
@@ -233,6 +233,19 @@ const Nav = (() => {
     fScore[start] = heur(scx, scy) * HEUR_W;
     open.push(start, fScore[start]);
 
+    /* The closest the search ever got, in case it does not get all the way.
+
+       A search that runs out of budget used to return null, and the caller
+       treated that as "there is no way there" — so on a big cluttered map,
+       where about half of all long routes exhaust the node ceiling, bots stood
+       on the fallback steering and shuffled along walls instead of walking the
+       nine tenths of the route that had already been found.
+
+       The frontier node with the best heuristic is the best approach anybody
+       knows about. Walking to it is progress, and the next search starts from
+       there, where what is left is short enough to solve outright. */
+    let bestNode = start, bestH = heur(scx, scy);
+
     let steps = 0;
     while (open.size && steps++ < cap) {
       const cur = open.pop();
@@ -258,12 +271,23 @@ const Nav = (() => {
           seen[ni] = gen;
           came[ni] = cur;
           gScore[ni] = tentative;
-          fScore[ni] = tentative + heur(nx, ny) * HEUR_W;
+          const h = heur(nx, ny);
+          if (h < bestH) { bestH = h; bestNode = ni; }
+          fScore[ni] = tentative + h * HEUR_W;
           open.push(ni, fScore[ni]);
         }
       }
     }
     stat.exhausted++; stat.steps += steps; stat.lastSteps = steps;
+    /* Only if it is worth walking. Three cells of progress is the floor: below
+       that the "route" is a step sideways, and handing one back would have the
+       bot re-path from somewhere it can already see. */
+    const startH = heur(scx, scy);
+    if (bestNode !== start && startH - bestH >= 3) {
+      stat.partial++;
+      const cell = centre(bestNode % g.cols, (bestNode / g.cols) | 0);
+      return rebuild(g, came, bestNode, cell.x, cell.y);
+    }
     return null;
   }
 
@@ -403,7 +427,7 @@ const Nav = (() => {
 
   const lastSteps = () => stat.lastSteps || 0;
   const stats = () => ({ ...stat, avgSteps: stat.runs ? Math.round(stat.steps / stat.runs) : 0 });
-  const resetStats = () => { stat = { runs: 0, solved: 0, noEnd: 0, exhausted: 0, steps: 0 }; };
+  const resetStats = () => { stat = { runs: 0, solved: 0, noEnd: 0, exhausted: 0, partial: 0, steps: 0 }; };
 
   return { CELL, PAD, build, findPath, cellOf, centre, isBlocked, pointBlocked, nearestOpen, clearLine, MinHeap, stats, resetStats, openDoorways, lastSteps, MAX_STEPS };
 })();

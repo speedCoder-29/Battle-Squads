@@ -225,6 +225,7 @@ const Screens = (() => {
     const next = !p.tutorialDone ? 'START HERE' : !p.guidedDone ? 'NEXT: GUIDED MATCH' : null;
     if (badge) { badge.hidden = !next; badge.textContent = next || ''; }
     if (trainbar) trainbar.classList.toggle('is-recommended', !!next);
+    renderBotPick();
     bindPointerGlow();
     renderCareer(p);
     renderKit(p);
@@ -919,6 +920,48 @@ const Screens = (() => {
       </div>`).join('');
   }
 
+  /* ---- bot difficulty, on the deploy bar ----
+     The same number as the slider in Settings, shown where the decision is
+     actually made: nobody opens a settings panel in the ten seconds before
+     hitting Deploy, so the difficulty they never chose was the one they kept
+     losing to. Both controls write `settings.botLevel`, and each re-renders
+     the other, so there is one value and two ways to reach it. */
+  const BOT_RANGE = [1, 10];
+  function renderBotPick() {
+    const host = document.getElementById('botpick');
+    if (!host) return;
+    const s = DB.getSettings();
+    const d = BotAI.profile(s.botLevel || BotAI.DEFAULT);
+    host.dataset.level = d.level;
+    document.getElementById('botpick-level').textContent = d.level;
+    document.getElementById('botpick-name').textContent = d.name;
+    host.title = `Bot difficulty ${d.level}/10 — ${d.name}. ${d.blurb}`;
+    host.querySelectorAll('[data-bot]').forEach(b => {
+      const next = d.level + (+b.dataset.bot);
+      b.disabled = next < BOT_RANGE[0] || next > BOT_RANGE[1];
+    });
+    /* Online there are no bots to be difficult. The control stays where it is
+       rather than disappearing — a control that vanishes reads as a bug — but
+       it says plainly that it is not what you are about to play against. */
+    const online = !!Net.serverUrl();
+    host.classList.toggle('is-moot', online);
+    if (online) host.title = 'Bot difficulty applies to offline matches. You are set up to play against people.';
+  }
+  function bumpBot(delta) {
+    const s = DB.getSettings();
+    const lvl = Math.max(BOT_RANGE[0], Math.min(BOT_RANGE[1], (s.botLevel || BotAI.DEFAULT) + delta));
+    if (lvl === (s.botLevel || BotAI.DEFAULT)) return;
+    s.botLevel = lvl;
+    DB.saveSettings(s);
+    /* Keep the settings panel's slider in step. It is also what persistSettings
+       reads back, so leaving it stale would let the next settings change undo
+       this one. */
+    const slider = document.getElementById('set-botlevel');
+    if (slider) { slider.value = lvl; renderBotLevel(lvl); }
+    renderBotPick();
+    SFX.click();
+  }
+
   /* ---- keybinds ----
      One row per action, two slots each. Click a slot, press a key, done —
      no modal, no confirm step, and Escape backs out without changing
@@ -1038,6 +1081,7 @@ const Screens = (() => {
     { id: 'modes',    label: 'Modes' },
     { id: 'classes',  label: 'Classes' },
     { id: 'combat',   label: 'Damage' },
+    { id: 'base',     label: 'Loadout & shop' },
     { id: 'world',    label: 'The map' },
     { id: 'tips',     label: 'Tips' },
   ];
@@ -1067,7 +1111,7 @@ const Screens = (() => {
       hSection('Your first ten minutes',
         '',
         hList([
-          'Run <b>Basic Training</b> — it walks you through every key in a real match with nobody shooting at you.',
+          'Run <b>Basic Training</b> — it tours every panel on this screen first, then walks you through every key in a real match with nobody shooting at you.',
           'Take the <b>Firing Range</b> to feel out a gun at 10–120 m before you take it into a match.',
           'Start in <b>Domination</b>: you respawn, so a mistake costs seconds rather than the whole game.',
           'Turn bot difficulty down in <b>Settings</b> (⚙️) until the fights feel fair. Level 1 is a distracted rookie, level 10 reacts in 90 ms.',
@@ -1099,7 +1143,7 @@ const Screens = (() => {
         'Being downed is not being dead — but only if somebody is close enough to pick you up.',
       ])) +
       hSection('Practice', '', hList([
-        '<b>Basic Training</b> — a guided match, one mechanic at a time, nobody shooting until the last lesson.',
+        '<b>Basic Training</b> — the base tour of every screen on the home page, then a guided match, one mechanic at a time, with nobody shooting until the last lesson.',
         '<b>Guided Match</b> — a real Domination game, three a side and five minutes, with a coach calling out what to do and a debrief at the end. This is the one to play first.',
         '<b>Firing Range</b> — targets at 10–120 m with a damage and time-to-kill readout, so you can feel out a gun before you commit to it.',
       ])),
@@ -1165,6 +1209,41 @@ const Screens = (() => {
           'A <b>supply drop</b> parachutes in mid-match and is worth the fight over it.',
         ])),
 
+    /* Everything the base tour walks you round, written down: the two
+       currencies, the pass, the gunsmith, the shop. Generated from Weapons,
+       Perks, Shop and Progression, so the tables cannot drift from the panels
+       they describe. */
+    base: () => hSection('What you earn, and what it buys',
+      'Two currencies, and neither of them buys a combat advantage.',
+      hTable(['Currency', 'Where it comes from', 'What it buys'], [
+        ['🪙 <b>Credits</b>', 'Every match, plus daily and weekly missions', 'Most of the shop — skins, avatars, tags, tracers, emotes, banners'],
+        ['💎 <b>Squad coins</b>', 'Battle pass tiers and the occasional mission', 'The rare end of the shop'],
+        ['<b>XP</b>', 'Matches and missions', 'Account level, and battle pass tiers — the two run separately'],
+      ])) +
+      hSection('Missions', 'Three dailies on a clock and a set of weeklies. They are counted at the end of every match, including the ones you lose — you do not have to win to make progress.', '') +
+      hSection('Battle pass',
+        `${Progression.BP_TIERS.length} tiers this season, ${Progression.BP_XP_PER_TIER} XP each, and the free track runs the whole way. A sample of what is in it:`,
+        hTable(['Tier', 'Reward'],
+          Progression.BP_TIERS.map((t, i) => [i + 1, `${t.icon} ${t.name}`]).filter((_, i) => i % 3 === 0).slice(0, 8))) +
+      hSection('Loadout — the gun is the class',
+        'Pick a weapon and you have picked your class, your movement speed, your tool and the consumable you spawn with. Three preset slots save a whole set — weapon, attachments, ammo, perk — under a name.',
+        '') +
+      hSection('The gunsmith', 'Per weapon, and only what that weapon allows. Stat changes are shown live as you toggle them.',
+        hTable(['Attachment', 'Buff', 'Cost'],
+          Object.values(Weapons.ATTACHMENTS).map(a =>
+            [`${a.icon || ''} ${a.name}`, (a.buffs || []).join(', '), (a.debuffs || []).join(', ')]))
+        + hTable(['Ammo', 'Buff', 'Cost'],
+          Object.values(Weapons.AMMO_TYPES).map(a =>
+            [`${a.icon || ''} ${a.name}`, (a.buffs || []).join(', '), (a.debuffs || []).join(', ')]))) +
+      hSection('Perks', 'One passive, chosen in the loadout screen and carried into every match.',
+        hTable(['Perk', 'What it does'],
+          Perks.list.filter(p => p.id !== 'none').map(p =>
+            [`${p.icon || ''} <b>${p.name}</b>`, (p.effects || []).join(', ') || p.blurb]))) +
+      hSection('The shop', 'Over forty items across seven categories. Nothing in it changes a combat stat — there is a test asserting exactly that.',
+        hTable(['Category', 'What is in it'],
+          Shop.CATEGORIES.map(c => [`${c.icon} <b>${c.name}</b>`, `${Shop.items(c.id).length} items`]))) +
+      hSection('The leaderboard', 'Standings on this machine, sortable by wins, eliminations or level. Anyone generated to fill a lobby is marked as generated.', ''),
+
     tips: () => hSection('Things nobody tells you', '', hList([
       'Firing while moving opens your cone of fire. Stop, or aim down sights — it halves the penalty.',
       'Reload in cover. A magazine is the longest you are ever defenceless, and ' + kAct('reload') + ' keeps the rounds already in the mag.',
@@ -1199,11 +1278,29 @@ const Screens = (() => {
   }
   const closeHowTo = () => document.getElementById('modal-howto').classList.remove('is-open');
 
-  /* Starting either half of the onboarding from anywhere that offers it. */
+  /* Starting either half of the onboarding from anywhere that offers it.
+
+     Basic Training is two halves: the base tour, which is everything on this
+     screen, and then the field training in a real match. First time through
+     you get both; once the tour has been taken it goes straight to the field,
+     because nobody wants to be walked round the shop twice. The tour is always
+     replayable from How to Play. */
   function startTutorial() {
     SFX.click();
     closeHowTo();
+    const p = DB.getProfile();
+    if (p && !p.tourDone && typeof Tour !== 'undefined') { startTour(); return; }
+    deployTraining();
+  }
+  function deployTraining() {
     Loading.run('Basic training', [['Setting up the range', 0.5, () => Game.start('tutorial')]]);
+  }
+  /* The tour on its own, ending in the field training the way it always does. */
+  function startTour() {
+    SFX.click();
+    closeHowTo();
+    setView('play');
+    Tour.run({ onDone: deployTraining });
   }
   /* The sample game: a real Domination match, smaller and gentler than a full
      lobby, with js/coach.js watching it and a debrief at the end. */
@@ -1241,7 +1338,7 @@ const Screens = (() => {
       document.getElementById('val-sens').textContent = (e.target.value / 100).toFixed(1) + '×'; persistSettings();
     });
     document.getElementById('set-botlevel').addEventListener('input', e => {
-      renderBotLevel(e.target.value); persistSettings();
+      renderBotLevel(e.target.value); persistSettings(); renderBotPick();
     });
     document.getElementById('set-fov').addEventListener('input', e => {
       document.getElementById('val-fov').textContent = e.target.value; persistSettings();
@@ -1260,10 +1357,16 @@ const Screens = (() => {
     if (train) train.addEventListener('click', startTutorial);
     const guided = document.getElementById('btn-guided');
     if (guided) guided.addEventListener('click', startGuided);
+    // difficulty, on the deploy bar. Its own class, not `.stepper__btn`, so the
+    // match-size handler above cannot pick these up as a squad-count change.
+    document.querySelectorAll('[data-bot]').forEach(b =>
+      b.addEventListener('click', () => bumpBot(+b.dataset.bot)));
     const trainFromHowTo = document.getElementById('btn-howto-train');
     if (trainFromHowTo) trainFromHowTo.addEventListener('click', startTutorial);
     const howto = document.getElementById('btn-howto');
     if (howto) howto.addEventListener('click', () => { SFX.click(); openHowTo(); });
+    const tourBtn = document.getElementById('btn-howto-tour');
+    if (tourBtn) tourBtn.addEventListener('click', startTour);
     ['btn-howto-x', 'btn-howto-done'].forEach(id => {
       const b = document.getElementById(id);
       if (b) b.addEventListener('click', () => { SFX.click(); closeHowTo(); });
@@ -1300,5 +1403,10 @@ const Screens = (() => {
     });
   }
 
-  return { show, enterHome, renderAll, init, getSelectedMode, closeSettings, openHowTo, startTutorial, startGuided };
+  return {
+    show, enterHome, renderAll, init, getSelectedMode, closeSettings,
+    openHowTo, startTutorial, startGuided, startTour,
+    /* the base tour drives the real tabs rather than mocking them up */
+    setView,
+  };
 })();

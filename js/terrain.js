@@ -34,6 +34,45 @@ const Terrain = (() => {
     bridgeEdge: '#5e4629',
   };
 
+  /* ---------- daylight ----------
+     The palettes above are the design's own colours, and they were mixed for a
+     world that then gets darkened three more times before anybody sees it:
+     sightline shadows, cast shadows under everything, and weather. Stacked,
+     the ground read as dusk on a clear day.
+
+     Rather than hand-editing sixty hex values across five biomes — which
+     loses the relationships between them, and has to be redone every time a
+     biome is added — the lift is one function applied to whichever palette a
+     map ends up with. It raises lightness and takes a little saturation out of
+     the very dark colours (deep water was so saturated that lifting it alone
+     turned it electric), so every biome keeps its character and its internal
+     contrast.
+
+     LIFT is the knob. 0 is the old palette; 1 would be white. */
+  const LIFT = 0.17;
+
+  const hexToRgb = (h) => {
+    const v = parseInt(h.slice(1), 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  };
+  const rgbToHex = (r, g, b) => '#' + [r, g, b]
+    .map(c => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0')).join('');
+
+  /* Lift toward white, but proportionally to how much headroom a channel has,
+     so a colour gets brighter without washing out the hue that identifies it —
+     grass stays green, sand stays warm, water stays blue. */
+  function brighten(hex, amount) {
+    if (typeof hex !== 'string' || hex[0] !== '#' || hex.length !== 7) return hex;
+    const [r, g, b] = hexToRgb(hex);
+    const lift = (c) => c + (255 - c) * amount;
+    return rgbToHex(lift(r), lift(g), lift(b));
+  }
+  const brightenAll = (palette, amount) => {
+    const out = {};
+    for (const k of Object.keys(palette)) out[k] = brighten(palette[k], amount);
+    return out;
+  };
+
   /* how far in from the edge each band sits, on average */
   const OCEAN_INSET = 150;      // water all the way round
   const BEACH_INSET = 300;      // sand between water and grass
@@ -222,10 +261,16 @@ const Terrain = (() => {
      map at once. */
   const WEATHER = {
     clear:   { name: 'Clear',      density: 0,   sight: 1.00, tint: null,                    drift: 0 },
-    rain:    { name: 'Rain',       density: 260, sight: 0.72, tint: 'rgba(30,52,74,0.20)',   drift: 0.32, streak: 16, color: 'rgba(174,206,235,0.55)' },
-    snow:    { name: 'Snowfall',   density: 220, sight: 0.62, tint: 'rgba(190,205,220,0.16)', drift: 0.55, streak: 0,  color: 'rgba(255,255,255,0.80)' },
-    dust:    { name: 'Dust Haze',  density: 150, sight: 0.55, tint: 'rgba(150,120,70,0.22)',  drift: 0.85, streak: 5,  color: 'rgba(214,186,132,0.45)' },
-    ash:     { name: 'Ashfall',    density: 190, sight: 0.66, tint: 'rgba(40,36,34,0.26)',    drift: 0.30, streak: 0,  color: 'rgba(190,186,180,0.50)' },
+    /* Weather colours the light, it does not switch it off. The tints were
+       heavy enough that three of the five weathers read as evening — and they
+       are on top of the shadow passes, not instead of them. Each is roughly
+       halved and pulled toward its own hue rather than toward black; sight
+       ranges come up with them, because being unable to see was the same
+       complaint from the other end. */
+    rain:    { name: 'Rain',       density: 260, sight: 0.82, tint: 'rgba(96,140,190,0.10)',   drift: 0.32, streak: 16, color: 'rgba(194,222,245,0.55)' },
+    snow:    { name: 'Snowfall',   density: 220, sight: 0.76, tint: 'rgba(226,238,248,0.10)',  drift: 0.55, streak: 0,  color: 'rgba(255,255,255,0.85)' },
+    dust:    { name: 'Dust Haze',  density: 150, sight: 0.70, tint: 'rgba(214,180,120,0.13)',  drift: 0.85, streak: 5,  color: 'rgba(228,205,160,0.45)' },
+    ash:     { name: 'Ashfall',    density: 190, sight: 0.78, tint: 'rgba(120,116,112,0.14)',  drift: 0.30, streak: 0,  color: 'rgba(214,210,205,0.50)' },
   };
   /* Which climates get which weather, and how often. Clear is always on the
      table — a map that is always raining is a map with one look. */
@@ -255,7 +300,9 @@ const Terrain = (() => {
     const biome = biomeFor(seed || 1337);
     const t = {
       w, h, seed: seed || 1337,
-      biome, colors: Object.assign({}, COLORS, biome.colors),
+      /* Daylight applied once, here, so every drawing call downstream reads
+         an already-lifted palette and nothing has to know about it. */
+      biome, colors: brightenAll(Object.assign({}, COLORS, biome.colors), LIFT),
       weather: weatherFor(seed || 1337, BIOME_IDS[Math.abs((seed || 1337) >>> 0) % BIOME_IDS.length]),
       oceanInset: OCEAN_INSET,
       beachInset: BEACH_INSET,
@@ -524,6 +571,9 @@ const Terrain = (() => {
 
   return {
     COLORS, BIOMES, BIOME_IDS, biomeFor, WEATHER, BIOME_WEATHER, weatherFor, OCEAN_INSET, BEACH_INSET,
+    /* the daylight knob, and the helper, so anything drawing world colours can
+       stay in step with the ground it is drawn on */
+    LIFT, brighten, brightenAll,
     generate, rng, distToPath,
     inOcean, inBeach, inRiver, onBridge, onRoad,
     // the coastline, for anything that needs to draw or reason about the shore

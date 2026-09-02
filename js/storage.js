@@ -57,6 +57,9 @@ const DB = (() => {
       tutorialDone: false,
       /* ...and whether they have played the guided match that follows it. */
       guidedDone: false,
+      /* ...and whether they have been walked round the home screen, which is
+         the half of training that happens before anybody deploys. */
+      tourDone: false,
     };
   }
 

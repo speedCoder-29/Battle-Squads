@@ -216,6 +216,20 @@
             <span class="queue-bar__status" id="queue-status">Ready to deploy</span>
             <span class="net-chip" id="net-chip" title="Multiplayer status">⚫ Offline vs bots</span>
           </div>
+          <!-- How hard the bots are, next to the button that starts the match
+               against them. It was only in Settings, which is the one place
+               nobody looks in the ten seconds before deploying. Same setting,
+               same storage — the slider in Settings and this stepper are two
+               views of one number. -->
+          <div class="botpick" id="botpick" data-level="7">
+            <span class="botpick__k">Bots</span>
+            <div class="botpick__row">
+              <button type="button" class="botpick__btn" data-bot="-1" aria-label="Easier bots">−</button>
+              <b class="botpick__lvl" id="botpick-level">7</b>
+              <button type="button" class="botpick__btn" data-bot="1" aria-label="Harder bots">+</button>
+            </div>
+            <span class="botpick__name" id="botpick-name">Elite</span>
+          </div>
           <button class="btn btn--play" id="btn-queue">
             <span class="btn--play__label">DEPLOY</span>
             <span class="btn--play__timer" id="queue-timer"></span>
@@ -537,6 +551,31 @@
     </div>
   </div>
 
+  <!-- ============ BASE TOUR ============
+       The first half of the tutorial, before anybody deploys: it dims the home
+       screen, cuts a hole over one thing at a time and says what that thing is
+       for. Driven by js/tour.js, which switches the real tabs rather than
+       showing pictures of them. -->
+  <div id="tour" class="tour" hidden>
+    <div class="tour__ring" id="tour-ring"></div>
+    <div class="tour__card" id="tour-card">
+      <div class="tour__head">
+        <span class="tour__label">BASE TOUR</span>
+        <span class="tour__count" id="tour-count">1 / 1</span>
+      </div>
+      <h3 class="tour__title" id="tour-title"></h3>
+      <p class="tour__body" id="tour-body"></p>
+      <div class="tour__foot">
+        <button type="button" class="btn btn--ghost btn--tiny" id="tour-skip">Skip to training</button>
+        <div class="tour__nav">
+          <button type="button" class="btn btn--ghost btn--tiny" id="tour-back">Back</button>
+          <button type="button" class="btn btn--primary btn--tiny" id="tour-next">Next</button>
+        </div>
+      </div>
+      <span class="tour__hint">→ next · ← back · Esc to leave</span>
+    </div>
+  </div>
+
   <!-- ============ HOW TO PLAY ============
        The written half of the tutorial: the rules, the numbers and the tables
        a guided match has no time to stop and explain. Every panel is rendered
@@ -553,6 +592,7 @@
         <div class="howto" id="howto-body"></div>
       </div>
       <div class="modal__foot">
+        <button class="btn btn--ghost" id="btn-howto-tour">🧭 Tour the menus</button>
         <button class="btn btn--ghost" id="btn-howto-train">🎓 Start Basic Training</button>
         <button class="btn btn--primary" id="btn-howto-done">Done</button>
       </div>
@@ -720,6 +760,8 @@
   <script src="js/screens.js"></script>
   <script src="js/loading.js"></script>
   <script src="js/matchmaking.js"></script>
+  <!-- the base tour: the home-screen half of the tutorial -->
+  <script src="js/tour.js"></script>
   <!-- the guided first match; game.js calls into it when mode is 'tutorial' -->
   <script src="js/tutorial.js"></script>
   <!-- ...and the coach that watches the real one after it -->

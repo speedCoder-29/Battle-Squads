@@ -38,7 +38,18 @@ Then create an account (or hit **Play as Guest**), pick a mode, and **Deploy**.
 
 The Play screen leads with **🎓 Basic Training** and a **How to Play** panel beside it.
 
-**Basic Training** ([js/tutorial.js](js/tutorial.js)) is a guided match, not a video: an
+**Basic Training** comes in two halves. It opens with the **base tour**
+([js/tour.js](js/tour.js)), which dims the home screen and cuts a hole over one thing at
+a time — your career and the two currencies, the mode cards, match size, bot difficulty,
+deploy, the firing range, parties, missions, the **battle pass** and what its tiers pay,
+the **loadout** and why the gun is the class, the **gunsmith** and saved kits, the
+**shop** and its seven categories, the leaderboard, and settings. Twenty-three steps, and
+it drives the real tabs rather than showing pictures of them, so it ends with you looking
+at your own panels with your own numbers in them. Arrow keys move, Esc leaves, and once
+you have taken it Basic Training goes straight to the field. It is replayable any time
+from **How to Play → Tour the menus**.
+
+Then the field half ([js/tutorial.js](js/tutorial.js)): a guided match, not a video — an
 ordinary offline game with a cleared training field in the middle of it, running one
 lesson at a time. Eighteen steps take you from "these are the movement keys" to a
 three-on-one firefight, and each one watches the world until you have actually done the
@@ -91,8 +102,10 @@ Both are replayable from the Play screen: **Basic Training** and **Guided Match*
 beside **How to Play**, and the bar recommends whichever one you have not done yet.
 
 **How to Play** is the written half: the two win conditions, your live keybinds, all ten
-classes, the damage model (types, hit zones, armour, adrenaline), what each surface and
-each wall toughness does, and a page of things nobody tells you. Every table in it is
+classes, the damage model (types, hit zones, armour, adrenaline), a **Loadout & shop**
+chapter covering the currencies, missions, battle pass, gunsmith attachments and ammo,
+perks and what the shop sells, what each surface and each wall toughness does, and a page
+of things nobody tells you. Every table in it is
 generated from the game's own data — `Controls`, `Classes`, `Combat`, `Items` — so a
 rebound key or a retuned vest shows up there rather than quietly going stale.
 
@@ -154,6 +167,7 @@ battle-squads/
 │   ├── progression.js  # weapons, missions, battle pass, XP & rewards
 │   ├── screens.js      # navigation, home rendering, settings, toasts
 │   ├── matchmaking.js  # queue flow + "match found" overlay (simulated)
+│   ├── tour.js         # the base tour: a walkthrough of every panel on the home screen
 │   ├── tutorial.js     # Basic Training: the guided first match, lesson by lesson
 │   ├── coach.js        # the guided match: live coaching rules + the debrief
 │   ├── game.js         # the 2D shooter: both modes, bots, HUD, scoring
@@ -416,7 +430,8 @@ The simulation knows about that world too:
 
 ## Bot difficulty
 
-Ten levels ([js/botai.js](js/botai.js)), set in Settings. Each level blends three
+Ten levels ([js/botai.js](js/botai.js)), set with the stepper beside the **Deploy**
+button — and in Settings, which is the same number seen from the other side. Each level blends three
 independent traits, and every bot gets a little individual jitter so a squad isn't
 nine identical robots.
 
@@ -429,6 +444,46 @@ nine identical robots.
 Level 1 is a distracted rookie who never retreats and fights alone. Level 10 reacts
 in 90ms, leads every shot, breaks contact at 45% HP, heals, and focus-fires with its
 squad. Contact-sharing unlocks at level 5; heals at level 3.
+
+### How they move
+
+Routing decides *where*; this is *how*, and it used to be the weaker half. Bots
+normalised the sum of that frame's steering terms — path, cover, squad, strafe — and
+stepped straight along it. Those terms disagree by design, so the direction changed
+completely between frames: measured over six matches, a bot's heading swung **575° a
+second**. They were not walking anywhere, they were vibrating, and 43% of the distance
+they asked for was never travelled.
+
+Four changes, each aimed at a number:
+
+| | |
+|---|---|
+| **Momentum** | The heading is state the bot carries and eases toward what it wants, on a time constant rather than a per-frame fraction. Reversing costs a beat. The blend's own length doubles as a throttle, so acceleration and braking come out of the same two lines |
+| **Deflection** | The summed intent is probed before it is committed to and swung to the nearest open bearing, so a bot starts sliding along a wall on the frame it meets it instead of leaning on it while the heading catches up |
+| **Separation** | Bots do not collide with each other, so nothing kept a squad from arriving stacked in one body. A short-range push spreads them into a front — steering only, because a hard collision in a doorway is a jam |
+| **String-pulling** | The path is re-shortcut as the bot walks it, not only when it was built, which removes the zig-zag at every corner. Arriving eases off, so a bot settles on its waypoint rather than orbiting it |
+
+Two navigation fixes came out of measuring rather than guessing. Bots asked for a route
+on **every frame**, against a budget of two searches — twenty-four bots at 60 Hz is 1440
+requests a second against a service rate of 120, and on one seed 92% were refused, so
+those bots ran on the fallback steering for the whole match. They now ask about twice a
+second each, which the budget can actually meet. And a search that runs out of node
+budget returns its **closest approach** instead of nothing, so a long route becomes
+progress plus a shorter search from further along instead of a bot standing still.
+
+Measured over six seeds, 25 seconds of a full elimination lobby each
+(`Game.debug.moveStats()`):
+
+| | before | after |
+|---|---|---|
+| Distance achieved / commanded | 0.57 | **0.73** |
+| Heading change | 575°/s | **198°/s** |
+| Sidesteps from being stuck | 166 | **97** |
+| Frames spent inside another agent | 7.1% | **2.3%** |
+| Failed path requests | 514 | **52** |
+| Simulation cost | 17.5ms/frame | **11.4ms/frame** |
+
+Every seed improved on every measure.
 
 ### Getting around the map
 
@@ -684,6 +739,25 @@ placement that would straddle the river gets nudged to a nearby spot rather than
 being cut in half, and loose cover that lands in water is simply dropped. Crates
 and props are kept out of the water and off the roads.
 
+## Daylight
+
+The world is lit for daylight rather than dusk. The palettes were mixed once and
+then darkened three more times before anybody saw them — sightline shadows, cast
+shadows under everything, and weather — so a clear noon on grass read as evening.
+
+Rather than hand-editing sixty hex values across five biomes, the lift is one
+function (`Terrain.brighten`, knob `Terrain.LIFT`) applied to whichever palette a
+map resolves to, raising each channel toward white in proportion to its headroom
+so hues survive: grass stays green, sand stays warm, water stays blue. Mean
+palette luminance per biome: temperate +25%, arid +22%, tropic +23%, tundra +14%,
+volcanic +51%.
+
+The passes on top came down with it — sightline shadows from 82% to 60% opaque
+(you still read instantly that you cannot see in there), cast shadows and the
+unexplored-interior haze lightened and tinted cool, and the four weathers roughly
+halved: they colour the light now instead of switching it off, with sight ranges
+raised to match.
+
 ## Art
 
 Everything used to be an emoji, which meant a different-looking game on every
@@ -809,6 +883,12 @@ Quick things to tweak while designing your game:
   `MATCH_SECONDS`. Spawns spread themselves evenly around the edge for any team count,
   and the building layouts live in `buildMap()`.
 - **Missions & Battle Pass** — pools and tiers in `js/progression.js`.
-- **Look & feel** — CSS variables at the top of `css/styles.css`.
+- **Look & feel** — CSS variables at the top of `css/styles.css`. The home screen's
+  grounds, panels and lines were lifted a stop (ground +92%, panel +80% luminance),
+  the vignette and the background's dark lobe roughly halved, and the accent moved
+  to `#f59155` so it still clears 4.4:1 against the brighter panel. Body text sits
+  at 9.6:1, muted at 6.4:1, de-emphasised at 5.1:1 — all above WCAG AA.
+- **World brightness** — `LIFT` in `js/terrain.js`, `SIGHT_DARK` and `SHADOW` in
+  `js/game.js`.
 
 Have fun — squad up. 🎮

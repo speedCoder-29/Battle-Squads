@@ -436,7 +436,11 @@ const Game = (() => {
        count would have put the same number of much larger objects on the map:
        the same field, four times as full. Fewer, bigger things is the same
        coverage and a far cheaper map to generate. */
-    props: 34,         // was 78, when a tree was the size of a shrub
+    /* Halved again for the dressing rewrite: every piece of scenery now sits
+       against a road, a wall or a clearing rather than anywhere at all, and
+       placed things read as tidier at half the count than scattered ones did
+       at full. The live props -- trees, rocks, crates -- keep their share. */
+    props: 20,         // was 78, then 34 when a tree stopped being a shrub
     groves: 2.0,       // stands of trees, per million px²
     grassPatches: 2.4,
   };
@@ -1928,19 +1932,10 @@ const Game = (() => {
       genAdd(pr);
     }
 
-    for (let i = 0; i < count - liveCount; i++) {
-      const kind = dressing[Math.floor(Math.random() * dressing.length)];
-      decor.push({
-        kind,
-        x: rand(Terrain.BEACH_INSET - 40, MAP_W - Terrain.BEACH_INSET + 40),
-        y: rand(Terrain.BEACH_INSET - 40, MAP_H - Terrain.BEACH_INSET + 40),
-        // man-made scenery sits square; only the natural stuff is random
-        rot: NATURAL_PROPS.has(kind)
-          ? Math.random() * Math.PI * 2
-          : Math.round(Math.random() * 4) * (Math.PI / 2),
-        scale: 0.8 + Math.random() * 0.4,
-      });
-    }
+    /* `biomeScatter`, not `dressing`. Passing the whole list put road cones
+       and radio antennas into the woodland clumps, which is exactly the
+       everything-everywhere problem this was meant to fix. */
+    placeDressing(count - liveCount, biomeScatter);
     decor.push(...beachDecor());
     // keep props on the board and out of walls, water and the road
     const edge = 30;
@@ -1950,6 +1945,172 @@ const Game = (() => {
       .filter(d => !pointInObstacle(d.x, d.y))
       .filter(d => Terrain.isSpawnable(terrain, d.x, d.y))
       .filter(d => !Terrain.onRoad(terrain, d.x, d.y));
+  }
+
+  /* ---------------- dressing ----------------
+     Everything that is scenery rather than cover: cones, signs, pallets,
+     tyres, tents, stumps, rubble.
+
+     This used to be one loop that picked a kind at random and dropped it at a
+     random point on the island. Audited, that produced eighty-one radio
+     antennas, eighty-eight road signs and eighty-two traffic cones standing
+     individually in open fields -- and the cones were explicitly filtered
+     *off* the roads, which is the one place a cone belongs. Seven hundred and
+     forty pieces of it, twenty-odd of them overlapping each other, none of it
+     related to anything. It did not read as a dressed map, it read as litter.
+
+     Dressing now comes from somewhere. Each kind is placed against the feature
+     it belongs to, aligned to that feature, and spaced evenly along it:
+
+       roadside  cones and signs on the verge, squared to the road
+       yards     pallets and tyres banked along a building's outside wall
+       camps     tents in threes and fours, which is what a camp is
+       thickets  stumps, rubble and rock in clumps, the way they fall
+
+     The budget is also roughly half what it was. Fewer things, each of them
+     somewhere, reads as tidier than more things everywhere -- and it is the
+     same argument as the container yard: a map you can navigate by needs
+     landmarks, and everything cannot be a landmark. */
+  function placeDressing(budget, biomeKinds) {
+    if (budget <= 0) return;
+    /* Nothing lands on top of anything else.
+
+       Tidy is not only about where things are, it is about them not being in
+       each other. The old scatter left twenty-odd overlapping pairs; grouping
+       things into banks and clumps made that worse before this check went in,
+       because a clump is a deliberate attempt to put things near each other
+       and nothing was stopping it going too far. `gap` is per caller: a bank
+       of pallets is meant to be close, a thicket is not. */
+    const mine = [];
+    const put = (kind, x, y, rot, scale, gap) => {
+      if (!Sprites.has(kind)) return false;
+      if (!Terrain.isSpawnable(terrain, x, y)) return false;
+      if (insideAnyBuilding(x, y, 6)) return false;
+      if (pointInObstacle(x, y)) return false;
+      const g = (gap === undefined ? 46 : gap);
+      for (const d of mine) if (dist2(d.x, d.y, x, y) < g * g) return false;
+      const item = { kind, x, y, rot, scale: scale || (0.86 + Math.random() * 0.28) };
+      decor.push(item); mine.push(item);
+      return true;
+    };
+
+    /* ---- the verges ----
+       Walked along each road at a fixed pitch, offset to alternating sides and
+       turned to match the bearing. A line of cones is a line, not a sprinkle:
+       the jitter is along the road only, never across it, so the row stays a
+       row. */
+    let placed = 0;
+    const VERGE_STEP = 300;
+    for (const r of (terrain.roads || [])) {
+      let side = 1;
+      for (let i = 0; i < r.pts.length - 1; i++) {
+        const a = r.pts[i], b = r.pts[i + 1];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 1) continue;
+        const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+        const nx = -uy, ny = ux;                        // across the road
+        const ang = Math.atan2(uy, ux);
+        for (let t = VERGE_STEP * 0.5; t < len; t += VERGE_STEP) {
+          const off = r.width / 2 + 30 + Math.random() * 14;
+          const jit = (Math.random() - 0.5) * 60;       // along the road only
+          const x = a.x + ux * (t + jit) + nx * off * side;
+          const y = a.y + uy * (t + jit) + ny * off * side;
+          if (put(Math.random() < 0.45 ? 'sign' : 'cone', x, y, ang, 0.9, 60)) placed++;
+          side = -side;
+        }
+      }
+    }
+
+    /* ---- service yards ----
+       Pallets and tyres do not live in fields, they live stacked against the
+       back of a building. One run per block, three to five deep, parallel to
+       the wall and evenly spaced -- a bank, not a scatter. */
+    for (const b of buildings) {
+      for (const blk of blocksOf(b)) {
+        if (Math.random() < 0.45) continue;             // not every wall has a yard
+        const horizontal = Math.random() < 0.5;
+        const far = Math.random() < 0.5;
+        const kind = Math.random() < 0.55 ? 'pallet' : 'tyre';
+        const n = 3 + Math.floor(Math.random() * 3);
+        const gap = 46;
+        // a point just outside the chosen wall, and the direction along it
+        const cx = horizontal ? blk.x + blk.w / 2 : (far ? blk.x + blk.w + 42 : blk.x - 42);
+        const cy = horizontal ? (far ? blk.y + blk.h + 42 : blk.y - 42) : blk.y + blk.h / 2;
+        const ux = horizontal ? 1 : 0, uy = horizontal ? 0 : 1;
+        const rot = horizontal ? 0 : Math.PI / 2;
+        for (let i = 0; i < n; i++) {
+          const t = (i - (n - 1) / 2) * gap;
+          if (put(kind, cx + ux * t, cy + uy * t, rot, 0.9, 38)) placed++;
+        }
+      }
+    }
+
+    /* ---- camps ----
+       A tent on its own in a field is a mistake; three round a clearing is a
+       camp. Sited away from buildings, because that is the point of a camp. */
+    const camps = 12;
+    for (let c = 0; c < camps; c++) {
+      let cx = 0, cy = 0, ok = false;
+      /* Forty tries, not twenty. A camp needs a clearing two hundred and sixty
+         pixels clear of any building, and on a map with fifteen compounds on
+         it most random points are not that -- at twenty tries barely two camps
+         in twelve found anywhere to stand, and the result was six tents on the
+         whole island where the point had been to have them come in groups. */
+      for (let tries = 0; tries < 40 && !ok; tries++) {
+        cx = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+        cy = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+        ok = Terrain.isSpawnable(terrain, cx, cy)
+          && !Terrain.onRoad(terrain, cx, cy)
+          && !insideAnyBuilding(cx, cy, 260);
+      }
+      if (!ok) continue;
+      const n = 3 + Math.floor(Math.random() * 2);
+      const turn = Math.random() * Math.PI * 2;
+      for (let i = 0; i < n; i++) {
+        // ranged round the clearing, each one facing into the middle
+        const ang = turn + (i / n) * Math.PI * 2;
+        const rr = 74 + Math.random() * 26;
+        if (put('tent', cx + Math.cos(ang) * rr, cy + Math.sin(ang) * rr, ang + Math.PI, 1, 78)) placed++;
+      }
+    }
+
+    /* ---- thickets ----
+       What is left of the budget goes to the natural stuff, in clumps. Stumps
+       come in groups because trees are felled in groups; rubble comes in
+       groups because whatever it used to be fell down in one place. */
+    const natural = ['stump', 'rubble', 'rock'].concat(biomeKinds || []);
+    /* Capped rather than "fill the budget". The thickets run last, so left
+       uncapped they simply absorbed everything the placed dressing had not
+       used -- three hundred and sixty stumps and rocks against a hundred and
+       fifty pieces of roadside, which puts the bulk of the map's dressing back
+       in the fields it was being taken out of. */
+    const cap = Math.min(budget, placed + 190);
+    let guard = 0;
+    while (placed < cap && guard++ < 400) {
+      const kind = natural[Math.floor(Math.random() * natural.length)];
+      const cx = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
+      const cy = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+      if (!Terrain.isSpawnable(terrain, cx, cy) || Terrain.onRoad(terrain, cx, cy)) continue;
+      const n = 3 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < n && placed < cap; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const rr = Math.random() * 96;
+        const x = cx + Math.cos(ang) * rr, y = cy + Math.sin(ang) * rr;
+        const rot = NATURAL_PROPS.has(kind)
+          ? Math.random() * Math.PI * 2
+          : Math.round(Math.random() * 4) * (Math.PI / 2);
+        if (put(kind, x, y, rot, 0, 54)) placed++;
+      }
+    }
+
+    /* One antenna per few buildings, on the roof line, and no more. Eighty-one
+       of them standing in fields was the single silliest thing on the map. */
+    for (const b of buildings) {
+      if (Math.random() < 0.6) continue;
+      const blk = blocksOf(b)[0];
+      if (!blk) continue;
+      put('antenna', blk.x + blk.w * (0.2 + Math.random() * 0.6), blk.y - 26, 0, 1, 100);
+    }
   }
 
   /* palms and driftwood along the sand ring */
@@ -2258,8 +2419,27 @@ const Game = (() => {
     A.crate = { x: hx + hw / 2, y: hy + hh / 2, tier: 'silver', opened: false };
     crates.push(A.crate);
 
-    /* One capture point, so Domination can be taught rather than described. */
-    objectives = [{ name: 'A', x: cx - 520, y: cy + 470, r: 150, owner: -1, progress: 0, capTeam: -1 }];
+    /* One capture point, so Domination can be taught rather than described.
+
+       Sited rather than placed. The arena is cleared ground, but its corners
+       are not: on some islands the spot this used to hard-code landed in the
+       river or against a cluster the bulldozer had left standing, and a player
+       teleported onto it was pushed far enough out of the ring that the
+       capture never started — the lesson simply could not be completed. So
+       candidates are tried outward from where it wants to be, and the first
+       one that is dry, unobstructed and inside the map wins. */
+    const spot = (() => {
+      for (const [ox, oy] of [[-520, 470], [-300, 470], [-520, 300], [-160, 470],
+        [-520, 120], [0, 470], [-700, 300], [-300, 200]]) {
+        const x = cx + ox, y = cy + oy;
+        if (x < 300 || y < 300 || x > MAP_W - 300 || y > MAP_H - 300) continue;
+        if (pointInObstacle(x, y)) continue;
+        if (terrain && !Terrain.isBuildable(terrain, x, y, 90)) continue;
+        return { x, y };
+      }
+      return { x: cx - 520, y: cy + 470 };
+    })();
+    objectives = [{ name: 'A', x: spot.x, y: spot.y, r: 150, owner: -1, progress: 0, capTeam: -1 }];
     clearObjectiveSite(objectives[0]);
     invalidateRects();
   }
@@ -3482,6 +3662,7 @@ const Game = (() => {
   const invalidateRects = () => {
     rectCache = solidCache = sightCache = solidGrid = sightGrid = bulletGrid = null;
     lightCache = null;      // a lamp that just got shot out stops lighting the room
+    openCache = null;       // ...and a wall that just came down is a new opening
   };
 
   /* ---------------- spatial index ----------------
@@ -4040,6 +4221,35 @@ const Game = (() => {
     // committed to a way round; keep going that way so it does not dither
     return want + (Math.PI / 2) * side;
   }
+  /* The same idea as slideToward, one level down: given the direction a bot
+     *wants* to go, return one it can actually walk in.
+
+     slideToward answers "which way to that point"; this answers "which way,
+     given everything I have already been told to do". It matters because the
+     steering terms are summed — cover, squad, separation, the path — and the
+     sum can point into a wall even when none of the terms did. Probing the
+     result and swinging it to the nearest open bearing is what stops a bot
+     leaning on geometry: it starts sliding along the wall on the frame it
+     meets it rather than after the heading has finished catching up.
+
+     The side it swings to is remembered, so a bot committed to going round
+     the left of a building does not change its mind halfway and dither in the
+     corner. Returns null when the way ahead is already clear, so the common
+     case costs exactly one point test. */
+  const DEFLECT_STEPS = 5;
+  function deflect(a, ang, reach) {
+    const len = reach === undefined ? a.r + 30 : reach;
+    const open = (t) => !pointInObstacle(a.x + Math.cos(t) * len, a.y + Math.sin(t) * len);
+    if (open(ang)) return null;
+    const side = a.wallSide || (a.wallSide = Math.random() < 0.5 ? 1 : -1);
+    for (let i = 1; i <= DEFLECT_STEPS; i++) {
+      const off = i * (Math.PI / 8);
+      if (open(ang + off * side)) return ang + off * side;
+      if (open(ang - off * side)) return ang - off * side;
+    }
+    return null;                      // boxed in: let the stuck handling have it
+  }
+
   /* How far a bot will travel for a hull.
 
      1500 was tuned when the divert was a chance encounter — something you take
@@ -4205,6 +4415,12 @@ const Game = (() => {
        boarding correctly and then sitting in a parked car for the rest of the
        match. */
     v.aiHold = 0;
+    /* Pinned here as well as in the update loop. The loop carries a rider from
+       the frame after it boards, which leaves exactly one frame where the bot
+       is inside the hull for the renderer and still standing where it was for
+       everything else -- a single-frame flicker of the thing this whole fix
+       was about. */
+    a.x = v.x; a.y = v.y; a.angle = v.angle;
     a.path = null; a.pathTarget = null;
   }
 
@@ -5015,6 +5231,18 @@ const Game = (() => {
   /* Somewhere near `a` that breaks line of sight to `from`. Samples a ring of
      candidate spots rather than reasoning about geometry — cheap, and good
      enough that the bot ends up behind the wall rather than beside it. */
+  /* ---------------- movement feel ----------------
+     How quickly a bot's heading catches up with what it wants (seconds to
+     ~63% of the change). Small enough to still dodge, long enough that the
+     frame-to-frame disagreement between steering terms averages out instead
+     of being walked. */
+  const HEADING_TAU = 0.14;
+  /* How far apart bots try to stand, as a multiple of two body radii, and how
+     hard they push. Steering only: they still pass through each other, because
+     a hard collision in a doorway is a jam and a jam is worse than a shove. */
+  const SEPARATE_AT = 2.2;
+  const SEPARATE_W = 1.5;
+
   const COVER_R = 210;
   function findCover(a, from) {
     let best = null, bestScore = -Infinity;
@@ -5045,6 +5273,7 @@ const Game = (() => {
   }
 
   function updateBot(a, dt) {
+    a.throttle = 1;              // set by whatever steers this frame; see followPath
     /* Down: no fighting, just dragging yourself toward someone who can pick
        you up. The squad's own logic walks over on its own, because a downed
        teammate is just an agent they can path to. */
@@ -5440,6 +5669,7 @@ const Game = (() => {
         if (dir) {
           a.angle = Math.atan2(dir.y, dir.x);
           moveX += dir.x; moveY += dir.y;
+          a.throttle = dir.throttle === undefined ? 1 : dir.throttle;
         } else {
           /* No route. Walking straight at the goal is what made bots stand
              against a wall shoving at it: the direct line is blocked — that is
@@ -5460,13 +5690,25 @@ const Game = (() => {
       }
     }
 
-    // TEAMWORK — stick with the squad, but not close enough to share a grenade
+    /* TEAMWORK — stick with the squad, but not close enough to share a grenade.
+
+       Proportional rather than on/off. At the band edge a fixed pull switches
+       fully on and fully off between frames, and the bot sitting there jitters
+       against the threshold; scaling the term by how far outside the band it
+       actually is makes it fade in, which is both calmer to watch and what
+       stops two mates oscillating around each other. */
     if (!a.isVehicle && TEAM.cohesion > 0) {
       const { mate, d: md } = nearestMate(a);
       if (mate) {
         const ang = Math.atan2(mate.y - a.y, mate.x - a.x);
-        if (md > TEAM.spacing * 2.5) { moveX += Math.cos(ang) * TEAM.cohesion; moveY += Math.sin(ang) * TEAM.cohesion; }
-        else if (md < TEAM.spacing) { moveX -= Math.cos(ang) * TEAM.cohesion; moveY -= Math.sin(ang) * TEAM.cohesion; }
+        const far = TEAM.spacing * 2.5;
+        if (md > far) {
+          const w = TEAM.cohesion * clamp((md - far) / far, 0.15, 1);
+          moveX += Math.cos(ang) * w; moveY += Math.sin(ang) * w;
+        } else if (md < TEAM.spacing) {
+          const w = TEAM.cohesion * clamp((TEAM.spacing - md) / TEAM.spacing, 0.15, 1);
+          moveX -= Math.cos(ang) * w; moveY -= Math.sin(ang) * w;
+        }
       }
     }
 
@@ -5477,21 +5719,103 @@ const Game = (() => {
       if (a.stuckDir) { moveX += Math.cos(a.stuckDir); moveY += Math.sin(a.stuckDir); }
     }
 
+    /* SEPARATION — bots do not collide with each other, so nothing was
+       keeping them apart except the squad-spacing term, which only ever looks
+       at the single nearest mate. A whole squad routed to the same objective
+       therefore arrived stacked in one body: they walked the same line,
+       occupied the same pixels, funnelled into the same doorway and shoved.
+
+       A short-range push away from everyone nearby, friend or enemy, spreads a
+       squad into a front without any of the deadlock a hard body collision
+       would cause in a corridor. `crowded` falls out of the same pass, so the
+       statistics do not need a second one. */
+    let crowded = false;
+    if (!a.isVehicle && !a.riding) {
+      let sx = 0, sy = 0;
+      for (const b of agents) {
+        if (b === a || !b.alive || b.isVehicle || b.riding) continue;
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const rr = (a.r + b.r) * SEPARATE_AT;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > rr * rr || d2 < 1e-9) continue;
+        const d = Math.sqrt(d2);
+        if (d < a.r + b.r) crowded = true;
+        const w = 1 - d / rr;                      // hardest when touching
+        sx += (dx / d) * w; sy += (dy / d) * w;
+      }
+      moveX += sx * SEPARATE_W; moveY += sy * SEPARATE_W;
+    }
+
     const m = Math.hypot(moveX, moveY);
     if (m > 0) {
       const base = a.isVehicle ? a.vspeed
         : a.weapon.moveSpeed * 0.72 * a.cls.speed * Combat.armorSpeed(a) * Combat.adrenaline(a.adrenaline).speed;
       const surf = terrain ? Terrain.surfaceAt(terrain, a.x, a.y) : null;
-      const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * dt;
+      const spd = base * (a.wireSlow || 1) * (surf ? surf.speed : 1) * (a.throttle || 1) * dt;
       const px = a.x, py = a.y;
-      a.x += (moveX / m) * spd; a.y += (moveY / m) * spd;
+
+      /* MOMENTUM — steer the heading, do not teleport it.
+
+         Every frame used to normalise the sum of that frame's steering terms
+         and step straight along it. Those terms disagree with each other by
+         design — a cover point pulls one way, a squadmate another, a strafe
+         across both — so the direction the bot walked in changed completely
+         between frames. Measured over three matches it swung 744 degrees a
+         second: bots were not walking anywhere, they were vibrating, and the
+         38% of their commanded distance they never travelled was mostly spent
+         reversing into ground they had just left.
+
+         So the heading is a state the bot carries and eases toward what it
+         wants, with a time constant rather than a per-frame fraction so the
+         behaviour does not change with the frame rate. Reversing costs a beat,
+         which is exactly what a person does.
+
+         The blend's own length is the throttle: two frames that want opposite
+         directions produce a short vector, and a short vector is a bot slowing
+         down to turn round. Acceleration and braking come out of the same two
+         lines that fixed the jitter. */
+      let want = { x: moveX / m, y: moveY / m };
+      /* Swing the intent off the wall before committing to it. Without this,
+         momentum makes the bot lean into whatever the summed steering pointed
+         at for the length of the time constant, which is how smoothing bought
+         its calmer heading at the cost of more grinding. */
+      const around = deflect(a, Math.atan2(want.y, want.x));
+      if (around !== null) want = { x: Math.cos(around), y: Math.sin(around) };
+      if (a.hx === undefined) { a.hx = want.x; a.hy = want.y; }
+      /* Following a wall is the one case that wants a quick heading: the
+         deflected bearing changes as the wall does, and easing into it slowly
+         means clipping the corner it was steering you round. */
+      const k = 1 - Math.exp(-dt / (around !== null ? HEADING_TAU * 0.4 : HEADING_TAU));
+      a.hx += (want.x - a.hx) * k;
+      a.hy += (want.y - a.hy) * k;
+      const hm = Math.hypot(a.hx, a.hy);
+      const ease = clamp(hm, 0.3, 1);
+      const ux = hm > 1e-6 ? a.hx / hm : want.x, uy = hm > 1e-6 ? a.hy / hm : want.y;
+
+      a.x += ux * spd * ease; a.y += uy * spd * ease;
       resolveObstacles(a);
-      trackStuck(a, px, py, spd, dt);
+      trackStuck(a, px, py, spd * ease, dt);
       // velocity, so bots good enough to lead their shots have something to lead
       a.vx = (a.x - px) / dt; a.vy = (a.y - py) / dt;
-    } else { a.vx = 0; a.vy = 0; }
+      sampleMovement(a, px, py, spd * ease, ux, uy, crowded);
+    } else { a.vx = 0; a.vy = 0; a.hx = undefined; }
     if (a.ammo <= 0) startReload(a);
   }
+  /* One frame of one bot, for the movement statistics above. Cheap enough to
+     leave on: four adds and a hypot per bot. */
+  function sampleMovement(a, px, py, spd, hx, hy, crowded) {
+    moveStat.frames++;
+    moveStat.want += spd;
+    moveStat.got += Math.hypot(a.x - px, a.y - py);
+    if (a.lastHx !== undefined) {
+      const dot = clamp(a.lastHx * hx + a.lastHy * hy, -1, 1);
+      moveStat.turn += Math.acos(dot);
+      moveStat.turnN++;
+    }
+    a.lastHx = hx; a.lastHy = hy;
+    if (crowded) moveStat.crowd++;
+  }
+
   /* ---------------- bot navigation ----------------
      A nav grid is built once per match; bots request a path to wherever they
      want to be and follow the waypoints. Recomputes are staggered and budgeted
@@ -5501,6 +5825,11 @@ const Game = (() => {
   /* A* cells the whole game may expand this frame, shared by every bot. About
      three milliseconds' worth on the machine this was tuned on. */
   const NAV_NODES_PER_FRAME = 9000;
+  /* Frames a bot waits before asking for a route again, plus up to the same
+     again at random. ~0.25-0.5s: fast enough that a bot whose path was
+     invalidated is moving again within a step or two, slow enough that the
+     whole lobby's requests fit inside the budget. */
+  const PATH_RETRY = 15;
   let navNodeBudget = NAV_NODES_PER_FRAME;
   let navDirty = false, navRebuildIn = 0, navChanges = 0;
 
@@ -5572,13 +5901,49 @@ const Game = (() => {
   /* How the pathing is actually doing, so "bots navigate badly" can be a
      measurement. Reset with the match. */
   let navStat = { ask: 0, reuse: 0, starved: 0, solved: 0, failed: 0, ms: 0 };
+  /* How well the bots are *moving*, as opposed to how well they are routing.
+     "Bots move badly" is otherwise an opinion; these are the four numbers that
+     make it a measurement, sampled on every bot on every frame:
+
+       want / got   how far a bot asked to move against how far it managed —
+                    the shortfall is time spent pressed against geometry
+       turn         mean degrees per second of heading change, which is what
+                    reads on screen as jitter or as a smooth arc
+       stuck        sidesteps triggered by not moving
+       crowd        frames spent overlapping another agent
+
+     Reset with the match, read through Game.debug.moveStats(). */
+  let moveStat = { frames: 0, want: 0, got: 0, turn: 0, turnN: 0, stuck: 0, crowd: 0 };
+  const resetMoveStat = () => { moveStat = { frames: 0, want: 0, got: 0, turn: 0, turnN: 0, stuck: 0, crowd: 0 }; };
 
   function ensurePath(a, tx, ty, urgent) {
     if (!navGrid) return false;
     navStat.ask++;
     const moved = !a.pathTarget || dist2(a.pathTarget.x, a.pathTarget.y, tx, ty) > 240 * 240;
     a.pathAge = (a.pathAge || 0) - 1;
+    a.pathCd = (a.pathCd || 0) - 1;
     if (a.path && a.path.length && !moved && a.pathAge > 0) { navStat.reuse++; return true; }
+
+    /* Ask rarely, and get an answer, rather than asking constantly and being
+       refused.
+
+       Every bot without a current route asked for one on every frame, and the
+       budget serves two searches a frame for the whole match — so on a map
+       where routes are hard to find, 92% of requests were turned away
+       (measured: 33,174 refusals against 31 routes on one seed). Those bots
+       then ran on the wall-sliding fallback for the entire match, which is
+       what "the AI does not path" actually looked like from the outside.
+
+       Refusing a request costs the same whether the bot asks twice a second or
+       sixty times, and the flood is what made the queue hopeless: twenty-four
+       bots × 60 Hz is 1440 requests a second against a service rate of 120. A
+       short per-bot cooldown after any attempt — served, starved or failed —
+       drops that to about one request per frame across the whole lobby, which
+       the budget can actually meet. The jitter keeps them from re-syncing into
+       the same frame. */
+    if (a.pathCd > 0) { navStat.starved++; return !!(a.path && a.path.length); }
+    a.pathCd = PATH_RETRY + Math.floor(Math.random() * PATH_RETRY);
+
     if (pathBudget <= 0) {
       if (!urgent || ridePathBudget <= 0) { navStat.starved++; return !!(a.path && a.path.length); }
       ridePathBudget--;
@@ -5622,8 +5987,37 @@ const Game = (() => {
       wp = a.path[a.pathI];
     }
     if (!wp) { a.path = null; return null; }
+
+    /* String-pull while walking, not only when the path was built.
+
+       Nav.simplify already drops the waypoints that were redundant at build
+       time, but a bot is somewhere else by the time it is halfway along: the
+       corner it was routed around is now behind it, and steering at the next
+       cell centre when the one after that is in plain sight is what produces
+       the little zig-zag at every turn. So each time we look, walk forward
+       through the next few waypoints and aim at the furthest one there is
+       actually a clear line to.
+
+       Throttled per bot rather than run every frame — it costs a line trace
+       per candidate, the answer barely changes in a tenth of a second, and
+       fifteen bots asking sixty times a second is real work for nothing. */
+    a.lookT = (a.lookT || 0) - 1;
+    if (navGrid && a.lookT <= 0) {
+      a.lookT = 6 + Math.floor(Math.random() * 6);
+      const far = Math.min(a.pathI + 3, a.path.length - 1);
+      for (let j = far; j > a.pathI; j--) {
+        if (Nav.clearLine(navGrid, a, a.path[j])) { a.pathI = j; wp = a.path[j]; break; }
+      }
+    }
+
+    /* Ease off on the last one. A bot at full speed overshoots the point it
+       was walking to, turns round, overshoots it again, and reads as a fly at
+       a window. Slowing inside the last body-length lets it settle. */
+    const last = a.pathI >= a.path.length - 1;
+    const d = Math.hypot(wp.x - a.x, wp.y - a.y);
+    const throttle = last ? clamp(d / 70, 0.35, 1) : 1;
     const ang = Math.atan2(wp.y - a.y, wp.x - a.x);
-    return { x: Math.cos(ang), y: Math.sin(ang), wp };
+    return { x: Math.cos(ang), y: Math.sin(ang), wp, throttle };
   }
 
   /* Bots walk in straight lines, so a building corner can pin them. If a bot
@@ -5647,8 +6041,23 @@ const Game = (() => {
          for a fresh one from where the bot actually is, which is the only
          thing that can fix a path that no longer fits the world — a wall
          someone built, a door someone shut, a hull parked in a gap. */
-      a.stuckDir = a.angle + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+      /* Sidestep towards the side that is actually open.
+
+         A coin flip gets it right half the time, and the other half the bot
+         presses into the same wall from a slightly different angle for the
+         better part of a second before flipping again. Probing both
+         perpendiculars costs two point tests and picks the one with somewhere
+         to go; when neither has, backing out is the only move left, and it is
+         also the right one — that shape is a dead end. */
+      const probe = (ang) => !pointInObstacle(
+        a.x + Math.cos(ang) * (a.r + 30), a.y + Math.sin(ang) * (a.r + 30));
+      const right = a.angle + Math.PI / 2, left = a.angle - Math.PI / 2;
+      const rOk = probe(right), lOk = probe(left);
+      a.stuckDir = rOk && lOk ? (Math.random() < 0.5 ? right : left)
+        : rOk ? right : lOk ? left : a.angle + Math.PI;
       a.stuckT = 0.9; a.stuckAcc = 0;
+      a.pathCd = 0;              // a bot pinned on geometry jumps the queue
+      moveStat.stuck++;
       a.path = null; a.pathTarget = null; a.pathAge = 0;
       a.stuckRepaths = (a.stuckRepaths || 0) + 1;
       /* Still fighting the same corner after several tries: the goal itself is
@@ -5869,6 +6278,13 @@ const Game = (() => {
         }
         continue;
       }
+      /* A rider does not think for itself -- the hull it is in does. Where
+         it *is* gets settled after this loop, once every hull has moved; see
+         the pass below. Skipped before anything else gets a say, because
+         being inside a hull outranks every other reason to skip an agent.
+         (This used to sit below the `aiHold` exit, so a rider with any hold
+         on it was skipped entirely and left behind at the parking space.) */
+      if (a.riding) { a.vx = a.vy = 0; continue; }
       // a vehicle the player is driving takes its orders from the player, and
       // one they just stepped out of waits a moment before the squad claims it
       if (a.aiHold > 0) { a.aiHold -= dt; a.vx = a.vy = 0; continue; }
@@ -5898,16 +6314,25 @@ const Game = (() => {
          The rider is carried by the hull and does not think for itself; the
          hull thinks with its driver's AI. A vehicle is an agent like any
          other, which is what the boarding code always assumed. */
-      if (a.riding) {
-        const v = a.riding;
-        a.x = v.x; a.y = v.y; a.angle = v.angle;
-        a.vx = a.vy = 0;
-        continue;
-      }
       if (a.driver && a.driver.isPlayer) continue;    // driveVehicle has the wheel
       // test scaffolding: a target a probe has pinned down stays pinned down
       if (a.frozen) { a.vx = a.vy = 0; continue; }
       if (!a.isPlayer) updateBot(a, dt);
+    }
+
+    /* Riders land on their hulls, after every hull has finished moving.
+
+       Doing this inline in the loop above looked right and was wrong by one
+       frame: agents are walked in array order, so a rider listed before its
+       own vehicle was pinned to where the jeep had been and the jeep then
+       drove out from under it. Three pixels at a time, which is invisible to
+       look at and exactly the kind of thing that turns into a real desync the
+       moment anything else reads a rider's position -- the capture counter and
+       the deploy-on-squad check both do. */
+    for (const a of agents) {
+      if (!a.alive || !a.riding) continue;
+      const v = a.riding;
+      a.x = v.x; a.y = v.y; a.angle = v.angle;
     }
 
     // bullets
@@ -6658,6 +7083,22 @@ const Game = (() => {
         if (!a.alive) continue;
         // riders sit at their hull's position; the hull is already counted
         if (a.riding) continue;
+        /* Bodies hold ground; parked cars do not.
+
+           Every agent inside the ring counted, and an unclaimed hull is an
+           agent on team -1. So a jeep left standing in a capture point put a
+           second "team" on it permanently: the point read as contested for the
+           rest of the match and *nobody* could take it — not the squad
+           standing on it, not the squad that walked over to contest it. The
+           map parks hulls in garages and car parks and puts objectives inside
+           buildings, so this was reachable on an ordinary generated island;
+           it turned up on a seeded run of the tutorial's capture lesson, where
+           the bar simply never moved.
+
+           A vehicle counts only while somebody is driving it, and then for the
+           driver's side — which is the rule a player would guess anyway:
+           sitting on the point in a jeep is sitting on the point. */
+        if (a.team < 0 || (a.isVehicle && !a.driver)) continue;
         if (dist2(a.x, a.y, obj.x, obj.y) < obj.r * obj.r) { counts[a.team] = (counts[a.team] || 0) + 1; }
       }
       const teamsPresent = Object.keys(counts);
@@ -7592,12 +8033,34 @@ const Game = (() => {
      Sprites.LX/LY put the highlights on the opposite side from the same
      direction, so a prop and the shadow it casts now agree about where the
      light is. */
-  const SUN = { dx: 0.55, dy: 0.38 };          // direction shadows are thrown
+  /* ---------------- one sun ----------------
+     Which way the light comes from, as a unit vector pointing *at* the source:
+     up and to the left, matching the sprite highlights. Everything that shades
+     or casts is derived from this, so nothing can quietly disagree about where
+     the sun is. It lives here, above the first thing that reads it, rather
+     than beside the code that happened to need it last. */
+  const LIGHT = { x: -0.75, y: -0.66 };
+
+  /* Derived from LIGHT rather than written out again. The two used to be
+     independent numbers that happened to roughly agree, and they had drifted
+     about six degrees apart -- enough that a wall's lit face and the shadow it
+     threw disagreed about where the sun was. There is one sun. */
+  const SUN = (() => {
+    const len = Math.hypot(LIGHT.x, LIGHT.y) || 1;
+    return { dx: -LIGHT.x / len, dy: -LIGHT.y / len };
+  })();
+  /* How far a shadow runs per pixel of height -- the cotangent of the sun's
+     elevation. Below 1 the sun is overhead and shadows are stubs; above 2 it
+     is nearly on the horizon and the map turns into stripes. */
+  const SUN_LEN = 1.25;
   /* Tinted, not black. Shade is light being blocked, not colour being removed:
      a pure-black ellipse under a tree on a green field reads as a hole in the
      ground, while a cool dark reads as the shadow it is meant to be. */
-  const SHADOW = 'rgba(22, 30, 48, 0.34)';
-  const SHADOW_SOFT = 'rgba(22, 30, 48, 0.20)';
+  /* Lighter than they were, because they are no longer the only thing
+     shading the ground: the palette is lit for daylight now, and a shadow that
+     was tuned against a dusk-coloured field reads as soot on a bright one. */
+  const SHADOW = 'rgba(26, 36, 58, 0.24)';
+  const SHADOW_SOFT = 'rgba(26, 36, 58, 0.14)';
   const SHADOW_FLATTEN = 0.58;                 // a low sun squashes a ground shadow
   const LIFT_WALL = 26;                        // px of throw per metre of thickness
   const LIFT_LOW = 6;                          // low cover barely lifts off the floor
@@ -7611,6 +8074,43 @@ const Game = (() => {
     ctx.scale(1, SHADOW_FLATTEN);
     ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+
+  /* ---------------- cast shadows ----------------
+     A shadow is the shape of the thing, swept along the ground away from the
+     sun. Every shadow on this map used to be the object's own footprint moved
+     sideways, which leaves a lit gap between a wall and its shadow -- so
+     nothing looked like it was standing on the ground it was standing on. The
+     length came from the wall's *thickness* as well, so a thick low wall threw
+     further than a thin tall one.
+
+     The sweep is the hull of the footprint and its displaced copy. The sun is
+     fixed down-and-right, so both components of the throw are positive and the
+     hull is always the same six corners in the same order -- no general convex
+     hull needed, which matters when this runs for several hundred pieces a
+     frame.
+
+     Everything goes into one path and is filled once. Overlapping shadows used
+     to be filled separately and stacked their alpha, so a row of fence posts
+     had a black band under it where the shadows met; a single non-zero-wound
+     fill gives their union, which is what the shadow of several objects is. */
+  function sweepInto(x, y, w, h, dx, dy) {
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w + dx, y + dy);
+    ctx.lineTo(x + w + dx, y + h + dy);
+    ctx.lineTo(x + dx, y + h + dy);
+    ctx.lineTo(x, y + h);
+    ctx.closePath();
+  }
+
+  /* The round version: a disc swept along the ground is two half-discs joined
+     by their tangents, which is what a tree trunk's shadow actually is. */
+  function sweepRoundInto(cx, cy, r, dx, dy) {
+    const ang = Math.atan2(dy, dx);
+    ctx.ellipse(cx, cy, r, r * SHADOW_FLATTEN, 0, ang - Math.PI / 2, ang + Math.PI / 2, false);
+    ctx.ellipse(cx + dx, cy + dy, r, r * SHADOW_FLATTEN, 0, ang + Math.PI / 2, ang - Math.PI / 2, false);
+    ctx.closePath();
   }
 
   /* ---------------- viewport culling ----------------
@@ -7682,13 +8182,6 @@ const Game = (() => {
   const heightOf = (k) => (view.flat || k.passable
     ? 0
     : (HEIGHT_OF[k.height] || 0) * (RISE[k.name] || 1));
-
-  /* Which way the light comes from, as a unit vector pointing *at* the source.
-     Up and to the left, matching the sprite lighting and the direction the
-     ground shadows are thrown. Faces are shaded against this rather than by a
-     fixed north/east/south/west table, so a face is bright because of the way
-     it happens to be turned and not because of which side of the rect it is. */
-  const LIGHT = { x: -0.75, y: -0.66 };
 
   /* Where the top of something `h` tall above (x, y) lands on screen.
 
@@ -7823,29 +8316,34 @@ const Game = (() => {
     return t;
   }
 
+  /* How tall a thing is, for the purpose of the shadow it throws. The same
+     table the standing-up renderer uses, so a wall's height and its shadow can
+     never disagree -- and it still applies with the raised view switched off,
+     because the world is lit the same way either way. */
+  const shadowHeight = (k) => (k.passable ? 0 : (HEIGHT_OF[k.height] || 0) * (RISE[k.name] || 1));
+
   function drawStructureShadows() {
-    ctx.fillStyle = SHADOW;
-    for (const s of structureRects()) {
-      const k = kindOf(s);
-      if (k.height !== 'high' || s.open) continue;         // only tall things cast
-      if (!rectOnScreen(s)) continue;
-      const lift = (s.thickness || 0.3) * LIFT_WALL;       // thicker wall, longer shadow
-      // a round prop throws a round shadow, not a rectangular one
-      if (k.round) { groundShadow(s.x + s.w / 2, s.y + s.h / 2, s.w * 0.46, lift); continue; }
-      roundRect(s.x + SUN.dx * lift, s.y + SUN.dy * lift, s.w, s.h, 5);
+    /* Two passes, each one path.
+
+       The near pass is the shadow proper. The far pass is a longer, fainter
+       copy underneath it: a real shadow does not end at a hard line, it
+       softens with distance from whatever is casting it, and one extra sweep
+       at half the opacity reads as that penumbra for the cost of one fill. */
+    for (const pass of [0, 1]) {
+      const far = pass === 0;
+      ctx.beginPath();
+      for (const s of structureRects()) {
+        const k = kindOf(s);
+        if (s.open || k.passable) continue;
+        if (!rectOnScreen(s)) continue;
+        const h = shadowHeight(k) * (far ? 1.6 : 1);
+        if (h <= 0) continue;
+        const dx = SUN.dx * h * SUN_LEN, dy = SUN.dy * h * SUN_LEN;
+        if (k.round) sweepRoundInto(s.x + s.w / 2, s.y + s.h / 2, s.w * 0.46, dx, dy);
+        else sweepInto(s.x, s.y, s.w, s.h, dx, dy);
+      }
+      ctx.fillStyle = far ? SHADOW_SOFT : SHADOW;
       ctx.fill();
-      ctx.fillStyle = SHADOW;
-    }
-    // low cover gets a tighter, softer shadow
-    ctx.fillStyle = SHADOW_SOFT;
-    for (const s of structureRects()) {
-      const k = kindOf(s);
-      if (k.height !== 'low' || k.passable) continue;
-      if (!rectOnScreen(s)) continue;
-      if (k.round) { groundShadow(s.x + s.w / 2, s.y + s.h / 2, s.w * 0.44, LIFT_LOW, SHADOW_SOFT); continue; }
-      roundRect(s.x + SUN.dx * LIFT_LOW, s.y + SUN.dy * LIFT_LOW, s.w, s.h, 3);
-      ctx.fill();
-      ctx.fillStyle = SHADOW_SOFT;
     }
   }
 
@@ -7853,16 +8351,33 @@ const Game = (() => {
      to throw nothing, so a warehouse read as flat paint on the grass while the
      fence beside it had a shadow. Drawn under the roofs, and only while the
      roof is actually up — once it lifts for you, the shadow goes with it. */
+  /* A roof stands about this far off the ground, which is the point: a
+     warehouse should lay a shadow across the yard rather than wear one like a
+     rug. It was 22px before, barely more than a fence. */
+  const ROOF_H = 74;
   function drawBuildingShadows() {
-    ctx.fillStyle = SHADOW;
+    /* Bucketed by how far the roof has lifted, so a whole group of buildings
+       is one path and one fill. Bucketed rather than merged because a roof
+       fading up for the squad inside has to take its shadow with it. */
+    const byAlpha = new Map();
     for (const b of buildings) {
       if (!rectOnScreen(b)) continue;
       const a2 = b.roofAlpha === undefined ? 1 : b.roofAlpha;
       if (a2 < 0.03) continue;
-      ctx.globalAlpha = a2;
-      for (const blk of blocksOf(b)) {
-        roundRect(blk.x - 8 + SUN.dx * LIFT_BUILDING, blk.y - 8 + SUN.dy * LIFT_BUILDING,
-          blk.w + 16, blk.h + 16, 6);
+      const key = Math.round(a2 * 8) / 8;
+      if (!byAlpha.has(key)) byAlpha.set(key, []);
+      byAlpha.get(key).push(b);
+    }
+    for (const [a2, list] of byAlpha) {
+      for (const pass of [0, 1]) {
+        const h = ROOF_H * (pass === 0 ? 1.35 : 1);
+        const dx = SUN.dx * h * SUN_LEN, dy = SUN.dy * h * SUN_LEN;
+        ctx.beginPath();
+        for (const b of list) {
+          for (const blk of blocksOf(b)) sweepInto(blk.x - 6, blk.y - 6, blk.w + 12, blk.h + 12, dx, dy);
+        }
+        ctx.globalAlpha = a2;
+        ctx.fillStyle = pass === 0 ? SHADOW_SOFT : SHADOW;
         ctx.fill();
       }
     }
@@ -8078,6 +8593,29 @@ const Game = (() => {
         ctx.fillStyle = g2;
         ctx.beginPath(); ctx.arc(dcx, dcy, 34, 0, Math.PI * 2); ctx.fill();
       }
+      /* Two things every real interior has and this one did not.
+
+         A roof overhangs its walls, so the strip of floor along the outside
+         of a building never gets direct light -- it sits in the eaves' shade
+         all day. A thick stroke on the block outline, clipped to the block,
+         puts half its width inside and none of it out.
+
+         And then daylight comes back in through the openings: a soft pool on
+         the floor under every window and every door that is standing open.
+         Interiors were uniformly lit slabs, which is why a big room read as
+         one flat colour however many holes were cut in its walls. */
+      ctx.save();
+      ctx.beginPath();
+      for (const blk of blocksOf(b)) ctx.rect(blk.x, blk.y, blk.w, blk.h);
+      ctx.clip();
+
+      ctx.strokeStyle = 'rgba(9,13,23,0.13)'; ctx.lineWidth = 30;
+      for (const blk of blocksOf(b)) ctx.strokeRect(blk.x, blk.y, blk.w, blk.h);
+      ctx.strokeStyle = 'rgba(9,13,23,0.10)'; ctx.lineWidth = 12;
+      for (const blk of blocksOf(b)) ctx.strokeRect(blk.x, blk.y, blk.w, blk.h);
+
+      ctx.restore();
+
       // the building's own accent runs round each block of the slab
       ctx.strokeStyle = hexA(st.trim, 0.55); ctx.lineWidth = 2;
       for (const blk of blocksOf(b)) ctx.strokeRect(blk.x, blk.y, blk.w, blk.h);
@@ -8113,8 +8651,11 @@ const Game = (() => {
         const img = g.createImageData(f.cols, f.rows);
         for (let i = 0; i < f.seen.length; i++) {
           const o = i * 4;
-          img.data[o] = 6; img.data[o + 1] = 9; img.data[o + 2] = 18;
-          img.data[o + 3] = f.seen[i] ? 0 : 214;    // seen = clear, unseen = dark
+          /* Cool dark rather than near-black, and translucent enough to be
+             haze over a room instead of a hole where one should be: the point
+             is "you have not been in here", not "there is nothing here". */
+          img.data[o] = 20; img.data[o + 1] = 28; img.data[o + 2] = 48;
+          img.data[o + 3] = f.seen[i] ? 0 : 168;    // seen = clear, unseen = hazy
         }
         g.putImageData(img, 0, 0);
         f.dirty = false;
@@ -8450,7 +8991,46 @@ const Game = (() => {
         ctx.beginPath(); ctx.arc(0, 0, o.lightR, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       }
+      /* Daylight is a light source too, and the biggest one a building has.
+
+         An opening in an outside wall has the sky on the other side of it, so
+         it lays a pool on the floor inside -- and the first attempt at this
+         painted that pool during the floor pass, one layer below the gloom
+         that is applied here, which promptly washed it out. It belongs with
+         the lamps: it erases the gloom rather than tinting over it, so a lit
+         patch shows the real floor.
+
+         A shut door lights nothing, which also happens to be the cheapest way
+         to tell from inside a dark room which way out is actually open. */
+      for (const o of openingsIn(b)) {
+        if (!o.open && !o.isWindow) continue;
+        if (!rectOnScreen(o)) continue;
+        // offset along the sun: the pool falls where the light reaches, not
+        // centred in the gap it came through
+        const lx = o.x + o.w / 2 + SUN.dx * 30;
+        const ly = o.y + o.h / 2 + SUN.dy * 30;
+        const R = o.isWindow ? 96 : 132;
+        const g3 = ctx.createRadialGradient(lx, ly, 4, lx, ly, R);
+        g3.addColorStop(0, 'rgba(0,0,0,0.92)');
+        g3.addColorStop(0.5, 'rgba(0,0,0,0.34)');
+        g3.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g3;
+        ctx.beginPath(); ctx.arc(lx, ly, R, 0, Math.PI * 2); ctx.fill();
+      }
       ctx.globalCompositeOperation = 'source-over';
+      // ...and a hint of warm daylight in the pool, so it reads as sunlight
+      for (const o of openingsIn(b)) {
+        if (!o.open && !o.isWindow) continue;
+        if (!rectOnScreen(o)) continue;
+        const lx = o.x + o.w / 2 + SUN.dx * 30;
+        const ly = o.y + o.h / 2 + SUN.dy * 30;
+        const R = o.isWindow ? 96 : 132;
+        const g4 = ctx.createRadialGradient(lx, ly, 4, lx, ly, R);
+        g4.addColorStop(0, 'rgba(255,242,207,0.20)');
+        g4.addColorStop(1, 'rgba(255,242,207,0)');
+        ctx.fillStyle = g4;
+        ctx.beginPath(); ctx.arc(lx, ly, R, 0, Math.PI * 2); ctx.fill();
+      }
       // and a warm tint where they are, so a lamp reads as a lamp
       for (const o of lightsIn(b)) {
         if (!lightOnScreen(o)) continue;
@@ -8467,6 +9047,30 @@ const Game = (() => {
   /* Lamps standing in this building. Cached per building and rebuilt whenever
      the world changes, because this runs every frame for every building on
      screen and a map has two thousand obstacles. */
+  /* Doors and windows grouped by the building they are cut into. Cached the
+     same way lamps are, and for the same reason: this runs every frame for
+     every building on screen and the map carries a couple of thousand pieces.
+     `open` is read live off the door, so the cache survives a door swinging. */
+  let openCache = null;
+  function openingsIn(b) {
+    if (!openCache) {
+      openCache = new Map();
+      for (const o of obstacles) {
+        const isDoor = Structures.isDoor(o);
+        const isWindow = kindOf(o).name === 'Window';
+        if (!isDoor && !isWindow) continue;
+        o.isWindow = isWindow;
+        for (const bb of buildings) {
+          if (o.x < bb.x || o.x > bb.x + bb.w || o.y < bb.y || o.y > bb.y + bb.h) continue;
+          if (!openCache.has(bb)) openCache.set(bb, []);
+          openCache.get(bb).push(o);
+          break;
+        }
+      }
+    }
+    return openCache.get(b) || [];
+  }
+
   let lightCache = null;
   function lightsIn(b) {
     if (!lightCache) {
@@ -8510,7 +9114,15 @@ const Game = (() => {
      shorter engagements without moving a single wall. */
   const weatherNow = () => (terrain && terrain.weather) || { sight: 1, density: 0 };
   const sightReach = () => SIGHT_R * weatherNow().sight;
-  const SIGHT_DARK = 0.82;           // how completely a shadow hides things
+  /* How completely a sightline shadow hides what is behind a wall.
+
+     At 0.82 the shadow was very nearly opaque, and since it is a full-screen
+     layer sitting over ground that has already been shaded and weathered, the
+     three quarters of the screen you are not looking straight at went black.
+     Knowing something is out of sight only needs the contrast; 0.6 still
+     reads instantly as "you cannot see in there" while leaving the world
+     visible enough to play in. */
+  const SIGHT_DARK = 0.6;
 
   /* The two corners of a rect that form its silhouette from a point.
 
@@ -12064,6 +12676,7 @@ const Game = (() => {
        than reading pixels off a canvas. */
     extras: () => ({
       mode,
+      botLevel,              // what the match is actually being played against
       recap: deathRecap && {
         killer: deathRecap.killer, weapon: deathRecap.weapon,
         dist: deathRecap.dist, hits: deathRecap.hits.length, hp: deathRecap.killerHp,
@@ -12099,6 +12712,23 @@ const Game = (() => {
         targets: agents.filter(a => a.tutorTag).map(a => ({ tag: a.tutorTag, alive: a.alive, m: a.rangeM, ...at(a) })),
         hostiles: agents.filter(a => a.noRespawn).map(a => ({ alive: a.alive, hp: Math.round(a.hp), ...at(a) })),
         player: at(player),
+      };
+    },
+
+    /* ---- how well the bots are moving ----
+       Efficiency is achieved distance over commanded distance: 1.0 is a bot
+       walking freely, low numbers are bots grinding along geometry. Turn is
+       mean degrees of heading change per second. Crowd is the share of frames
+       spent standing inside another agent. */
+    moveStats() {
+      const f = Math.max(1, moveStat.frames);
+      return {
+        frames: moveStat.frames,
+        efficiency: +(moveStat.got / Math.max(1e-6, moveStat.want)).toFixed(3),
+        turnDegPerSec: +((moveStat.turn / Math.max(1, moveStat.turnN)) * (180 / Math.PI) * 60).toFixed(1),
+        stuck: moveStat.stuck,
+        crowdPct: +((moveStat.crowd / f) * 100).toFixed(1),
+        nav: Object.assign({}, navStat),
       };
     },
 
@@ -12725,6 +13355,53 @@ const Game = (() => {
       return { name: b.name, w: Math.round(b.w), h: Math.round(b.h), rooms: (b.rooms || []).length };
     },
     weather: () => { const w = weatherNow(); return w ? w.id : 'clear'; },
+    /* Where the dressing actually is: how much of it, of what, and whether it
+       is anywhere near something it could plausibly belong to. */
+    decorAudit() {
+      const byKind = {}, ctx2 = { road: 0, building: 0, beach: 0, open: 0, indoors: 0 };
+      let near = 0;
+      for (const d of decor) {
+        byKind[d.kind] = (byKind[d.kind] || 0) + 1;
+        if (d.indoors) { ctx2.indoors++; continue; }
+        const onRoad = terrain && Terrain.nearRoad ? false : false;
+        const nb = buildings.some(b => d.x > b.x - 90 && d.x < b.x + b.w + 90
+          && d.y > b.y - 90 && d.y < b.y + b.h + 90);
+        let road = false;
+        for (const r of (terrain.roads || [])) {
+          if (Terrain.distToPath(r.pts, d.x, d.y) < r.width / 2 + 70) { road = true; break; }
+        }
+        const sand = terrain ? Terrain.beachAt(terrain, d.x, d.y) : false;
+        if (road) { ctx2.road++; near++; }
+        else if (nb) { ctx2.building++; near++; }
+        else if (sand) { ctx2.beach++; near++; }
+        else ctx2.open++;
+      }
+      // how crowded it is: nearest-neighbour distance among outdoor dressing
+      const out = decor.filter(d => !d.indoors);
+      let sum = 0, n = 0, touching = 0;
+      for (let i = 0; i < out.length; i += 3) {
+        let bd = Infinity;
+        for (let j = 0; j < out.length; j++) {
+          if (i === j) continue;
+          const dd = dist2(out[i].x, out[i].y, out[j].x, out[j].y);
+          if (dd < bd) bd = dd;
+        }
+        if (bd < Infinity) { sum += Math.sqrt(bd); n++; if (bd < 40 * 40) touching++; }
+      }
+      return { total: decor.length, outdoor: out.length, byKind, where: ctx2,
+        meanNearest: n ? Math.round(sum / n) : 0, overlapping: touching,
+        pctPlaced: out.length ? Math.round(near / out.length * 100) : 0 };
+    },
+    openings() {
+      let list = [];
+      for (const bb of buildings) list = list.concat(openingsIn(bb));
+      const b = { name: 'ALL' };
+      return { building: b.name, found: list.length,
+        windows: list.filter(o => o.isWindow).length,
+        openDoors: list.filter(o => !o.isWindow && o.open).length,
+        shutDoors: list.filter(o => !o.isWindow && !o.open).length,
+        obstacles: obstacles.length };
+    },
     nav: () => ({ ...navStat, astar: Nav.stats() }),
     /* Is the map one place or several? Flood-fills the nav grid from the
        player and reports how much of the walkable world is actually reachable
@@ -12809,7 +13486,10 @@ const Game = (() => {
       }
       return { doors, sealed };
     },
-    navReset() { navStat = { ask: 0, reuse: 0, starved: 0, solved: 0, failed: 0, ms: 0 }; Nav.resetStats(); },
+    navReset() {
+      navStat = { ask: 0, reuse: 0, starved: 0, solved: 0, failed: 0, ms: 0 };
+      Nav.resetStats(); resetMoveStat();
+    },
     // how many bots are inside a building right now, and how many are stuck
     indoors() {
       let inside = 0, stuck = 0, total = 0;
