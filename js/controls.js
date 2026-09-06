@@ -24,6 +24,11 @@ const Controls = (() => {
     { id: 'dash',       name: 'Dash',           group: 'Movement', keys: ['ShiftLeft', 'ShiftRight'] },
 
     { id: 'reload',     name: 'Reload',         group: 'Combat',   keys: ['KeyR'] },
+    /* Two guns, two keys, and the scroll wheel cycles -- which is what every
+       shooter has done since Half-Life and therefore the thing nobody has to
+       be taught. */
+    { id: 'slot1',      name: 'Primary weapon', group: 'Combat',   keys: ['Digit1'] },
+    { id: 'slot2',      name: 'Secondary',      group: 'Combat',   keys: ['Digit2'] },
     { id: 'grenade',    name: 'Throw grenade',  group: 'Combat',   keys: ['KeyQ'] },
     { id: 'tactical',   name: 'Tactical',       group: 'Combat',   keys: ['KeyC'] },
     { id: 'heal',       name: 'Heal',           group: 'Combat',   keys: ['KeyF'] },

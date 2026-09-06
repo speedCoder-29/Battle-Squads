@@ -156,6 +156,8 @@ const Party = (() => {
     return {
       name: p.username || 'Operator',
       weapon: p.weapon,
+      secondary: p.secondary || null,      // the room builds both slots
+
       /* The gun as it is actually built. Send only the id and the room runs
          the stock version, so it disagrees with our client about damage,
          magazine size and — since attachments change the weight — how fast we
@@ -164,6 +166,19 @@ const Party = (() => {
       attachments: (p.attachments && p.attachments[p.weapon]) || null,
       ammo: (p.ammo && p.ammo[p.weapon]) || null,
       // the perk moves you differently, so the room needs it too (js/perks.js)
+      // both shapes:  is what the room wants,  keeps an older
+      // build's room able to read a newer build's join
+      perks: (typeof Perks !== 'undefined' ? Perks.normalise(p.perks || p.perk) : ['none','none','none']),
+      /* Both shapes go up. `perks` is what a room running this build wants;
+         `perk` keeps an older room able to read a newer client's join rather
+         than dropping it on the floor. */
+      perks: (typeof Perks !== 'undefined'
+        ? Perks.normalise(p.perks || p.perk) : ['none', 'none', 'none']),
+      /* Both shapes go up. `perks` is what a room running this build wants;
+         `perk` keeps an older room able to read a newer join rather than
+         dropping it on the floor. */
+      perks: (typeof Perks !== 'undefined'
+        ? Perks.normalise(p.perks || p.perk) : ['none', 'none', 'none']),
       perk: p.perk || 'none',
       skin: p.weaponSkins ? p.weaponSkins[p.weapon] : 'default',
       mode: Screens.getSelectedMode(),

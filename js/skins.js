@@ -42,6 +42,38 @@ const Skins = (() => {
     obsidian:  { name: 'Obsidian',    rarity: 'legendary', barrel: '#1b1f2e', accent: '#c46bff', tracer: '#c46bff', for: 'all', glow: true, stripes: true },
     goldplate: { name: 'Gold Plate',  rarity: 'legendary', barrel: '#ffcf4a', accent: '#fff0b8', tracer: '#ffcf4a', for: 'all', glow: true },
     hexcamo:   { name: 'Hex Camo',    rarity: 'legendary', barrel: '#4be08a', accent: '#b8ffd8', tracer: '#4be08a', for: 'all', glow: true, stripes: true },
+
+    /* ---------- a second pass over the rack ----------
+       Fifteen finishes across thirty weapons meant most guns were wearing the
+       same four commons, and the rarities were lopsided -- four commons, four
+       rares, four epics, three legendaries, with nothing that read as being
+       *for* a particular kind of gun except one sniper finish.
+
+       These fill both gaps: more of everything, and several tied to a weapon
+       class, so a skin can say something about what you are carrying rather
+       than only about how long you have played. */
+    oliveDrab: { name: 'Olive Drab',  rarity: 'common', barrel: '#5d6b45', accent: '#8b9a6a', tracer: null, for: 'all' },
+    sandstone: { name: 'Sandstone',   rarity: 'common', barrel: '#b8a689', accent: '#ded0b6', tracer: null, for: 'all' },
+    slate:     { name: 'Slate',       rarity: 'common', barrel: '#5a6472', accent: '#94a1b4', tracer: null, for: 'all' },
+    oxide:     { name: 'Oxide',       rarity: 'common', barrel: '#8a5238', accent: '#c98a63', tracer: null, for: 'all' },
+
+    tundra:    { name: 'Tundra',      rarity: 'rare', barrel: '#b9c6cf', accent: '#e8f2f8', tracer: '#cfe6ff', for: 'all', stripes: true },
+    duskrose:  { name: 'Dusk Rose',   rarity: 'rare', barrel: '#9c5a70', accent: '#e39ab2', tracer: '#ff8ab0', for: 'all' },
+    brass:     { name: 'Brass',       rarity: 'rare', barrel: '#a8873f', accent: '#e0c076', tracer: '#ffd98a', for: 'all' },
+    seafoam:   { name: 'Seafoam',     rarity: 'rare', barrel: '#4c8f86', accent: '#93d8cc', tracer: '#7fffe0', for: 'all' },
+    trenchcoat:{ name: 'Trench',      rarity: 'rare', barrel: '#6b6455', accent: '#a89c82', tracer: null, for: ['LMG', 'Assault Rifle'], stripes: true },
+
+    nightshift:{ name: 'Night Shift', rarity: 'epic', barrel: '#232a3d', accent: '#7f9ad6', tracer: '#5f8fff', for: 'all', glow: true },
+    solarflare:{ name: 'Solar Flare', rarity: 'epic', barrel: '#ffb02e', accent: '#fff0c4', tracer: '#ff7a2b', for: 'all', glow: true },
+    toxin:     { name: 'Toxin',       rarity: 'epic', barrel: '#7ac93f', accent: '#d6ff9e', tracer: '#aaff3a', for: 'all', glow: true, stripes: true },
+    deepwater: { name: 'Deep Water',  rarity: 'epic', barrel: '#1f5f8a', accent: '#8ad4ff', tracer: '#35b8ff', for: 'all', glow: true },
+    buckshot:  { name: 'Buckshot',    rarity: 'epic', barrel: '#8c4a2f', accent: '#f0b07a', tracer: '#ff9d3b', for: ['Shotgun'], glow: true },
+    machinist: { name: 'Machinist',   rarity: 'epic', barrel: '#6e7684', accent: '#d3dbe8', tracer: '#bcd2ff', for: ['LMG', 'Carbine'], stripes: true },
+
+    aurora:    { name: 'Aurora',      rarity: 'legendary', barrel: '#2c4a5e', accent: '#7ef0d0', tracer: '#7ef0d0', for: 'all', glow: true, stripes: true },
+    bloodmoon: { name: 'Blood Moon',  rarity: 'legendary', barrel: '#3a1220', accent: '#ff5a72', tracer: '#ff2d55', for: 'all', glow: true, stripes: true },
+    porcelain: { name: 'Porcelain',   rarity: 'legendary', barrel: '#f2f4f8', accent: '#6f86b8', tracer: '#cfe0ff', for: 'all', glow: true },
+    sidewinder:{ name: 'Sidewinder',  rarity: 'legendary', barrel: '#c4a24a', accent: '#fff3c0', tracer: '#ffd257', for: ['Pistol', 'SMG'], glow: true, stripes: true },
   };
 
   /* ---------- every gun's own default ----------

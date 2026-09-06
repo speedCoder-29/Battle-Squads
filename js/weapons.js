@@ -168,8 +168,18 @@ const Weapons = (() => {
     ['M16','Assault Rifle','13',11.5,'20, 30','3.1s',3.17,0.2,'0.28s',1.2,9,'Blue','Automatic','9%','None','Grenade Launcher, Scope, Suppressor','AP, Tracer, HP','Rifleman','A,Rc,H','M,W,Rd','D,F,S',54,24,'Flattest recoil in the class - the reference rifle',4],
     ['AKM','Assault Rifle','15',9.5,'30, 45','2.5s',3.97,0.3,'0.4s',1,7,'Blue','Automatic','5%','None','Grenade Launcher, Scope, Suppressor','AP, Tracer, HP','Rifleman','F,M,W','D,S,A','Rc,H,Rd',52,27,'Longest reach of the ARs, but it kicks and wanders when you move',7.5],
     ['SCAR-H','Assault Rifle','17',8.8,'20','2.4s',3.97,0.25,'0.34s',0.8,11,'Blue','Automatic','8%','None','Grenade Launcher, Scope, Suppressor','AP, Tracer, HP','Rifleman','D,S,Rd','F,Rc,H','A,W,M',56,25,'Heaviest round per shot, smallest magazine - six hits, not eight',6],
-    ['FAMAS F1','Burst Rifle','17*3',14.3,'25','2.3s',1.74,0.35,'0.38s',0.5,6,'Green','Automatic','10%','0.26s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','D,S,W','F,A,Rd','M,Rc,H',55,22,'Pin-point burst - land both and it is a two-burst kill',2],
-    ['AN-94','Burst Rifle','26*2',8.3,'30, 45','2.35s',2.38,0.3,'0.3s',1.1,8,'Green','Automatic','3%','0.26s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','A,Rd,H','M,Rc,W','F,D,S',58,30,'Hyperburst: two rounds land almost together, and it reaches',4],
+    /* Burst delay 0.26s -> 0.20s, matching the K11's.
+
+       The Scout was the weakest class on the roster by a distance — 104-126
+       DPS against 168-188 for Assault and 153-170 for Gunner — and the reason
+       was not its damage but the gap between bursts: a third of every second
+       was spent waiting. The burst cycle is our own mapping of survev's
+       full-auto guns onto a burst count (the README lists both as documented
+       deviations already), so the delay is the honest knob. Scout keeps the
+       lowest sustained DPS in the game, as the class with 1.25x speed should,
+       but the gap closes to something a good player can fight out of. */
+    ['FAMAS F1','Burst Rifle','17*3',14.3,'25','2.3s',1.74,0.35,'0.38s',0.5,6,'Green','Automatic','10%','0.20s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','D,S,W','F,A,Rd','M,Rc,H',55,22,'Pin-point burst - land both and it is a two-burst kill',2],
+    ['AN-94','Burst Rifle','26*2',8.3,'30, 45','2.35s',2.38,0.3,'0.3s',1.1,8,'Green','Automatic','3%','0.20s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','A,Rd,H','M,Rc,W','F,D,S',58,30,'Hyperburst: two rounds land almost together, and it reaches',4],
     ['K11','Burst Rifle','16*3',16.7,'45','2.8s',3.4,0.25,'0.34s',0.8,10,'Green','Automatic','7%','0.20s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','F,M,Rc','D,S,H','Rd,A,W',55,24,'Huge magazine, tightest burst spacing',5],
     ['M249','LMG','13.5',12.5,'100','6.7s',2.38,0.17,'0.6s',0.8,15,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','F,S,A','M,Rd,W','D,Rc,H',60,27,'100 rounds of suppression, punishing reload',6],
     ['RPK-74','LMG','17',9,'45','3.3s',3.17,0.15,'0.5s',1.2,12,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','D,Rd,W','A,Rc,H','M,S,F',58,30,'Rifle-weight rounds; the LMG you can actually move with',8],
@@ -178,8 +188,17 @@ const Weapons = (() => {
     ['Uzi','SMG','8.75',21,'20, 32','1.8s',15.9,0.2,'0.2s',4,6,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','F,Rd,W','M,H,D','Rc,A,S',40,11,'Sprays wildly, and worse at a run - a doorway weapon',11],
     ['P90','SMG','12',14,'50','2s',4.76,0.15,'0.25s',3,10,'Yellow','Automatic','12%','None','Suppressor','HP, Tracer','Assault','M,A,D','Rc,F,S','Rd,H,W',48,17,'50-round mag and real accuracy; the SMG with range',4],
     ['M870','Shotgun','12.5',1.11,'5','0.75s/shell',10,2.1,'0.3s',5,8,'Red','Non-Automatic','10%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','D,H,W','Rd,S,Rc','F,M,A',40,13,'A full 9-pellet hit at contact range kills outright',2],
-    ['BM4','Shotgun','10.5',2.2,'7','0.52s/shell',6,1.75,'0.5s',4,10,'Red','Semi-Automatic','7%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','Rd,A,S','F,M,W','D,H,Rc',46,18,'Flechette loads: the shotgun that still works at range',4],
-    ['SPAS-12','Shotgun','8.75',1.33,'9','0.55s/shell',3,1.4,'0.4s',6,12,'Red','Semi-Automatic','5%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','F,M,Rc','D,A,H','Rd,S,W',42,15,'Semi-auto buckshot - two triggers, two bodies',3],
+    /* The two semi-auto shotguns were not a choice: the BM4 fired faster
+       *and* hit harder than the SPAS, so the SPAS-12 was strictly worse at
+       every range and in every fight — 105 DPS against 208, the widest gap
+       inside any class on the roster. They swap the difference now. The BM4
+       keeps the flechette identity its trait describes (per-shot punch and
+       reach) at a slower cycle, and the SPAS keeps its own ("two triggers,
+       two bodies") by being the fast one with the deep magazine. Neither gun
+       is in the survev spot-check list; both rates are ours, and the
+       deviation is recorded in the README. */
+    ['BM4','Shotgun','10.5',1.8,'7','0.52s/shell',6,1.75,'0.5s',4,10,'Red','Semi-Automatic','7%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','Rd,A,S','F,M,W','D,H,Rc',46,18,'Flechette loads: the shotgun that still works at range',4],
+    ['SPAS-12','Shotgun','8.75',1.9,'9','0.55s/shell',3,1.4,'0.4s',6,12,'Red','Semi-Automatic','5%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','F,M,Rc','D,A,H','Rd,S,W',42,15,'Semi-auto buckshot - two triggers, two bodies',3],
     ['Mk 14 EBR','DMR','28',4.35,'20','2.5s',1.586,0.9,'0.42s',0.55,12,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','D,A,M','Rd,H,W','F,Rc,S',66,38,'20-round DMR mag - the volume marksman rifle',4.25],
     ['SVD Dragunov','DMR','37',3.6,'10','2.5s',1.586,1.05,'0.45s',0.5,10,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','D,Rd,S','A,H,W','F,M,Rc',68,40,'Three body shots, or two with a head in them',4.5],
     ['QBU-88','DMR','23',5.4,'10','2.4s',1.586,0.75,'0.38s',0.45,9,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','F,A,Rc','D,Rd,S','M,H,W',70,36,'Fastest-cycling DMR, steadiest on the move',3],
@@ -194,7 +213,14 @@ const Weapons = (() => {
     ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',60,25,'Bullpup: wide from the hip but rock-steady on the move',0.5],
     ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','Fuze, Anti-Tank','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',24,20,'Lobbed HE round - arcs into cover',3],
     ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','Fuze, Anti-Tank','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
-    ['QLZ-87','Launcher','60',4,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','Fuze, Anti-Tank','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',26,22,'Automatic grenade launcher - area denial on a tripod',6],
+    /* 60 damage at 4 rounds a second was 240 DPS — the highest on the roster
+       by 28%, out of a weapon whose damage is explosive, so it rolls no hit
+       zone, needs no aim beyond the general direction, and lands two-shot
+       kills through cover. Launchers have no survev counterpart and carry our
+       own numbers, so this is ours to fix: 42 at 3/s is 126 DPS, three rounds
+       to a kill, which puts it beside the LMGs it shares a map with while
+       leaving it the only weapon that denies an area. */
+    ['QLZ-87','Launcher','42',3,'6','3.8s',4.2,2,'0.7s',1.8,26,'Brown','Automatic','30%','Explosive','Bipod, Scope','Fuze, Anti-Tank','Demolitionist','F,M,Rd','A,H,Rc','D,W,S',26,22,'Automatic grenade launcher - area denial on a tripod',6],
   ];
 
   /* ---------- parsing helpers ---------- */
@@ -404,12 +430,31 @@ const Weapons = (() => {
       name: 'Slug', icon: '🎯',
       buffs: ['+900% Damage', '+50% Penetration', '-50% Falloff'],
       debuffs: ['+50% Recoil', '+50% Weight', '-8 Pellets'],
-      mods: { damageMult: 10, penetration: +0.50, falloffMult: 0.50, recoilMult: 1.50, weightMult: 1.50, pelletsDelta: -8 },
+      /* One projectile carrying eight pellets' worth, not ten.
+
+         At x10 the slug beat buckshot on damage *and* concentration *and*
+         falloff *and* penetration, for recoil and weight — which made it the
+         obvious pick at every range and left the gun's own ammunition as a
+         downgrade. At x8 a centred buckshot hit still hits hardest at contact
+         (112 against 100 on an M870), and the slug buys what it is for:
+         everything in one place, at range, through cover. */
+      mods: { damageMult: 8, penetration: +0.50, falloffMult: 0.50, recoilMult: 1.50, weightMult: 1.50, pelletsDelta: -8 },
     },
     'Birdshot': {
       name: 'Birdshot', icon: '🐦',
       buffs: ['+100% Pellets', '-50% Recoil'], debuffs: ['+50% Falloff', '-50% Penetration'],
-      mods: { pelletsMult: 2, recoilMult: 0.50, falloffMult: 1.50, penetration: -0.50 },
+      /* Twice the pellets at 55% of the damage each, so a full hit is about
+         1.1x buckshot rather than 2x it.
+
+         It used to double the pellet count and leave per-pellet damage alone,
+         which is not a trade — it is a free doubling of the gun. Measured, a
+         BM4 went from 208 DPS to 416, the highest number on the roster by
+         nearly a factor of two, and the listed costs (more falloff, less
+         penetration) were nothing at the range a shotgun is used. Now the
+         pellets buy you coverage — a wider, denser fan that is far more
+         forgiving of a rushed shot — and cost you punch, which is the choice
+         the loadout screen was already describing. */
+      mods: { pelletsMult: 2, damageMult: 0.55, recoilMult: 0.50, falloffMult: 1.50, penetration: -0.50 },
     },
     'Fuze': {
       name: 'Fuze', icon: '⏱️',

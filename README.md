@@ -540,6 +540,186 @@ old per-type model couldn't express at all.
 - SV-98, QBU-10, DEagle and the FAMAS burst cycle slightly faster than survev's,
   purely so each class stays inside its TTK band.
 - Launchers have no survev counterpart and keep our own tuned values.
+- **QLZ-87** was retuned in the balance pass below (60 dmg at 4/s to 42 at 3/s).
+- **BM4 and SPAS-12** fire rates are ours: 2.2/s and 1.33/s made the SPAS strictly
+  worse than the BM4 at everything, so they swap the difference (1.8/s and 1.9/s).
+- **FAMAS F1 and AN-94** burst delay 0.26s → 0.20s, matching the K11's. The burst
+  cycle was already our own mapping of survev's full-auto guns onto a burst count.
+
+## Balance
+
+Every number below was measured off the game's own modules rather than judged by
+feel: damage per shot averaged over the hit-zone roll, rounds per second with
+burst delays included, time-to-kill with magazine and reload, and effective HP
+against an average hit.
+
+**The roster.** Five guns moved, and the reason in each case was that they were
+outside their own class's band rather than that they felt strong:
+
+| Gun | DPS | Why |
+|---|---|---|
+| QLZ-87 | 240 → **126** (−47%) | Highest DPS on the roster by 28%, and its damage is explosive: no hit-zone roll, no real aim needed, two-shot kills through cover. Launcher values are ours, not survev's |
+| BM4 | 208 → **170** (−18%) | The fast shotgun *and* the hard-hitting one |
+| SPAS-12 | 105 → **150** (+43%) | Strictly worse than the BM4 in every stat — the widest gap inside any class |
+| FAMAS F1 | 109 → **124** (+14%) | Scout was the weakest class by a distance, and the cause was the burst delay, not the damage |
+| AN-94 | 104 → **118** (+14%) | As above |
+
+Class bands after the pass: nine of the ten classes sit inside 1.36×
+top-to-bottom (Scout 1.22× → 1.07×, Breacher 1.98× → 1.36×, Demolitionist 1.85×
+→ 1.17×). Sniper stays at 1.5× on purpose — the Barrett is the one-shot
+anti-materiel rifle and the slowest weapon in the game to carry. Roster-wide
+spread is 3.53× → **2.76×**, and the highest-DPS gun in the game is now the
+Vector, an SMG that stops working past twelve tiles, which is where a number
+like that belongs.
+
+**Survivability was the real outlier, and it was not a gun.** Armour,
+adrenaline and perks are four independent multipliers that had each been tuned
+alone, and nobody had priced the product:
+
+| | before | after |
+|---|---|---|
+| bare | 100 | 100 |
+| T1 armour | 128 | 128 |
+| T2 armour | 179 | 179 |
+| T3 armour | 294 | **269** |
+| T3 + full adrenaline | 588 | **412** |
+| T3 + adrenaline + Kevlar | 654 | **447** |
+
+Three changes get there. The T3 vest goes from 10% to 18% body damage, because
+1.28× → 1.79× → 2.94× was a bigger last step than the two below it combined.
+The top two adrenaline bands drop from 50%/30% damage reduction to 35%/25% —
+they already carry speed, reload, handling and a last stand, and halving
+incoming damage on top made a boost worth a full set of plate. Juggernaut's
+armour relief goes 0.5 → 0.35, since it was handing back half the weight of the
+kit it was worn over while keeping all of the protection. And there is now a
+floor: no combination of reductions can take more than 88% off a hit, so a
+round that lands always does something.
+
+**Elsewhere.** Birdshot doubled a shotgun's pellets and left per-pellet damage
+alone — a 2× DPS upgrade whose listed costs meant nothing at shotgun range; it
+now trades punch for coverage (pellets ×2 at 55% damage each). Slug at ×10 beat
+buckshot on damage *and* concentration *and* falloff *and* penetration, so it is
+×8: buckshot keeps the contact-range crown and the slug buys reach. The sentry
+gun was a 119-DPS assault rifle that aims itself for 75 seconds, now 85. The
+legendary sniper's +1 round/second doubled a rifle that already one-shots (+0.4
+now), and the legendary pistol's +2 was the largest jump of any gold weapon at
++77% (+1 now).
+
+One knock-on worth knowing: the tank's mounted gun *is* the QLZ-87, so the
+hull that small arms cannot hurt at all now carries a 126-DPS weapon rather
+than a 240-DPS one.
+
+## Spawning
+
+The same treatment as the roster: measure what eight generated maps actually
+hand each squad, then fix what is uneven. `Game.debug.spawnMap()` returns the
+whole opening state of a match — every squad's ring anchor, the capture points,
+every crate with its tier, and the parked hulls — which is what these numbers
+come from.
+
+**Where squads deploy.** The squads sat on fixed bearings while the capture
+points are placed inside landmark buildings, wherever the generator put them:
+the two had nothing to do with each other, and the best-placed squad had **53%
+less** total walking to do than the worst-placed one before anybody had played
+a second.
+
+Rotating the ring does not fix that, which is worth recording because it is the
+obvious idea — squads sit at evenly spaced bearings, so a rotation that helps
+one hurts its neighbour by the same amount. Tried over 72 rotations on each of
+eight maps, the best was no better than north-first. What does work is the
+*radius*: each squad's distance from the middle is solved so that everyone has
+the same blend of "walk to the point you will contest first" and "walk to the
+set". Spread **53% → 28%**, bearings and spacing untouched.
+
+That solving is limited to six squads or fewer. Past that the ring's own
+staggered inner/outer layout is what keeps neighbours apart, and moving radii
+costs more in spawn safety than it buys in fairness — measured on a twelve-squad
+lobby, respawns landing within 900px of an enemy went from 13% to 17% while the
+walk to the objectives barely moved. The alternating band itself now starts at
+nine squads rather than seven, from the geometry: below nine, staggering
+*reduces* the gap between neighbours, which is the opposite of the point, and at
+six squads it was costing Elimination 200px of separation.
+
+**Supply is capped against the lobby, not the map.** Everything is spawned per
+unit of area — crates, cover, the garages hulls come in — which is right for how
+full a map looks and wrong for how much a lobby gets, because the board size is
+fixed per mode and the number of people on it is not.
+
+| Domination island | before | after |
+|---|---|---|
+| gold crates | 29 (1.83 per player) | **13 (0.81)** |
+| chests | 12 | **5** |
+| parked vehicles | 19 (1.19 per player) | **7 (0.44)** |
+
+Surplus gold is *demoted* to silver rather than deleted, so the map keeps its
+density and only the top of the ladder gets rarer; surplus hulls are removed,
+record and agent together. The ones that give way are whichever sit closest to
+another of their own kind, so what survives is spread out. Elimination's numbers
+already sat under both caps and are unchanged.
+
+Capping the crates alone was not enough, and the reason is worth recording:
+**chests are where legendary weapons actually come from.** A chest pays out
+three times at 26% each — 0.78 expected gold guns per chest against a gold
+crate's 0.25 — so trimming the crates took a Domination map from 16.6 expected
+legendaries to 13.4 and left the headline unchanged. Counting the chests too is
+what moves it:
+
+| Domination, 16 players | expected legendaries | per player |
+|---|---|---|
+| before | 16.6 | 1.04 |
+| gold crates capped | 13.4 | 0.84 |
+| chests capped as well | **7.2** | **0.45** |
+
+A surplus chest becomes an ordinary gold crate: still the best box on the
+island, still where the tunnel leads, but one roll instead of three.
+
+**And then evened out.** Rare things distribute badly, so two passes even out
+access to the two assets worth crossing a map for:
+
+| | before | after |
+|---|---|---|
+| Domination: worst squad's walk to a vehicle | 2336px | **1979px** |
+| Elimination: worst squad's walk to a vehicle | 2461px | **971px** |
+| Domination: nearest gold crate, best → worst squad | 336 → 1148px | **541 → 1108px** |
+| Elimination: nearest gold crate, best → worst squad | 275 → 1205px | **338 → 968px** |
+
+Hulls are moved — the most redundant one goes to the deprived squad's approach,
+never on top of them — and gold is *swapped* instead: a gold crate near a squad
+that already has several becomes silver, a silver crate near the deprived squad
+becomes gold. Nothing moves, the count is unchanged, and what changes is only
+which box on the island is the good one.
+
+Two things worth recording about the vehicle pass, because both were bugs in the
+first version of it. It moved the netcode records without moving the hulls those
+records describe, so the map and the wire disagreed. And it thrashed: each pass
+handed a hull to the worst-off squad and the next pass took it straight back,
+using all ten passes to finish no fairer than it started. A hull that has been
+placed now stays placed, and a hull that is some squad's nearest is not
+available to be taken.
+
+**Respawns** re-roll for safety as well as for ground: a spawn that would land
+within 900px of a living enemy searches the squad's own arc of the ring for a
+better one. On a twelve-squad lobby, paired over 200 respawns, that takes
+spawns landing near an enemy from **16% to 12%** and adds 29px to the mean
+distance. At the four-squad default it does nothing at all, because 0% of
+respawns were landing near an enemy in the first place — this is a crowded-lobby
+mechanism.
+
+Two things about measuring it are worth recording, because both were wrong
+first time.
+
+*Comparing two builds could not answer it.* A build with the safety loop makes
+extra `Math.random()` calls, so it plays a different match from one without:
+every bot decision and bullet after the first respawn diverges. Run that way,
+the safety build looked 5 points **worse** — which was the world drifting, not
+the mechanism. The measurement that works records what the first roll would
+have given *and* what the search chose, on the same spawn, in one build.
+
+*And the first implementation did nothing.* It re-rolled `spawnPoint` eleven
+times, but every roll lands inside the same 40px of jitter — so when the spot
+was unsafe, all eleven were. Measured: it moved 15% of spawns and bought one
+percentage point. Sampling across the squad's arc instead puts the candidates
+hundreds of pixels apart, which is what makes the difference above.
 
 ## Damage calculator
 

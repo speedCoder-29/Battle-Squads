@@ -134,7 +134,19 @@ const Game = (() => {
      places squads around the island by corner, so past six they start sharing
      ground. The per-team cap is what the agent list and the bot AI stay
      comfortable with on a browser frame budget. */
-  const TEAM_SETUP = { domination: { teams: 4, perTeam: 4 }, elimination: { teams: 6, perTeam: 4 } };
+  const TEAM_SETUP = {
+    domination: { teams: 4, perTeam: 4 },
+    elimination: { teams: 6, perTeam: 4 },
+    /* Arms Race is fought between more, smaller squads than Domination.
+       The mode is a race up a weapon ladder and every kill is a rung, so what
+       it needs is a lot of contact -- four lots of two on a medium map means
+       you are never far from somebody, which is the whole point. */
+    armsrace: { teams: 4, perTeam: 3 },
+    /* Mission is you and three others against a garrison. Two "squads" in the
+       engine's terms -- yours, and everyone on the island -- because the
+       garrison is not a rival team competing for ground, it is the place. */
+    mission: { teams: 2, perTeam: 4 },
+  };
   const TEAM_LIMITS = { teams: [2, TEAM_COLORS.length], perTeam: [1, 8] };
 
   /* The setup a match should actually use: the mode's default, with whatever
@@ -427,7 +439,21 @@ const Game = (() => {
      out here also makes the organised stuff round a building read as
      deliberate rather than as more of the same. */
   const DENSITY = {
-    buildings: 3.2,
+    /* Measured: at 3.2 the island came out 69% roof, thirty-one buildings, and
+       up to fourteen pairs of neighbours closer than eighty pixels with some
+       of them touching. That is not a map with places on it, it is one
+       continuous building with gaps.
+
+       It also defeated the placement code's own spacing rules. Those degrade
+       deliberately -- 120px of clearance, then 84, then 54 -- so that a
+       required building always finds somewhere; on a board this full almost
+       every placement fell through to the last tier, and the graduated system
+       became a flat one at its worst setting.
+
+       Fewer buildings is the fix rather than a bigger minimum gap: raising the
+       gap on an over-subscribed map just makes more placements fail and end up
+       in the same last-resort tier. */
+    buildings: 2.3,
     cover: 6.5,
     crates: 4.2,
     /* Props are counted per million px², and they got a lot bigger when they
@@ -470,31 +496,49 @@ const Game = (() => {
     Object.entries(BUILDING_CATEGORIES).map(([cat, names]) => [cat, names.filter(name => BUILDING_WEIGHT_BY_NAME[name] !== undefined)])
   );
 
+  /* Where map generation actually spends its time. Cheap to leave on: one
+     timestamp per phase, ten phases, once per match. */
+  const genProf = {};
   function buildMap() { withSeed(worldSeed, buildMapInner); }
   function buildMapInner() {
     obstacles = []; trenches = []; decor = []; grass = [];
     buildings = []; landmarks = []; pendingIndoorCrates = [];
     requiredPlacements = []; pendingRoomVehicles = []; basements = [];
     requiredTally = {}; pendingYards = []; roomAnchors = new WeakMap(); upperFloors = [];
+    dressStat = { rooms: 0, want: 0, got: 0 };
     for (const k in sizeCache) delete sizeCache[k];
     genReset();
     invalidateRects();
-    terrain = Terrain.generate(MAP_W, MAP_H, worldSeed);
+    const gp = (name, fn) => {
+      const t0 = performance.now();
+      const r = fn();
+      genProf[name] = (genProf[name] || 0) + (performance.now() - t0);
+      return r;
+    };
+    for (const k in genProf) delete genProf[k];
+    terrain = gp('terrain', () => Terrain.generate(MAP_W, MAP_H, worldSeed));
 
     // playable ground is the grass interior, not the whole rectangle
     const playW = MAP_W - Terrain.BEACH_INSET * 2;
     const playH = MAP_H - Terrain.BEACH_INSET * 2;
     const area = (playW * playH) / 1e6;                  // in millions of px
 
-    placeTeamBases();                                   // one per squad, at their corner
-    placeLandmarks();                                   // the big one-offs get first pick
-    placeRequiredBuildings();                           // then the ones the map must have
-    placeBuildingsProcedural(Math.round(area * DENSITY.buildings));
-    layOutYards();                                      // now that nothing else needs the ground
-    placeCover(Math.round(area * DENSITY.cover));
-    placeGrass(Math.round(area * DENSITY.grassPatches));
-    placeGroves(Math.round(area * DENSITY.groves));
-    placeProps(Math.round(area * DENSITY.props));
+    /* A mission island is laid out, not scattered: a hard centre with an outer
+       screen. If the site cannot be built -- no room in the middle for a big
+       building -- it falls through to the ordinary generator rather than
+       shipping a map with nowhere to put the objective. */
+    const missionSite = mode === 'mission' ? gp('site', buildMissionSite) : null;
+    gp('bases', placeTeamBases);                        // one per squad, at their corner
+    if (!missionSite) {
+      gp('landmarks', placeLandmarks);                  // the big one-offs get first pick
+      gp('required', placeRequiredBuildings);           // then the ones the map must have
+    }
+    gp('procedural', () => placeBuildingsProcedural(Math.round(area * DENSITY.buildings)));
+    gp('yards', layOutYards);                           // now that nothing else needs the ground
+    gp('cover', () => placeCover(Math.round(area * DENSITY.cover)));
+    gp('grass', () => placeGrass(Math.round(area * DENSITY.grassPatches)));
+    gp('groves', () => placeGroves(Math.round(area * DENSITY.groves)));
+    gp('props', () => placeProps(Math.round(area * DENSITY.props)));
 
     // Loose cover isn't part of a building, so a piece that landed somewhere it
     // shouldn't can just be dropped — buildings go through placeBuilding() and
@@ -508,7 +552,8 @@ const Game = (() => {
     invalidateRects();
 
     // now that the walls exist, put the objectives somewhere clear
-    placeObjectives();
+    gp('objectives', placeObjectives);
+
   }
 
   /* pick from a [name, weight] list */
@@ -757,6 +802,30 @@ const Game = (() => {
     radioRoom:   { props: ['desk', 'ammoBox', 'chair', 'locker'], n: 6, lamps: 2 },
     motorPool:   { props: ['tyre', 'barrel', 'ammoBox', 'pallet'], n: 8, lamps: 2 },
     watchPost:   { props: ['ammoBox', 'crate', 'chair'], n: 3, lamps: 1 },
+
+    /* ---------- the rooms that had no table at all ----------
+       Audited across two maps, 16.6% of every room on the island generated
+       completely empty -- forty-nine rooms with nothing in them -- and it was
+       not the placement code failing. Ten room kinds simply had no entry here,
+       so `dressRoom` returned on the first line and the room stayed bare.
+
+       Fifteen of them per map were garages. A garage is one of the few rooms a
+       player has a reason to walk into, and it was a coloured rectangle. */
+    garage:      { props: ['tyre', 'tyre', 'barrel', 'crate', 'shelf', 'pallet'], n: 7, lamps: 2 },
+    /* A warehouse floor is racking and pallets, and lit high and even --
+       it is the one interior where you can see the whole span at once, so
+       the lighting is what makes it read as a warehouse rather than a hall. */
+    warehouse:   { props: ['crate', 'crate', 'pallet', 'barrel', 'shelf'], n: 14, lamps: 4 },
+    dock:        { props: ['crate', 'barrel', 'pallet', 'tyre'], n: 6, lamps: 2 },
+    /* A shipped container has its cargo in it; an empty one is cover and
+       stays empty, which is the whole point of the pair. */
+    shippedCrate: { props: ['crate', 'barrel', 'pallet'], n: 3, lamps: 1 },
+    /* Two fixtures and a light. It is a cubicle -- anything more would not
+       fit, and the room exists as a joke and a hiding place. */
+    portapotty:  { props: ['toilet', 'shelf'], n: 2, lamps: 1 },
+    /* Poolside furniture round the edge, nothing in the water. */
+    pool:        { props: ['chair', 'chair', 'plant', 'table'], n: 6, lamps: 2 },
+    parkingLot:  { props: ['tyre', 'barrel', 'cone', 'pallet'], n: 6, lamps: 2 },
     /* Lit end to end, because a passage you cannot see down is a passage
        nobody walks. Sparse otherwise — it is a route, not a room. */
     tunnel:      { props: ['crate', 'barrel', 'ammoBox'], n: 5, lamps: 5, strip: true },
@@ -803,6 +872,7 @@ const Game = (() => {
   const PLACEMENT = {
     bed: 'wall', shelf: 'wall', locker: 'wall', desk: 'wall', stove: 'wall',
     toilet: 'corner', plant: 'corner', ammoBox: 'corner', barrel: 'corner',
+    tyre: 'corner', cone: 'corner', pallet: 'wall',
     table: 'centre',
     chair: 'byTable',
     /* A light is on a wall or a ceiling. Dropping one in the middle of a
@@ -832,6 +902,8 @@ const Game = (() => {
      the room object itself — rooms are generated fresh each map, so the map is
      cleared with the world rather than accumulating across generations. */
   let roomAnchors = new WeakMap();
+  // how much of the furniture a room asks for actually finds somewhere to stand
+  let dressStat = { rooms: 0, want: 0, got: 0 };
   function anchorsFor(r) {
     let a = roomAnchors.get(r);
     if (!a) { a = []; roomAnchors.set(r, a); }
@@ -951,6 +1023,7 @@ const Game = (() => {
        empty, which is the opposite of the problem the table was tuned for. */
     const REF_AREA = 34000;               // px², about a modest bedroom
     const nProps = Math.round(conf.n * clamp((r.w * r.h) / REF_AREA, 0.7, 2.1));
+    if (doFurniture) { dressStat.want += nProps; dressStat.rooms++; }
     for (let i = 0; doFurniture && i < nProps; i++) {
       const kind = order[i % order.length];
       const m = Sprites.META[kind];
@@ -975,6 +1048,7 @@ const Game = (() => {
         }
         placed.push(item);
         anchorsFor(r).push(item);
+        dressStat.got++;
         break;
       }
     }
@@ -1103,6 +1177,8 @@ const Game = (() => {
   /* The hulls this map was generated with, kept after they are placed so the
      room can be told about them (see netVehicles). */
   let parkedVehicles = [];
+  /* The agents behind those records, index for index. Not sent anywhere. */
+  let parkedHulls = [];
 
   /* Fill a building: furniture against the inside of the walls, loot in the
      middle where you have to commit to grabbing it. */
@@ -1707,14 +1783,33 @@ const Game = (() => {
        same budget of attempts finished short of `count` and the map lost the
        kinds that hadn't come up yet. */
     let guard = count * 95;
-    while (placed.length < count && guard-- > 0) {
+
+    /* What has not been built yet, maintained rather than recomputed.
+
+       These two lists were rebuilt from scratch on every iteration of a loop
+       that runs `count * 95` times -- about fourteen hundred passes on a full
+       map -- and each rebuild walked the mix, walked every category, filtered
+       both, and allocated four or five arrays. They only change when something
+       is actually placed, which happens at most `count` times. Measured, this
+       phase was 98.7ms of a 168ms generation, and almost none of that was the
+       placement work it exists to do.
+
+       `mixDirty` is set when `seen` gains a kind; the lists are rebuilt lazily
+       on the next iteration that needs them. */
+    let missing = null, missingCategoryLists = null, mixDirty = true;
+    const refreshMix = () => {
       // Early on, favour a type that hasn't appeared yet. Pure weighted rolling
       // leaves a small map with only three or four kinds on it; this guarantees
       // variety without flattening the weights once every type is represented.
-      const missing = BUILDING_MIX.filter(m => !seen[m[0]]);
-      const missingCategoryLists = Object.values(BUILDING_CATEGORY_LIST)
+      missing = BUILDING_MIX.filter(m => !seen[m[0]]);
+      missingCategoryLists = Object.values(BUILDING_CATEGORY_LIST)
         .map(names => names.filter(name => !seen[name]))
         .filter(list => list.length);
+      mixDirty = false;
+    };
+
+    while (placed.length < count && guard-- > 0) {
+      if (mixDirty) refreshMix();
       let categoryName = null;
       if (missingCategoryLists.length && placed.length < count * 0.6) {
         const choice = missingCategoryLists[Math.floor(Math.random() * missingCategoryLists.length)];
@@ -1744,6 +1839,7 @@ const Game = (() => {
       if (requiredPlacements.some(b => padOverlap(bb, b, gap))) continue;
       if (landmarks.some(l => padOverlap(bb, l, easing ? 120 : 200))) continue;
       placed.push(bb);
+      if (!seen[name]) mixDirty = true;   // a new kind changes both lists
       seen[name] = (seen[name] || 0) + 1;
       const pid = 'p' + placed.length;
       for (const part of parts) { part.placement = pid; genAdd(part); }
@@ -2150,9 +2246,121 @@ const Game = (() => {
   /* How far inside the map edge the deployment ring sits. Has to clear the
      deepest bay the coastline generator can carve — see terrain.js. */
   const SPAWN_INSET = 940;
-  function spawnPoint(team) {
+  /* How far out along the ring each squad deploys, as a multiple of the ring
+     radius. Filled in by alignSpawnRing(); 1 for everybody is the old layout. */
+  let spawnBands = null;
+
+  /* Even out the walk to the objectives.
+
+     The squads sit on fixed bearings while the capture points are placed
+     inside landmark buildings, wherever the generator put them — the two had
+     nothing to do with each other. Measured over eight maps, the squad best
+     placed for the objective set had **53% less** total walking to do than the
+     worst placed one, before anybody had played a second of the match.
+
+     Rotating the ring does not fix it, which is worth recording because it is
+     the obvious idea: squads sit at evenly spaced bearings, so a rotation that
+     helps one squad hurts its neighbour by the same amount, and the *spread*
+     across the squads barely moves. Tried over 72 rotations on each of eight
+     maps, the best rotation was no better than north-first.
+
+     What does work is the radius. Each squad's distance from the middle is
+     free — the ring is a convention, not a rule — so a squad that is well
+     placed for the points is pushed further out and a badly placed one is
+     pulled in, until every squad has about the same distance to cover. The
+     bearings, the spacing between squads and the jitter are all untouched. */
+  const BAND_MIN = 0.55, BAND_MAX = 1.15;
+  function alignSpawnRing() {
+    spawnBands = null;
+    if (!objectives.length || nTeams < 2) return;
+    /* Only for lobbies where the ring has room to be adjusted.
+
+       Past six squads the ring is crowded enough that its own staggered
+       layout is what keeps neighbours apart, and moving anybody's radius —
+       even inside a narrow swing — costs more in spawn safety than it buys in
+       fairness: measured on twelve squads, respawns landing within 900px of an
+       enemy went from 13% to 17% while the walk to the objectives barely
+       moved. Above that size the squads are spread evenly enough around the
+       points anyway, simply because there are more of them than there are
+       objectives. */
+    if (nTeams > 6) return;
     const cx = MAP_W / 2, cy = MAP_H / 2;
-    const ang = -Math.PI / 2 + (team / Math.max(1, nTeams)) * Math.PI * 2;
+    const rx = MAP_W / 2 - SPAWN_INSET, ry = MAP_H / 2 - SPAWN_INSET;
+    const tight = nTeams >= 9;
+    const at = (team, band) => {
+      const ang = -Math.PI / 2 + (team / Math.max(1, nTeams)) * Math.PI * 2;
+      return { x: cx + Math.cos(ang) * rx * band, y: cy + Math.sin(ang) * ry * band };
+    };
+    /* What "the same walk" means, in one number.
+
+       Equalising the *total* distance to all the points alone made the totals
+       even and the openings worse: a squad could be handed a fair sum while
+       being further from every individual point than its neighbours, and the
+       first capture is decided by the nearest one. So the measure is a blend —
+       the point you will contest first, plus the average of the set — and the
+       radius is solved against that. */
+    const walk = (team, band) => {
+      const a = at(team, band);
+      const ds = objectives.map(o => Math.hypot(a.x - o.x, a.y - o.y));
+      const nearest = Math.min(...ds);
+      const avg = ds.reduce((n, x) => n + x, 0) / ds.length;
+      return nearest * 0.6 + avg * 0.4;
+    };
+    /* The target is the middle of what the squads would each have walked, so
+       the correction is shared out rather than applied to everybody. */
+    const base = [];
+    for (let t = 0; t < nTeams; t++) base.push(walk(t, tight && (t % 2) ? 0.62 : 1));
+    const target = base.slice().sort((a, b) => a - b)[Math.floor(nTeams / 2)];
+
+    /* How far the solver may pull a squad off the layout it was given.
+
+       The first version solved each squad's radius freely across the whole
+       range, and in a crowded lobby that quietly undid the alternating inner
+       and outer bands — squads that were deliberately staggered ended up at
+       similar radii, next to each other. Measured on a twelve-squad
+       Domination lobby it put 21% of respawns within 900px of an enemy
+       against 13% before, which is the opposite of balancing a spawn.
+
+       So the alternating layout is the baseline and the solver works around
+       it: enough to even out a walk to the objectives, not enough to collapse
+       the ring back onto itself. */
+    const BAND_SWING = 0.18;
+    spawnBands = [];
+    for (let t = 0; t < nTeams; t++) {
+      const home = tight && (t % 2) ? 0.62 : 1;
+      /* Distance to the objective set is monotonic in the band over this
+         range — further out is further away — so twenty bisection steps land
+         within a few pixels, and no closed form is needed for an ellipse
+         against three arbitrary points. */
+      let lo = Math.max(BAND_MIN, home - BAND_SWING), hi = Math.min(BAND_MAX, home + BAND_SWING);
+      const wLo = walk(t, lo), wHi = walk(t, hi);
+      let band;
+      if (target <= Math.min(wLo, wHi)) band = wLo < wHi ? lo : hi;
+      else if (target >= Math.max(wLo, wHi)) band = wLo > wHi ? lo : hi;
+      else {
+        const rising = wHi > wLo;
+        for (let i = 0; i < 20; i++) {
+          const mid = (lo + hi) / 2;
+          const w = walk(t, mid);
+          if ((w < target) === rising) lo = mid; else hi = mid;
+        }
+        band = (lo + hi) / 2;
+      }
+      spawnBands.push(band);
+    }
+  }
+
+  /* `arc` slides the spawn along the squad's own stretch of the ring, as a
+     fraction of the half-sector between it and its neighbours: 0 is the middle
+     of the squad's arc, ±1 is as far as it may go without crowding the next
+     squad along. Used by the respawn search below — the jitter alone was far
+     too small a search space for "somewhere else on our side" to mean
+     anything. */
+  function spawnPoint(team, arc) {
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    const sector = Math.PI / Math.max(1, nTeams);        // half the gap to a neighbour
+    const swing = (arc || 0) * sector * 0.55;
+    const ang = -Math.PI / 2 + swing + (team / Math.max(1, nTeams)) * Math.PI * 2;
     /* Squads sat on one ring, evenly spaced by angle. That is fine for four
        and cramped for twenty: the gap between neighbours on a single circle
        shrinks as the count grows, so at twenty you deploy within sight of the
@@ -2162,8 +2370,21 @@ const Game = (() => {
        at different distances from the middle as well as different bearings,
        which roughly doubles how far apart two neighbours actually are without
        needing a bigger island. */
-    const tight = nTeams > 6;
-    const band = tight && (team % 2) ? 0.62 : 1;
+    /* When the alternating inner band actually helps, from the geometry
+       rather than from a guess.
+
+       Two neighbours both on the outer ring are 2R·sin(pi/n) apart. One out and
+       one in at 0.62R are R·sqrt(1.384 - 1.24·cos(2pi/n)) apart. Below about
+       nine squads the first is larger — so alternating *reduces* the gap
+       between neighbours, which is the opposite of the point. Measured at six
+       squads it took Elimination from 1660px to 1451px before this was caught.
+       The two curves cross at nine. */
+    const tight = nTeams >= 9;
+    /* The alternating inner band spreads a crowded ring; alignSpawnRing then
+       tunes each squad's radius so everyone has the same walk to the points.
+       Either way this is the only place a spawn radius is decided. */
+    const band = spawnBands ? spawnBands[team]
+      : (tight && (team % 2) ? 0.62 : 1);
     /* Pulled in from 240 to SPAWN_INSET. The island's edge is no longer a
        straight line at a fixed distance — a bay can bite 600px inland — so a
        ring that used to sit comfortably on grass would now drop half the
@@ -2174,6 +2395,148 @@ const Game = (() => {
       x: cx + Math.cos(ang) * rx + rand(-jitter, jitter),
       y: cy + Math.sin(ang) * ry + rand(-jitter, jitter),
     };
+  }
+
+  /* How far from the nearest living enemy a respawn would like to be. Not a
+     guarantee — it is the target the re-rolls aim at, and a ring that is
+     genuinely overrun will still put you down inside it. */
+  const SPAWN_SAFE_R = 900;
+  /* How the respawns are actually landing, so "you come back in front of them"
+     is a measurement rather than a complaint. Reset with the match. */
+  /* Paired accounting: what the first roll would have given, and what the
+     re-roll actually chose. Comparing two *builds* cannot answer this — the
+     extra rolls draw from the same Math.random stream, so a build with the
+     safety loop plays a different match from one without it, and the 5-point
+     difference that showed up between them was the world diverging rather than
+     the mechanism working. Recording both numbers on the same respawn is the
+     only comparison with nothing else moving in it. */
+  let spawnStat = { rolls: 0, sumDist: 0, unsafe: 0, sumFirst: 0, unsafeFirst: 0, improved: 0, byKind: {} };
+  let lootStat = { goldCut: 0, hullsCut: 0 };
+  const enemyNear = (pt, team) => {
+    let best = Infinity;
+    for (const b of agents) {
+      if (!b.alive || b.isVehicle || b.team === team) continue;
+      best = Math.min(best, Math.hypot(pt.x - b.x, pt.y - b.y));
+    }
+    return best;
+  };
+
+  /* ---------------- where reinforcements come back ----------------
+     Respawning put you on your squad's corner of the island and nowhere else.
+     Measured across 240 respawns on two domination maps, that is an average
+     of 2073px from the nearest objective -- about sixteen seconds of walking
+     before you can affect anything, every single time you die. It is also not
+     how reinforcement works: you come back where your side holds ground, not
+     at the point you started the war from.
+
+     So the corner becomes one candidate among several rather than the answer.
+     The others are the ground your team already holds and the ground your
+     squad is standing on, and each is scored on the two things that decide
+     whether a spawn is fair:
+
+       SAFE   nobody near it, and nobody with a line to it. A spawn you get
+              shot on before the screen has finished fading is the single
+              worst thing a shooter can do to you, so this is a filter and not
+              a preference -- a candidate that fails it is discarded outright.
+
+       NEAR   of what is left, the shortest walk back to something contested.
+
+     The corner is always in the list, so a team that has been pushed off
+     everything still has somewhere to come back to. */
+  const SPAWN_LOS_R = 1500;        // how far a sightline is worth worrying about
+
+  function spawnSafe(pt, team) {
+    for (const b of agents) {
+      if (!b.alive || b.isVehicle || b.team === team) continue;
+      const d = Math.hypot(pt.x - b.x, pt.y - b.y);
+      if (d < SPAWN_SAFE_R) return false;
+      if (d < SPAWN_LOS_R && hasLOS(b.x, b.y, pt.x, pt.y)) return false;
+    }
+    return true;
+  }
+
+  const spawnUsable = (pt) => !pointInObstacle(pt.x, pt.y)
+    && (!terrain || Terrain.isBuildable(terrain, pt.x, pt.y, 40));
+
+  /* Somewhere on your own ground, a little back from the thing you hold, on
+     the side away from the middle of the map -- which is the side the enemy
+     is coming from. */
+  function behindPoint(o, team) {
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    const ang = Math.atan2(o.y - cy, o.x - cx);
+    const r = (o.r || 200) + 190;
+    return { x: clamp(o.x + Math.cos(ang) * r, 60, MAP_W - 60),
+      y: clamp(o.y + Math.sin(ang) * r, 60, MAP_H - 60) };
+  }
+
+  function chooseSpawn(a) {
+    const team = a.team;
+    const cand = [];
+    const add = (pt, kind) => { if (pt && spawnUsable(pt)) cand.push({ pt, kind }); };
+
+    // the corner, always, and a few rolls of it so its jitter gets a say
+    for (let i = 0; i < 6; i++) add(spawnPoint(team), 'ring');
+
+    /* Forward spawning is a *respawn* idea, and elimination has no respawns.
+       There, the ring placement is the opening position of the whole match and
+       it was tuned to spread six squads across a small island; offering squad
+       and objective candidates instead pulled people together and took spawns
+       seen by an enemy from 45% to 47% and enemies-within-900 from 17% to 31%.
+       Measured, so: the corner is the answer in modes you do not come back in. */
+    const reinforced = mode === 'domination' || mode === 'armsrace' || mode === 'range';
+    if (!reinforced) {
+      const safe0 = cand.filter(c => spawnSafe(c.pt, team));
+      const pool0 = safe0.length ? safe0 : cand;
+      let bp = pool0[0], bs = -Infinity;
+      for (const c of pool0) { const v = enemyNear(c.pt, team); if (v > bs) { bs = v; bp = c; } }
+      if (bp) {
+        if (!spawnStat.byKind) spawnStat.byKind = {};
+        spawnStat.byKind.ring = (spawnStat.byKind.ring || 0) + 1;
+        return bp.pt;
+      }
+      return spawnPoint(team);
+    }
+
+    /* Ground the team holds. Only in modes that have objectives -- elimination
+       has none, and there "hold" means nothing anyway. */
+    for (const o of objectives) {
+      if (o.owner === team) add(behindPoint(o, team), 'held');
+    }
+
+    /* Behind a squadmate who is not currently being shot at. This is the same
+       rule the manual squad deploy uses, applied automatically -- it is what
+       makes a squad a squad rather than four people who happen to match. */
+    for (const q of agents) {
+      if (q === a || !q.alive || q.isVehicle || q.riding || q.downed) continue;
+      if (q.team !== team) continue;
+      if ((q.hurtT || 0) < 5) continue;              // under fire: not a doorway
+      const p2 = squadDropNear(q);
+      if (p2) add(p2, 'squad');
+    }
+
+    const safe = cand.filter(c => spawnSafe(c.pt, team));
+    const pool = safe.length ? safe : cand;
+    if (!pool.length) return spawnPoint(team);
+
+    /* Of the safe ones, the shortest walk to something worth walking to.
+       With no objectives -- elimination -- there is nothing to walk to, so
+       the tie-break becomes "as far from the enemy as possible" instead,
+       which is the right answer when there are no respawns and the opening
+       positions are the whole game. */
+    const targets = objectives.filter(o => o.owner !== team);
+    const score = (c) => {
+      if (targets.length) {
+        let best = Infinity;
+        for (const o of targets) best = Math.min(best, Math.hypot(c.pt.x - o.x, c.pt.y - o.y));
+        return best;                                  // lower is better
+      }
+      return -enemyNear(c.pt, team);                  // further is better
+    };
+    let bestC = pool[0], bestS = score(pool[0]);
+    for (const c of pool) { const v = score(c); if (v < bestS) { bestS = v; bestC = c; } }
+    if (!spawnStat.byKind) spawnStat.byKind = {};
+    spawnStat.byKind[bestC.kind] = (spawnStat.byKind[bestC.kind] || 0) + 1;
+    return bestC.pt;
   }
 
   /* A landing spot beside a squadmate: behind them where possible, never on
@@ -2203,17 +2566,57 @@ const Game = (() => {
        to know which skin rather than only its colours. */
     const skinId = profile ? Skins.equipped(profile, base.id) : 'default';
     const skin = Skins.get(skinId);
-    // the one passive you deploy with; bots run bare (js/perks.js)
-    const perk = isPlayer ? ((profile && profile.perk) || Perks.DEFAULT) : Perks.DEFAULT;
-    // Bullet Strap is the one perk that rewrites the gun rather than the body
-    w = Perks.applyToWeapon(w, perk);
+    /* The three passives you deploy with, one per section; bots run bare
+       (js/perks.js). Normalised on the way in rather than trusted, because
+       this is the point where a saved profile becomes a body in the world. */
+    /* Your class comes from the gun, and the class brings its own passive.
+       Resolved *before* the weapon is built, because several of the class
+       perks rewrite the gun -- a Rifleman's extra magazine, a Gunner's bipod
+       -- and applying them afterwards would leave the weapon and the perk list
+       describing different guns. `className` survives applyToWeapon untouched,
+       so the class can be read off the base weapon safely. */
+    const className = Classes.forWeapon(w).name;
+    const perks = isPlayer
+      ? Perks.loadout((profile && profile.perks) || (profile && profile.perk), className)
+      : Perks.loadout(Perks.EMPTY, className);
+    const perk = perks[0];          // legacy single field, mirrors the Body slot
+    // Bullet Strap, Steady Aim and the class perks rewrite the gun, not the body
+    w = Perks.applyToWeapon(w, perks);
+    /* The second gun.
+
+       Bots carry one as well now. Two reasons it is worth the trouble: a bot
+       that runs dry in a doorway and stands there reloading for two seconds is
+       free kills and reads as broken, and the sidearm is the thing that makes
+       an empty magazine a decision rather than a pause. It also means the slot
+       machinery is exercised by fifteen bodies a match rather than by one,
+       which is how you find out whether it works.
+
+       Theirs is drawn from the pistols rather than chosen: a bot has no
+       loadout screen, and a second primary would make them strictly better
+       than a player who picked a real sidearm. */
+    let guns = null;
+    {
+      const secId = isPlayer
+        ? ((profile && profile.secondary) || null)
+        : botSidearmId();
+      const secBase = secId && Weapons.byId[secId];
+      if (secBase && secBase.id !== w.id) {
+        // the sidearm gets the same perks; the class is the primary's
+        const sec = Perks.applyToWeapon(secBase, perks);
+        guns = [
+          { weapon: w, ammo: w.mag, reloadTimer: 0 },
+          { weapon: sec, ammo: sec.mag, reloadTimer: 0 },
+        ];
+      }
+    }
     const cls = Classes.forWeapon(w);      // your gun decides your class
     return {
+      perks, guns, gun: 0, swapT: 0,
       team, isPlayer, alive: true, skinId,
       x: 0, y: 0, r: BODY_R, angle: 0,
       klass: 'infantry',                                    // see Combat.TARGETS
       // Beefy is the one perk that moves max HP
-      hp: Combat.maxHpFor('infantry', perk), maxHp: Combat.maxHpFor('infantry', perk),
+      hp: Combat.maxHpFor('infantry', perks), maxHp: Combat.maxHpFor('infantry', perks),
       vest: 0, helmet: 0, bag: 0,                           // armour tiers 0-3 (vest, helmet, bag)
       perk,
       weaponId: w.id, weapon: w,
@@ -2562,6 +2965,15 @@ const Game = (() => {
 
   function pickBotWeapon() { return Weapons.randomBot(); }
 
+  /* A bot's sidearm. Pistols only, picked off the real table so a gun added to
+     weapons.js turns up here without anyone remembering to come back. */
+  let botPistols = null;
+  function botSidearmId() {
+    if (!botPistols) botPistols = Weapons.list.filter(w => w.type === 'Pistol').map(w => w.id);
+    if (!botPistols.length) return null;
+    return botPistols[Math.floor(Math.random() * botPistols.length)];
+  }
+
   function respawnAgent(a, initial = false) {
     /* Coming back on a squadmate, if you chose one and they are still a
        sensible place to arrive. Checked again here rather than trusting the
@@ -2588,17 +3000,78 @@ const Game = (() => {
     const badSpot = (p) => pointInObstacle(p.x, p.y)
       || (terrain && !Terrain.isBuildable(terrain, p.x, p.y, 40));
     if (!sp) {
-      sp = spawnPoint(a.team);
-      for (let i = 0; i < 16 && badSpot(sp); i++) sp = spawnPoint(a.team);
+      /* Re-roll for ground, and then for safety.
+
+         The ring is a *place*, not a point — every roll jitters within it — so
+         the loop that was already re-rolling for "not inside a wall" can also
+         re-roll for "not in front of somebody". Coming back within a couple of
+         seconds' walk of an enemy is how a squad that has pushed a spawn keeps
+         a team pinned there for the rest of the match, and it costs nothing to
+         prefer one of the other rolls. Ground comes first and is absolute;
+         safety is best-effort, so a spawn that is genuinely surrounded still
+         happens rather than hanging. */
+      /* `chooseSpawn` first: it considers the corner *and* the ground the team
+         holds and the squad is standing on, and only returns something that
+         nobody can see. The arc search below is unchanged and still runs, but
+         its loop is gated on the spot being unsafe -- so when the chooser has
+         already found somewhere safe, it simply keeps it. */
+      sp = chooseSpawn(a);
+      for (let i = 0; i < 16 && badSpot(sp); i++) sp = chooseSpawn(a);
+      if (!badSpot(sp)) {
+        spawnStat.rolls++;
+        let bestSp = sp, bestD = enemyNear(sp, a.team);
+        const firstD = bestD;
+        /* Search the squad's whole arc, not the 40px of jitter around one
+           point on it. The first version re-rolled the same spot eleven times
+           — every candidate landed inside the same small patch, so when the
+           patch was unsafe they all were, and measured on 208 paired respawns
+           it moved 15% of spawns and bought one percentage point. Sampling
+           across the arc gives candidates hundreds of pixels apart, which is
+           what "spawn somewhere else on our side" has to mean to be worth
+           anything. */
+        const ARC = [-1, 1, -0.55, 0.55, -0.8, 0.8, -0.3, 0.3, -0.95, 0.95];
+        for (let i = 0; i < ARC.length && bestD < SPAWN_SAFE_R; i++) {
+          const cand = spawnPoint(a.team, ARC[i]);
+          if (badSpot(cand)) continue;
+          const dd = enemyNear(cand, a.team);
+          if (dd > bestD) { bestD = dd; bestSp = cand; }
+        }
+        sp = bestSp;
+        spawnStat.sumDist += Math.min(bestD, 4000);
+        if (bestD < SPAWN_SAFE_R) spawnStat.unsafe++;
+        spawnStat.sumFirst += Math.min(firstD, 4000);
+        if (firstD < SPAWN_SAFE_R) spawnStat.unsafeFirst++;
+        if (bestD > firstD + 1) spawnStat.improved++;
+      }
     }
     if (a.isPlayer) { deathRecap = null; a.hurtLog = []; }
     a.x = sp.x; a.y = sp.y;
+    /* Facing the war. You used to come back pointing wherever you happened to
+       be looking when you died, which for half of every respawn is backwards
+       -- and turning round is the first thing anybody does, so it was a spin
+       nobody chose. Reinforcements arrive looking at the ground they are being
+       sent to. */
+    {
+      let aim = null, bd = Infinity;
+      for (const o of objectives) {
+        if (o.owner === a.team) continue;
+        const d = dist2(sp.x, sp.y, o.x, o.y);
+        if (d < bd) { bd = d; aim = o; }
+      }
+      if (!aim && objectives.length) aim = objectives[0];
+      const tx = aim ? aim.x : MAP_W / 2, ty = aim ? aim.y : MAP_H / 2;
+      a.angle = Math.atan2(ty - sp.y, tx - sp.x);
+    }
     a.hp = a.maxHp; a.alive = true;
     a.ammo = a.weapon.mag; a.reloadTimer = 0; a.fireCd = 0;
     a.bloom = 0; a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
     a.toolCd = 0; a.toolActive = false; a.swingT = 0;
     a.respawnTimer = 0;
     a.standT = 0;                 // a fresh body isn't running on borrowed time
+    /* You keep your rung when you die. Losing it would make the mode a
+       punishment loop -- the player who is behind gets further behind every
+       time they lose a fight, which is exactly backwards. */
+    if (mode === 'armsrace') setRung(a, a.rung || 0);
     // you never respawn still sitting in something
     if (a.riding) { a.riding.driver = null; a.riding = null; }
     // One ejection pass can push you out of one wall and straight into another,
@@ -2625,6 +3098,10 @@ const Game = (() => {
     window.addEventListener('resize', resize);
 
     refreshView();       // sight settings, before anything is drawn with them
+    /* Arms Race is deliberately absent from this table: the fallback is the
+       5200 board, which is the one it wants. The mode needs contact -- every
+       kill is a rung, so time spent walking is time spent losing -- and the
+       domination map is too big to keep bumping into people on. */
     const size = MAP_SIZES[mode] || MAP_SIZES.elimination;
     MAP_W = size.w; MAP_H = size.h;
     worldSeed = (seed >>> 0) || ((Math.random() * 0xffffffff) >>> 0);
@@ -2633,8 +3110,24 @@ const Game = (() => {
        except that the game is unfair. */
     botLevel = coached ? COACH_BOTS : (DB.getSettings().botLevel || BotAI.DEFAULT);
     squadIntel = [];
+    spawnStat = { rolls: 0, sumDist: 0, unsafe: 0, sumFirst: 0, unsafeFirst: 0, improved: 0, byKind: {} };
     buildMap();
+    /* The ladder is built before the squads are, because setupTeams hands out
+       weapons and in this mode the ladder decides what they are. */
+    if (mode === 'armsrace') buildLadder();
+    if (mode === 'mission') {
+      mission = Mission.roll(Math.random);
+      missionPhase = Mission.PHASE.INSERTION;
+      missionHeld = false; exfil = null; missionBodies = [];
+      missionStat = { spotted: 0, bodiesFound: 0, shotsHeard: 0, peakAlert: 0 };
+      timeLeft = mission.seconds;
+    }
     setupTeams();
+    if (mode === 'armsrace') for (const a of agents) if (!a.isVehicle) setRung(a, 0);
+    /* After the squads exist, not during worldgen. `setUpMission` posts the
+       garrison, hides the objective and sites the boat -- all of which need
+       agents on the map, and buildMap runs before there are any. */
+    if (mode === 'mission') setUpMission();
     bullets = []; fx = []; dmgNums = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
@@ -2651,6 +3144,16 @@ const Game = (() => {
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
     for (const o of objectives) clearObjectiveSite(o);
+    alignSpawnRing();      // each squad's radius, solved for an even walk
+    /* Supply is capped to the lobby before it is spread across it: there is no
+       point evening out access to nineteen vehicles nobody needed. */
+    /* Chests first: they demote into gold, and gold is capped after, so the
+       ladder cannot be refilled from above by the pass that trims it. */
+    lootStat = { chestCut: capChests(), goldCut: 0, hullsCut: 0, goldSwaps: 0 };
+    lootStat.goldCut = capGoldCrates();
+    lootStat.hullsCut = capVehicles();
+    lootStat.goldSwaps = spreadGoldCrates();
+    balanceVehicles();     // ...and then the hulls, against where they end up
     clearRangeLane();      // firing range only: nothing between you and the targets
     buildTutorialArena();  // basic training only: the cleared field and its props
     stampWorldIds();     // the wall list is final, so it can be named now
@@ -2661,13 +3164,15 @@ const Game = (() => {
       tokens: [],
     };
     const kit = Items.CONSUMABLES[player.cls.consumable];
-    if (kit) addItem(kit.cat, player.cls.consumable, Classes.startFor(player.cls, carryTier(player), player.perk));
+    if (kit) addItem(kit.cat, player.cls.consumable, Classes.startFor(player.cls, carryTier(player), player.perks));
     // everyone also deploys with a couple of bandages so you're never stranded
     if (kit && kit.cat !== 'heal') addItem('heal', 'bandage', 2);
     /* Training carries one of everything the lessons need on top of the class
        kit, so no loadout can skip a lesson for want of an item to use. */
     if (mode === 'tutorial') {
-      addItem('grenade', 'frag', 2);
+      // Demolitions is worth two more of them; the perk said so and the
+      // grenade count was a literal 2 that never read it.
+      addItem('grenade', 'frag', 2 + Perks.mod(player, 'grenadePlus', 0));
       addItem('tactical', 'barricade', 2);
       addItem('heal', 'bandage', 3);
     }
@@ -2679,7 +3184,9 @@ const Game = (() => {
     paused = false; running = true;
 
     document.getElementById('hud-gamemode').textContent =
-      (mode === 'domination' ? 'DOMINATION' : mode === 'range' ? 'FIRING RANGE'
+      (mode === 'mission' ? (mission ? mission.name.toUpperCase() : 'MISSION')
+        : mode === 'domination' ? 'DOMINATION' : mode === 'armsrace' ? 'ARMS RACE'
+        : mode === 'range' ? 'FIRING RANGE'
         : mode === 'tutorial' ? 'BASIC TRAINING' : 'ELIMINATION')
       + (coached ? ' · GUIDED' : '');
     document.getElementById('game-pause').classList.remove('is-open');
@@ -2725,7 +3232,8 @@ const Game = (() => {
       .map(Controls.label).join(' ');
     const groups = [
       ['MOVE', move, `${k('dash')} dash`],
-      ['FIGHT', 'L-click fire', 'R-click aim', `${k('reload')} reload`],
+      ['FIGHT', 'L-click fire', 'R-click aim', `${k('reload')} reload`,
+        `${k('slot1')}/${k('slot2')} or wheel — swap weapon`],
       ['ACTIONS', `${k('tool')} tool`, `${k('grenade')} grenade`, `${k('tactical')} tactical`,
         `${k('heal')} heal`, `${k('token')} call-in`, `${k('streak')} scorestreak`],
       ['SQUAD', 'Middle-click ping', `${k('ping')} ping wheel`, `${k('emote')} emote`,
@@ -2812,6 +3320,8 @@ const Game = (() => {
     });
     window.addEventListener('keyup', e => {
       switch (Controls.actionFor(e.code)) {
+        case 'slot1': if (canAct()) selectGun(player, 0); break;
+        case 'slot2': if (canAct()) selectGun(player, 1); break;
         case 'up': input.up = false; break;
         case 'down': input.down = false; break;
         case 'left': input.left = false; break;
@@ -2857,6 +3367,13 @@ const Game = (() => {
       if (e.button === 2) input.ads = false;
     });
     // middle-click scrolls the page otherwise, which drags the whole match
+    /* The wheel cycles weapons, which is where every shooter puts it. It is
+       swallowed so the page never scrolls under the match. */
+    canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      if (!running || paused || wheel) return;
+      if (canAct()) nextGun(player, e.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
     canvas.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
     canvas.addEventListener('contextmenu', e => e.preventDefault());  // don't pop menu on right-click
     // buttons
@@ -2871,7 +3388,7 @@ const Game = (() => {
   function dash() {
     if (!player.alive || input.dashCd > 0) return;
     const s = DB.getSettings();
-    input.dashCd = 2.5;
+    input.dashCd = 2.5 * Perks.mod(player, 'dashCdMult', 1);      // Track Star
     // dash in movement direction (or aim if idle)
     let dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
@@ -2902,11 +3419,12 @@ const Game = (() => {
   const isYours = (a) => a.isPlayer || !!(a.driver && a.driver.isPlayer);
 
   function startReload(a) {
+    if (a.swapT > 0) return;              // still bringing it up
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
     // online our magazine belongs to the host, so ask rather than assume
     if (online && a.isPlayer) online.transport.send('reload', {});
     // Adren%/2 reload speedup, and whatever the perk takes off on top
-    a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline, a.perk).reload
+    a.reloadTimer = a.weapon.reloadMs / Combat.adrenaline(a.adrenaline, a.perks || a.perk).reload
       * Perks.mod(a, 'reloadMult', 1);
     a.burstLeft = 0;
     if (isYours(a)) { SFX.reload(); updateWeaponHud(); }
@@ -2922,6 +3440,7 @@ const Game = (() => {
 
   /* Emit one shot (or one pellet spread). */
   function fireOnce(a) {
+    if (a.swapT > 0) return;              // still bringing it up
     if (a.ammo <= 0) { startReload(a); return; }
     const w = a.weapon;
     a.fireCd = w.fireInterval;
@@ -3047,12 +3566,18 @@ const Game = (() => {
 
   function alertNearbyBots(shooter) {
     const earshot = (TILE * 22) ** 2;   // a shot carries about a screen and a half
+    let heard = false;
     for (const o of agents) {
       if (!o.alive || o.isPlayer || o.team === shooter.team || o.isVehicle) continue;
       if (dist2(o.x, o.y, shooter.x, shooter.y) > earshot) continue;
       o.aiTargetPt = { x: shooter.x + rand(-60, 60), y: shooter.y + rand(-60, 60) };
       o.aiRepath = rand(1.5, 3);
+      /* On a mission a shot is *evidence*, not just a direction. It does not
+         confirm where you are -- a guard who heard something walks toward it
+         and looks -- so it buys suspicion rather than a hunt. */
+      if (inMission()) { raiseAlert(o, Mission.ALERT.SUSPICIOUS, shooter.x, shooter.y); heard = true; }
     }
+    if (heard) missionStat.shotsHeard++;
   }
 
   /* Explosion from launcher rounds — AoE damage that falls off with distance. */
@@ -3061,6 +3586,8 @@ const Game = (() => {
      rated as an ordinary explosive it would bounce off a vault it is
      specifically the answer to. */
   function explode(x, y, baseDmg, radius, team, owner, type = 'explosive', kind = null) {
+    // Demolitions widens what you set off; it does not widen what lands on you
+    radius *= Perks.mod(owner, 'blastMult', 1);
     /* Felt, not just seen. Scaled by distance, so a grenade at your feet is a
        different event from one across the compound. */
     if (player) {
@@ -3194,7 +3721,7 @@ const Game = (() => {
     if (!kit) return;
     const slot = player.inv[kit.cat];
     if (!slot || !slot.held) return;
-    const want = Classes.startFor(player.cls, carryTier(player), player.perk);
+    const want = Classes.startFor(player.cls, carryTier(player), player.perks);
     const id = player.cls.consumable;
     if ((slot.held[id] || 0) >= want) return;
     slot.held[id] = want;
@@ -3260,7 +3787,7 @@ const Game = (() => {
     const slot = player.inv[cat];
     if (!slot) return 0;
     if (!slot.held) slot.held = {};
-    const cap = Classes.limitFor(player.cls, id, carryTier(player), player.perk);
+    const cap = Classes.limitFor(player.cls, id, carryTier(player), player.perks);
     const where = at || player;
 
     /* Room is per item, not per category: picking up smoke no longer costs
@@ -3315,7 +3842,7 @@ const Game = (() => {
     if (online) { online.transport.send('grab', {}); SFX.click(); return true; }
     const it = Items.CONSUMABLES[best.id];
     const slot = player.inv[best.cat];
-    const cap = Classes.limitFor(player.cls, best.id, carryTier(player), player.perk);
+    const cap = Classes.limitFor(player.cls, best.id, carryTier(player), player.perks);
     // already full of this exact item? leave it where it is
     if (slot && slot.held && (slot.held[best.id] || 0) >= cap) { hudMsg(`Can't carry more ${it.name}`); return false; }
     drops.splice(bi, 1);
@@ -3427,7 +3954,7 @@ const Game = (() => {
       if (dist2(o.x, o.y, a.x, a.y) > range * range) continue;
       // heat sees through walls; the others need line of sight
       if (!t.heat && !hasLOS(a.x, a.y, o.x, o.y)) continue;
-      o.markedUntil = Math.max(o.markedUntil || 0, 6);
+      o.markedUntil = Math.max(o.markedUntil || 0, 6 * Perks.mod(player, 'markMult', 1));
       found++;
     }
     if (a.isPlayer) hudMsg(found ? `${found} contact${found > 1 ? 's' : ''} marked for the squad` : 'No contacts');
@@ -3709,8 +4236,84 @@ const Game = (() => {
     if (!rectCache) {
       rectCache = obstacles.slice();
       for (const dp of deployables) if (dp.type === 'wall') rectCache.push(dp.rect);
+      rectGrid = null;
     }
     return rectCache;
+  }
+
+  /* ---------------- what is actually on screen ----------------
+     Every drawing pass that deals with walls used to walk the whole map. On
+     the 8600 board that is several thousand rects, tested against the viewport
+     one at a time, by half a dozen passes -- to draw about sixty. The work
+     scaled with the size of the island rather than with the size of the window,
+     which is the wrong thing for it to scale with.
+
+     A uniform bucket grid over the rects fixes that: a pass visits only the
+     buckets the viewport touches. Built once whenever the rect list changes,
+     which is when a wall is built or destroyed, not per frame.
+
+     Draw order is preserved exactly. Bucket order is not array order, and the
+     renderer relies on array order for overlaps, so the gathered set is sorted
+     back into it. Sorting sixty items a frame costs nothing; getting the order
+     wrong would change the picture, and this is meant to change only the
+     speed. */
+  const RECT_CELL = 512;
+  let rectGrid = null;
+
+
+  function buildRectGrid() {
+    const rects = structureRects();
+    const cols = Math.max(1, Math.ceil(MAP_W / RECT_CELL));
+    const rows = Math.max(1, Math.ceil(MAP_H / RECT_CELL));
+    const cells = new Array(cols * rows);
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      const x0 = Math.max(0, Math.floor(r.x / RECT_CELL));
+      const x1 = Math.min(cols - 1, Math.floor((r.x + r.w) / RECT_CELL));
+      const y0 = Math.max(0, Math.floor(r.y / RECT_CELL));
+      const y1 = Math.min(rows - 1, Math.floor((r.y + r.h) / RECT_CELL));
+      for (let cy = y0; cy <= y1; cy++) {
+        for (let cx = x0; cx <= x1; cx++) {
+          const k = cy * cols + cx;
+          (cells[k] || (cells[k] = [])).push(i);
+        }
+      }
+    }
+    rectGrid = { cols, rows, cells };
+  }
+
+  /* The rects overlapping the current view, in array order. `pad` widens the
+     query for passes that draw beyond a rect's own footprint -- a shadow
+     reaches further than the wall casting it. */
+  let visBuf = [], visSeen = null, visStamp = 0;
+  function visibleRects(pad) {
+    const rects = structureRects();
+    if (!rectGrid) buildRectGrid();
+    const g = rectGrid;
+    if (!visSeen || visSeen.length !== rects.length) visSeen = new Int32Array(rects.length);
+    visStamp++;
+    visBuf.length = 0;
+    const p = pad || 0;
+    const x0 = Math.max(0, Math.floor((viewX0 - p) / RECT_CELL));
+    const x1 = Math.min(g.cols - 1, Math.floor((viewX1 + p) / RECT_CELL));
+    const y0 = Math.max(0, Math.floor((viewY0 - p) / RECT_CELL));
+    const y1 = Math.min(g.rows - 1, Math.floor((viewY1 + p) / RECT_CELL));
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const list = g.cells[cy * g.cols + cx];
+        if (!list) continue;
+        for (let n = 0; n < list.length; n++) {
+          const i = list[n];
+          if (visSeen[i] === visStamp) continue;
+          visSeen[i] = visStamp;
+          visBuf.push(i);
+        }
+      }
+    }
+    visBuf.sort((a, b) => a - b);          // back into draw order
+    const out = new Array(visBuf.length);
+    for (let n = 0; n < visBuf.length; n++) out[n] = rects[visBuf[n]];
+    return out;
   }
   /* ---------------- naming the world for the network ----------------
      Every client generates the same map from the room's seed, in the same
@@ -4745,6 +5348,7 @@ const Game = (() => {
        until someone climbs in, which is what makes a camp's parking lot worth
        crossing the map for. */
     parkedVehicles = [];
+    parkedHulls = [];
     for (const v of pendingRoomVehicles) {
       /* Test the hull, not the point under its middle.
 
@@ -4767,6 +5371,11 @@ const Game = (() => {
          reach the room the same way the walls and the crates do. Without this
          every garage and car park was empty online while being full offline. */
       parkedVehicles.push({ vtype: car.vtype, x: Math.round(car.x), y: Math.round(car.y) });
+      /* The hull on the field, at the same index as its record. The record is
+         what goes on the wire and must stay a plain {vtype,x,y}; this is the
+         thing a player actually walks up to, and anything that moves one has
+         to move the other or the two disagree. */
+      parkedHulls.push(car);
     }
     pendingRoomVehicles = [];
     for (let i = 0; i < n; i++) {
@@ -4787,6 +5396,232 @@ const Game = (() => {
       crates.push({ x, y, tier: Items.rollCrateTier(), opened: false });
     }
   }
+  /* Spread the parked hulls so no squad is handed one at its feet while
+     another has to cross the island for the nearest.
+
+     Hulls come with garages and car parks, so where they end up follows where
+     the generator put those buildings — and measured over eight maps, the
+     squad furthest from a vehicle was 1.4x (Domination) to 5.6x (Elimination)
+     further out than the squad nearest to one. A jeep is 1500 effective HP
+     against small arms with a mounted LMG on it; that is not a difference to
+     hand out by seed.
+
+     Nothing is created or destroyed: the most redundant hull — the one with
+     another hull nearest to it — is moved to the deprived squad's approach,
+     which keeps the map's total and its silhouette while evening out who can
+     get to one. */
+  const VEH_FAIR_RATIO = 1.6;         // furthest squad's nearest hull, over the nearest squad's
+  let vehBal = { moves: 0, skipped: 0, passes: 0 };
+  function balanceVehicles() {
+    vehBal = { moves: 0, skipped: 0, passes: 0 };
+    if (parkedVehicles.length < 2 || nTeams < 2) return;
+    const anchors = [];
+    for (let t = 0; t < nTeams; t++) anchors.push(spawnPoint(t));
+    const near = (pt) => parkedVehicles.reduce((best, v) =>
+      Math.min(best, Math.hypot(pt.x - v.x, pt.y - v.y)), Infinity);
+
+    const unreachable = new Set();
+    const pinned = new Set();          // hulls this pass has already placed
+    for (let pass = 0; pass < 10; pass++) {
+      const ds = anchors.map((a, i) => (unreachable.has(i) ? -1 : near(a)));
+      const live = ds.filter(v => v >= 0);
+      if (live.length < 2) break;
+      const lo = Math.min(...live), hi = Math.max(...live);
+      vehBal.passes++;
+      if (!(hi > lo * VEH_FAIR_RATIO)) break;
+      const poorIdx = ds.indexOf(hi);
+      const poor = anchors[poorIdx];
+      /* The hull to move is the one that is least missed: whichever has
+         another hull closest to it. */
+      /* Two rules make this converge instead of shuffling the same jeep round
+         the island: a hull that has already been moved stays where it was put,
+         and a hull that is some squad's nearest is not available to take. The
+         first run without them used all ten passes on every Elimination map
+         and finished no fairer than it started — each pass handed a hull to
+         the worst squad and the next pass took it straight back off them. */
+      const claimed = new Set();
+      for (const a of anchors) {
+        let bi = -1, bd = Infinity;
+        for (let i = 0; i < parkedVehicles.length; i++) {
+          const dd = Math.hypot(a.x - parkedVehicles[i].x, a.y - parkedVehicles[i].y);
+          if (dd < bd) { bd = dd; bi = i; }
+        }
+        if (bi >= 0) claimed.add(bi);
+      }
+      let pick = -1, tightest = Infinity;
+      for (let i = 0; i < parkedVehicles.length; i++) {
+        if (pinned.has(i) || claimed.has(i)) continue;
+        const v = parkedVehicles[i];
+        let other = Infinity;
+        for (let j = 0; j < parkedVehicles.length; j++) {
+          if (i === j) continue;
+          const w = parkedVehicles[j];
+          other = Math.min(other, Math.hypot(v.x - w.x, v.y - w.y));
+        }
+        if (other < tightest) { tightest = other; pick = i; }
+      }
+      if (pick < 0) break;                  // nothing spare left to move
+      // ...and it goes on the deprived squad's way in, not on top of them
+      const toMid = Math.atan2(MAP_H / 2 - poor.y, MAP_W / 2 - poor.x);
+      const v = parkedVehicles[pick];
+      const r = VEHICLES[v.vtype] ? VEHICLES[v.vtype].r : 42;
+      /* Along the squad's way in, and then either side of it: a hull that
+         cannot go straight ahead because of a bay or a building line can
+         usually go a little left or right of one. */
+      let moved = null;
+      for (const off of [0, 0.6, -0.6, 1.2, -1.2]) {
+        for (const dist of [900, 1150, 700, 1400]) {
+          const ang = toMid + off;
+          const spot = clearHullSpot(poor.x + Math.cos(ang) * dist, poor.y + Math.sin(ang) * dist, r);
+          if (spot && Terrain.isSpawnable(terrain, spot.x, spot.y)) { moved = spot; break; }
+        }
+        if (moved) break;
+      }
+      /* Nowhere to put one near this squad — a coastline, or a wall of
+         buildings. Take it off the list and see to the next worst rather than
+         abandoning the other squads too. */
+      if (!moved) { unreachable.add(poorIdx); vehBal.skipped++; continue; }
+      const hull = parkedHulls[pick];
+      if (hull) { hull.x = moved.x; hull.y = moved.y; resolveObstacles(hull); }
+      v.x = Math.round(hull ? hull.x : moved.x); v.y = Math.round(hull ? hull.y : moved.y);
+      vehBal.moves++;
+      pinned.add(pick);
+    }
+  }
+
+  /* ---------------- how much of the good stuff a match gets ----------------
+
+     Everything on the island is spawned per unit of *area*: crates, cover,
+     props and the garages the hulls come in all scale with the board, which is
+     right for how full a map looks and wrong for how much a lobby gets. The
+     board size is fixed per mode; the number of people on it is not. So a
+     two-a-side custom match on the Domination island was being handed the same
+     twenty-seven gold crates and nineteen vehicles as a full sixteen-player
+     game — better than one gold crate and nearly five hulls *per player*, at
+     which point the best equipment in the game is not a prize, it is the
+     starting kit.
+
+     Both are therefore capped against the lobby, and the cap is applied by
+     *demoting* rather than deleting: a surplus gold crate becomes a silver one
+     and stays where it is, so the map keeps its density and its silhouette and
+     only the top of the ladder gets rarer. The ones that give way are the most
+     redundant — whichever sit closest to another of their own kind — so what
+     survives is spread across the island rather than clustered on one side. */
+  const GOLD_PER_PLAYER = 0.8;
+  /* Chests are the real source of legendary weapons and it is not close: a
+     chest pays out three times at 26% each, so it is worth 0.78 gold guns
+     against a gold crate's 0.25. Capping the crates alone took a Domination
+     map from 16.6 expected legendaries to 13.4 — still more than one for every
+     player in the lobby, which is the opposite of the intent recorded on the
+     gold table. The chests have to be counted too. */
+  const CHESTS_PER_PLAYER = 0.3;
+  const HULLS_PER_PLAYER = 0.45;
+  const lobbySize = () => Math.max(1, agents.filter(a => !a.isVehicle).length);
+
+  /* Sort a list so the most redundant member — the one with another of its own
+     kind nearest to it — comes first. */
+  function byRedundancy(list) {
+    return list.map((item) => {
+      let nearest = Infinity;
+      for (const other of list) {
+        if (other === item) continue;
+        nearest = Math.min(nearest, dist2(item.x, item.y, other.x, other.y));
+      }
+      return { item, nearest };
+    }).sort((a, b) => a.nearest - b.nearest).map(e => e.item);
+  }
+
+  /* Surplus chests become ordinary gold crates: still the best box on the
+     island, still where the tunnel leads, but one roll rather than three. */
+  function capChests() {
+    const cap = Math.max(2, Math.round(lobbySize() * CHESTS_PER_PLAYER));
+    const chests = crates.filter(c => c.tier === 'chest');
+    if (chests.length <= cap) return 0;
+    const surplus = byRedundancy(chests).slice(0, chests.length - cap);
+    for (const c of surplus) c.tier = 'gold';
+    return surplus.length;
+  }
+
+  function capGoldCrates() {
+    const cap = Math.max(3, Math.round(lobbySize() * GOLD_PER_PLAYER));
+    const golds = crates.filter(c => c.tier === 'gold');
+    if (golds.length <= cap) return 0;
+    const surplus = byRedundancy(golds).slice(0, golds.length - cap);
+    for (const c of surplus) c.tier = 'silver';
+    return surplus.length;
+  }
+
+  function capVehicles() {
+    const cap = Math.max(4, Math.round(lobbySize() * HULLS_PER_PLAYER));
+    if (parkedVehicles.length <= cap) return 0;
+    /* Hulls cannot be demoted, so the surplus is removed — record, agent and
+       all three of the lists that track them, or a jeep goes on being shot at
+       by bots that can no longer see it. */
+    const doomed = new Set(byRedundancy(parkedVehicles).slice(0, parkedVehicles.length - cap));
+    let removed = 0;
+    for (let i = parkedVehicles.length - 1; i >= 0; i--) {
+      if (!doomed.has(parkedVehicles[i])) continue;
+      const hull = parkedHulls[i];
+      if (hull) {
+        const at = agents.indexOf(hull);
+        if (at >= 0) agents.splice(at, 1);
+      }
+      parkedVehicles.splice(i, 1);
+      parkedHulls.splice(i, 1);
+      removed++;
+    }
+    return removed;
+  }
+
+  /* Even out who can reach the top of the ladder.
+
+     Capping gold against the lobby made it rare, which is the point, but rare
+     things distribute badly: measured over eight Domination maps the squad
+     best placed for a gold crate had one 436px away and the worst placed one
+     had to cross 1771px for it — four times the walk for the same prize.
+
+     Nothing moves. A gold crate near a squad that already has several is
+     demoted to silver, and a silver crate near the deprived squad is promoted
+     in its place, so the count is unchanged, every crate stays exactly where
+     the generator put it, and what changes is only which box on the island is
+     the good one. */
+  const GOLD_FAIR_RATIO = 1.7;
+  function spreadGoldCrates() {
+    const golds = crates.filter(c => c.tier === 'gold');
+    if (golds.length < 2 || nTeams < 2) return 0;
+    const anchors = [];
+    for (let t = 0; t < nTeams; t++) anchors.push(spawnPoint(t));
+    const nearestGold = (pt) => crates.reduce((best, c) =>
+      (c.tier === 'gold' ? Math.min(best, Math.hypot(pt.x - c.x, pt.y - c.y)) : best), Infinity);
+
+    let swaps = 0;
+    for (let pass = 0; pass < 6; pass++) {
+      const ds = anchors.map(nearestGold);
+      const lo = Math.min(...ds), hi = Math.max(...ds);
+      if (!(hi > lo * GOLD_FAIR_RATIO)) break;
+      const poor = anchors[ds.indexOf(hi)];
+      /* Promote a box on the deprived squad's side, but not one at their feet:
+         a prize you walk onto is not a prize you fight over. */
+      let promote = null, bestScore = Infinity;
+      for (const c of crates) {
+        if (c.tier !== 'silver' || c.opened) continue;
+        const d = Math.hypot(poor.x - c.x, poor.y - c.y);
+        if (d < 600 || d > 2200) continue;
+        const score = Math.abs(d - 1100);
+        if (score < bestScore) { bestScore = score; promote = c; }
+      }
+      if (!promote) break;
+      // ...and demote whichever gold is least missed, so the count holds
+      const current = crates.filter(c => c.tier === 'gold');
+      const demote = byRedundancy(current)[0];
+      if (!demote) break;
+      demote.tier = 'silver';
+      promote.tier = 'gold';
+      swaps++;
+    }
+    return swaps;
+  }
+
   function openCrate(c) {
     /* Some crates want a perk. The pool's silver sits at the bottom of the
        water, so only a Diver gets it — the crate stays shut for everyone else
@@ -5299,6 +6134,78 @@ const Game = (() => {
     const { enemy, d } = nearestEnemy(a);
     let moveX = 0, moveY = 0;
 
+    /* A garrison that has not noticed you does not shoot at you.
+
+       `nearestEnemy` will happily hand a guard the player from four hundred
+       metres through a wall, and every mode until now wanted that. Here it
+       would mean the island opens fire the moment you land, and the entire
+       point of the mode is that it does not. An unaware guard only engages
+       what it can actually see, and seeing you is what wakes it up. */
+    /* Your own squad infiltrates with you.
+
+       They are ordinary bots otherwise: they see a guard four hundred metres
+       off, open fire, and the compound is awake before you have left the
+       beach. Measured, five of the garrison were already searching or hunting
+       at the moment the match began, and the player had done nothing.
+
+       So on a mission they stay close and hold fire until the shooting has
+       started -- either because you started it, or because somebody has seen
+       one of you. After that they fight normally, which is what you want the
+       moment it goes loud. */
+    if (inMission() && a.team === player.team && !a.isPlayer) {
+      const loud = missionPhase === Mission.PHASE.EXFIL || agents.some(o =>
+        o.alive && !o.isPlayer && !o.isVehicle && o.team !== player.team
+        && (o.alert || 0) >= Mission.ALERT.HUNTING);
+      if (!loud) {
+        // stack on the player, a little back and spread out
+        const want = 140 + (a.flankBias || 0) * 60;
+        const dx = player.x - a.x, dy = player.y - a.y;
+        const m2 = Math.hypot(dx, dy);
+        if (m2 > want) {
+          if (ensurePath(a, player.x, player.y)) {
+            const step = followPath(a);
+            if (step) {
+              const spd = a.weapon.moveSpeed * 0.72 * a.cls.speed * dt;
+              a.x += step.x * spd; a.y += step.y * spd;
+              resolveObstacles(a);
+              a.angle = Math.atan2(step.y, step.x);
+            }
+          }
+        } else {
+          a.angle = player.angle;      // watching the same way you are
+        }
+        return;
+      }
+    }
+
+    let seesYou = false;
+    if (inMission() && a.team !== player.team) {
+      missionSenses(a, dt);
+      const alert = a.alert || 0;
+      /* `botCanSee` is the same test the combat code uses, so a ghillie suit,
+         a bush and a smoke screen all hide you from a patrol exactly as they
+         hide you from a firefight -- which is what makes them worth carrying
+         on this mode. The range is generous but finite: a guard is looking
+         around, not scanning. */
+      const SEE = TILE * 17;
+      if (enemy && d < SEE && botCanSee(a, enemy)) {
+        seesYou = true;
+        if (alert < Mission.ALERT.HUNTING) {
+          raiseAlert(a, Mission.ALERT.HUNTING, enemy.x, enemy.y);
+          callBackup(a.x, a.y, 900, Mission.ALERT.SUSPICIOUS);
+          missionStat.spotted++;
+          if (missionPhase === Mission.PHASE.INFILTRATE) hudMsg('You have been seen');
+        }
+      }
+      /* Not awake and not looking at you: get on with patrolling. Returning
+         here skips the whole combat half of updateBot, which is what makes a
+         quiet approach possible at all. */
+      if (!seesYou && alert < Mission.ALERT.HUNTING) {
+        missionPatrol(a, dt, alert);
+        return;
+      }
+    }
+
     /* ---- a hull sitting there is a hull worth taking ----
        Garages, car parks and the objective buildings come with unclaimed
        vehicles in them, and until now only a human ever got into one: bots
@@ -5487,6 +6394,23 @@ const Game = (() => {
         const near = dist2(a.x, a.y, tp.x, tp.y) < (tp.revive ? 60 * 60 : 90 * 90);
         // arrived at a box: open it, and the errand is over
         if (near && tp.crate) { botOpenCrate(a, tp.crate); a.tacticPt = null; }
+        /* Arrived at a downed squadmate: stand there.
+
+           Nothing ever told a bot to stop. It walked into revive range, fell
+           through to the objective goal at the bottom of updateBot and left
+           again -- and picking somebody up takes 3.2 seconds of *standing
+           over them*, so it only ever worked when the next objective happened
+           to lie in the same direction. Measured, the helper closed to 27px
+           and then wandered 154px away with the revive timer still on zero.
+
+           Holding position is the whole behaviour, and it belongs here rather
+           than in updateDowned: the downed man is not the one making a
+           decision. */
+        else if (near && tp.revive) {
+          a.vx = a.vy = 0;
+          a.angle = Math.atan2(tp.y - a.y, tp.x - a.x);
+          return;
+        }
         else if (!near && ensurePath(a, tp.x, tp.y)) {
           /* followPath returns a unit vector, not an angle. Passing it to
              Math.cos gives NaN, and `a.x += NaN` makes the bot's position NaN
@@ -5799,7 +6723,23 @@ const Game = (() => {
       a.vx = (a.x - px) / dt; a.vy = (a.y - py) / dt;
       sampleMovement(a, px, py, spd * ease, ux, uy, crowded);
     } else { a.vx = 0; a.vy = 0; a.hx = undefined; }
-    if (a.ammo <= 0) startReload(a);
+    /* Out of rounds with somebody in front of you: draw the sidearm rather
+       than stand in the open working a magazine. A reload is two seconds and a
+       swap is half of one, so it is simply the better move -- and it is the
+       move a person makes, which is most of why bots reloading mid-fight
+       looked wrong. Only if the other gun has anything in it, and only when
+       the fight is close; at range, reloading is correct. */
+    if (a.ammo <= 0) {
+      const g2 = slotsOf(a);
+      const spare = g2 && g2[1 - a.gun];
+      /* Not gated on `reloadTimer`. fireOnce starts a reload the instant the
+         magazine empties, several steps above here, so a bot always arrives at
+         this line already reloading -- guarding on it meant the swap could
+         never once happen. Cancelling that reload is the entire point: it is
+         what makes the sidearm faster than finishing the magazine. */
+      if (spare && spare.ammo > 0 && enemy && d < 700) selectGun(a, 1 - a.gun);
+      else startReload(a);
+    }
   }
   /* One frame of one bot, for the movement statistics above. Cheap enough to
      leave on: four adds and a hypot per bot. */
@@ -6110,6 +7050,559 @@ const Game = (() => {
     return clamp(eff * 0.8, Math.min(TILE * 8, eff * 0.9), TILE * 25);
   };
 
+  /* ================= ARMS RACE =================
+     A race up a ladder of weapons. Every kill moves you one rung; the gun in
+     your hands is whatever rung you are on, so nobody chooses a loadout and
+     nobody keeps one. Finish the ladder and you win outright, whatever the
+     clock says.
+
+     Why this mode and not another capture-the-something: the two existing
+     modes are both about ground -- hold it, or be the last one standing on it
+     -- and both reward the same thing, which is finding a good position and
+     staying in it. This rewards the opposite. You cannot settle, because the
+     weapon you have just got good with is taken off you the moment it works,
+     and the player in front is the one you least want to meet. It also puts
+     the whole weapon table in front of people who otherwise deploy with the
+     same rifle every match.
+
+     The ladder is built from the real weapon table rather than written out
+     here, so a gun added to js/weapons.js appears in the mode without anyone
+     remembering to come back for it. It runs roughly worst to best by class,
+     opens on a pistol and finishes on the melee tool -- the last rung being
+     the hardest is the convention the mode has had since it was a Quake
+     mutator, and it is the right one: the race should not be decided by
+     whoever happened to be holding a rocket launcher. */
+  const RACE_RUNGS = 12;
+  let raceLadder = [];
+
+  function buildLadder() {
+    /* Grouped by weapon *type*, not by `className`.
+
+       className is the role that carries the gun -- Rifleman, Scout, Gunner --
+       which is a different question entirely, and grouping by it produced ten
+       groups none of which were called "Pistol", so the ladder came out empty
+       and everybody spent the match holding their own loadout. */
+    const byType = {};
+    for (const w of Weapons.list) (byType[w.type] = byType[w.type] || []).push(w);
+
+    /* The order is the difficulty curve: something forgiving to open on, the
+       awkward and specialist weapons through the middle, the launcher last
+       before the knife. Types the table does not have are simply skipped, so
+       this survives weapons.js being edited. */
+    const order = ['Pistol', 'Carbine', 'SMG', 'Assault Rifle', 'Shotgun',
+      'Burst Rifle', 'LMG', 'DMR', 'Sniper Rifle', 'Launcher'];
+
+    /* Within a type, weakest first -- so the ladder climbs inside a class as
+       well as across them, and the first shotgun you get is not the best one
+       in the game. */
+    const pools = order.map(t => (byType[t] || []).slice().sort((a, b) =>
+      (a.damage * (a.pellets || 1)) - (b.damage * (b.pellets || 1))));
+
+    /* Taken one from each type in turn rather than a type at a time, so the
+       ladder is a spread across the table instead of three pistols followed
+       by three carbines. */
+    const picked = [];
+    let guard = 0;
+    while (picked.length < RACE_RUNGS - 1 && guard++ < 200) {
+      let took = false;
+      for (const pool of pools) {
+        if (!pool.length || picked.length >= RACE_RUNGS - 1) continue;
+        picked.push(pool.shift().id);
+        took = true;
+      }
+      if (!took) break;
+    }
+    raceLadder = picked;
+    return raceLadder;
+  }
+
+  /* The weapon for a given rung, ready to carry. The last rung has no gun at
+     all -- it is the knife, and `raceMelee` is what the HUD calls it. */
+  const raceMelee = () => 'Bayonet';
+  const raceTop = () => RACE_RUNGS - 1;
+  function raceWeaponFor(rung) {
+    const id = raceLadder[Math.min(rung, raceLadder.length - 1)];
+    return Weapons.byId[id] || Weapons.byId[Weapons.default];
+  }
+
+  /* Put an agent on a rung: the gun changes in their hands immediately, with a
+     full magazine, because being handed a new weapon empty would make every
+     promotion a punishment. */
+  function setRung(a, rung) {
+    a.rung = clamp(rung, 0, raceTop());
+    /* The last rung is the knife. They keep the final gun in hand -- taking
+       every weapon off somebody and asking them to charge four squads with a
+       bayonet is a punishment, not a finale -- but the kill that ends the
+       match has to come off the blade, which is what `raceKnife` gates. */
+    a.raceKnife = a.rung >= raceTop();
+    /* No slots in this mode. The ladder is the only thing that decides what
+       you hold, and a second gun off your loadout would let you sidestep the
+       whole point of it -- swap to your own rifle the moment the ladder handed
+       you something awkward. */
+    a.guns = null; a.gun = 0; a.swapT = 0;
+    const w = raceWeaponFor(a.rung);
+    a.weapon = Perks.applyToWeapon(w, a.perks || a.perk);
+    a.ammo = a.weapon.mag;
+    a.reloadTimer = 0;
+    a.burstLeft = 0;
+    if (isYours(a)) updateWeaponHud();
+  }
+
+  /* A kill is a rung. Returns true if that kill won the match. */
+  function raceAdvance(killer) {
+    if (mode !== 'armsrace' || !killer || killer.isVehicle) return false;
+    const was = killer.rung || 0;
+    if (killer.raceKnife) {
+      // already at the top: this kill is the one that ends it
+      return true;
+    }
+    setRung(killer, was + 1);
+    if (killer.isPlayer) {
+      SFX.reward();
+      hudMsg(killer.rung >= raceTop()
+        ? 'FINAL RUNG - one melee kill to win'
+        : 'Rung ' + (killer.rung + 1) + '/' + RACE_RUNGS + ' - ' + killer.weapon.name);
+    }
+    return false;
+  }
+
+  /* ================= MISSION =================
+     State for the infiltration mode. The rules live in js/mission.js; this is
+     the part that has to touch the world. */
+  let mission = null;              // the rolled job, or null outside the mode
+  let missionPhase = null;
+  let missionAsset = null;         // the thing to carry out
+  let missionTarget = null;        // or the man to kill
+  let missionHeld = false;         // asset in hand
+  let exfil = null;                // { x, y, r } once it opens
+  let missionEndAt = 0;
+  let garrisonCore = { x: 0, y: 0, r: 1 };
+  let missionStat = { spotted: 0, bodiesFound: 0, shotsHeard: 0, peakAlert: 0 };
+  /* Corpses the garrison has not walked past yet. Kept as its own short list
+     rather than scanned out of `agents`, because a dead body stops being an
+     agent the moment it respawns in every other mode and here it must not. */
+  let missionBodies = [];
+
+  const inMission = () => mode === 'mission';
+
+  /* Where the compound is, and how deep into it a point is. Everything about
+     the mode -- garrison difficulty, where the objective goes, which way you
+     run at the end -- is measured from this one point. */
+  function missionDepth(x, y) {
+    return Math.hypot(x - garrisonCore.x, y - garrisonCore.y);
+  }
+
+  /* ---------- laying out the site ----------
+     A garrison, not a battlefield: a hard centre with an outer screen. The
+     shape is what makes the difficulty curve legible -- you can see that you
+     are getting closer to something, because the buildings get bigger and the
+     gaps between them get smaller. */
+  function buildMissionSite() {
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    garrisonCore = { x: cx, y: cy, r: 2600 };
+
+    /* One or two big buildings in the middle. These are where the job is, so
+       they need interiors worth clearing -- the blueprints picked here are the
+       ones with real floor plans rather than open sheds. */
+    const coreKinds = ['base', 'factory', 'keep', 'hospital', 'mansion'];
+    const wanted = 1 + (Math.random() < 0.5 ? 1 : 0);
+    const cores = [];
+    for (let i = 0; i < wanted; i++) {
+      const name = coreKinds[Math.floor(Math.random() * coreKinds.length)];
+      const ang = Math.random() * Math.PI * 2;
+      const r = i === 0 ? 0 : 520 + Math.random() * 200;
+      for (let t = 0; t < 60 && cores.length <= i; t++) {
+        const jx = cx + Math.cos(ang) * r + rand(-140, 140);
+        const jy = cy + Math.sin(ang) * r + rand(-140, 140);
+        const parts = placeBuilding(name, jx - 300, jy - 260, 90);
+        if (!parts.length) continue;
+        const bb = boundsOf(parts);
+        for (const part of parts) genAdd(part);
+        obstacles.push(...parts);
+        invalidateRects();
+        const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+        const b = { name, ...bb, style: st, floor: st.floor, rooms: parts.rooms,
+          shape: parts.shape, missionCore: true };
+        buildings.push(b);
+        furnish(name, bb, parts.rooms);
+        cores.push(b);
+      }
+    }
+    /* If the middle would not take a building at all the mode has nowhere to
+       put its objective, so fall back to the ordinary generator rather than
+       shipping a broken map. */
+    if (!cores.length) return null;
+
+    /* The screen. Small stuff in a loose ring, far enough out that clearing it
+       is a separate problem from the compound itself. */
+    const outer = ['house', 'shanty', 'checkpoint', 'garage', 'depot', 'camp',
+      'watermill', 'clinic', 'workshop'];
+    const ringN = 7 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < ringN; i++) {
+      const name = outer[Math.floor(Math.random() * outer.length)];
+      const ang = (i / ringN) * Math.PI * 2 + rand(-0.28, 0.28);
+      for (let t = 0; t < 40; t++) {
+        const r = 1350 + Math.random() * 1000;
+        const jx = cx + Math.cos(ang) * r, jy = cy + Math.sin(ang) * r;
+        const parts = placeBuilding(name, jx, jy, 110);
+        if (!parts.length) continue;
+        const bb = boundsOf(parts);
+        for (const part of parts) genAdd(part);
+        obstacles.push(...parts);
+        invalidateRects();
+        const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+        buildings.push({ name, ...bb, style: st, floor: st.floor,
+          rooms: parts.rooms, shape: parts.shape });
+        furnish(name, bb, parts.rooms);
+        break;
+      }
+    }
+    return cores;
+  }
+
+  /* ---------- the garrison's attention ----------
+     Three states and two senses. A guard sees you, sees a body, or hears a
+     shot; anything else it does not notice, and that is what makes moving
+     quietly a real option rather than a flavour of the same fight.
+
+     `alert` is the state, `alertT` the clock on it. Raising is instant --
+     being seen is not a gradual thing -- and falling is on a timer, so a
+     compound that has been stirred stays stirred for a while after you break
+     contact. */
+  function raiseAlert(a, level, x, y) {
+    if (!a || a.isPlayer || a.isVehicle || !a.alive) return;
+    if ((a.alert || 0) >= level && level < Mission.ALERT.HUNTING) {
+      // already at least this awake: refresh the clock, keep the state
+      a.alertT = Math.max(a.alertT || 0,
+        level === Mission.ALERT.SUSPICIOUS ? Mission.SUSPICION_SECS : Mission.HUNT_SECS);
+      return;
+    }
+    a.alert = Math.max(a.alert || 0, level);
+    a.alertT = level === Mission.ALERT.HUNTING ? Mission.HUNT_SECS : Mission.SUSPICION_SECS;
+    if (x !== undefined) {
+      /* Where to look. A suspicious guard walks to the noise; a hunting one
+         goes to where you actually are. Both are `aiTargetPt`, which the
+         normal movement code already follows -- the mode does not need its
+         own pathing. */
+      a.aiTargetPt = { x: x + rand(-70, 70), y: y + rand(-70, 70) };
+      a.aiRepath = rand(0.5, 1.5);
+      a.lastSeen = { x, y, t: 0 };
+    }
+    if (level > missionStat.peakAlert) missionStat.peakAlert = level;
+  }
+
+  /* A shout, not a whisper. Everyone inside the radius comes up to the same
+     state -- that is what "calling it in" means, and it is why killing the
+     man who is alone matters. */
+  function callBackup(x, y, r, level) {
+    for (const o of agents) {
+      if (!o.alive || o.isPlayer || o.isVehicle || o.team === player.team) continue;
+      if (dist2(o.x, o.y, x, y) > r * r) continue;
+      raiseAlert(o, level, x, y);
+    }
+  }
+
+  /* One guard's senses, run on the tactic cadence rather than every frame --
+     a line-of-sight test per guard per frame for a whole garrison is not worth
+     it, and nobody notices a body a third of a second late. */
+  function missionSenses(a, dt) {
+    if (!inMission() || a.isPlayer || a.isVehicle || !a.alive) return;
+    if (a.team === player.team) return;
+
+    // the clock on whatever it currently believes
+    if (a.alertT > 0) {
+      a.alertT -= dt;
+      if (a.alertT <= 0) {
+        /* Stand down one step at a time. Dropping straight from hunting to
+           unaware would let you reset the whole compound by hiding in a
+           cupboard for forty seconds. */
+        a.alert = Math.max(0, (a.alert || 0) - 1);
+        a.alertT = a.alert > 0 ? Mission.SUSPICION_SECS : 0;
+      }
+    }
+
+    a.senseT = (a.senseT || 0) - dt;
+    if (a.senseT > 0) return;
+    a.senseT = 0.35;
+
+    /* Bodies. The one thing a guard is guaranteed to react to, because it is
+       proof rather than suspicion -- so it goes straight to hunting and it
+       brings friends. Each corpse is only worth one alarm; after that the
+       compound already knows. */
+    for (const d of missionBodies) {
+      if (d.found) continue;
+      if (dist2(a.x, a.y, d.x, d.y) > Mission.CORPSE_SIGHT * Mission.CORPSE_SIGHT) continue;
+      if (!hasLOS(a.x, a.y, d.x, d.y)) continue;
+      d.found = true;
+      missionStat.bodiesFound++;
+      callBackup(d.x, d.y, Mission.BACKUP_CALL, Mission.ALERT.HUNTING);
+      if (dist2(player.x, player.y, d.x, d.y) < 1400 * 1400) {
+        hudMsg('They have found a body');
+        SFX.hurt();
+      }
+      break;
+    }
+  }
+
+  /* What a guard does when it has nothing to shoot at.
+
+     Suspicious guards walk to whatever they last heard. Unaware ones hold
+     their post with a slow drift, because a garrison of statues reads as
+     broken and a garrison sprinting laps reads as busy -- neither reads as
+     bored men on a long shift. */
+  function missionPatrol(a, dt, alert) {
+    if (a.blindTimer > 0) return;
+    if (alert >= Mission.ALERT.SUSPICIOUS && a.aiTargetPt) {
+      // investigating: the ordinary goal-following code does the walking
+      const tp = a.aiTargetPt;
+      if (dist2(a.x, a.y, tp.x, tp.y) < 110 * 110) {
+        a.aiTargetPt = null;                 // arrived, found nothing
+        a.postT = 2 + Math.random() * 3;     // stand and look about
+      } else if (ensurePath(a, tp.x, tp.y)) {
+        const step = followPath(a);
+        if (step) {
+          const spd = a.weapon.moveSpeed * 0.58 * a.cls.speed * dt;
+          a.x += step.x * spd; a.y += step.y * spd;
+          resolveObstacles(a);
+          a.angle = Math.atan2(step.y, step.x);
+          return;
+        }
+      }
+    }
+    // holding a post: a slow wander round wherever it started
+    a.postT = (a.postT || 0) - dt;
+    if (!a.post) a.post = { x: a.x, y: a.y };
+    if (a.postT <= 0) {
+      a.postT = 3 + Math.random() * 5;
+      const ang = Math.random() * Math.PI * 2, r = 40 + Math.random() * 190;
+      a.postPt = { x: a.post.x + Math.cos(ang) * r, y: a.post.y + Math.sin(ang) * r };
+    }
+    if (a.postPt) {
+      const dx = a.postPt.x - a.x, dy = a.postPt.y - a.y;
+      const m = Math.hypot(dx, dy);
+      if (m > 26) {
+        const spd = a.weapon.moveSpeed * 0.34 * a.cls.speed * dt;
+        a.x += (dx / m) * spd; a.y += (dy / m) * spd;
+        resolveObstacles(a);
+        a.angle = Math.atan2(dy, dx);
+      }
+    }
+  }
+
+  /* ---------- putting the job on the map ----------
+     Run after the world is built, because everything it does needs to know
+     where the buildings ended up. */
+  function setUpMission() {
+    if (!mission) return;
+    const cores = buildings.filter(b => b.missionCore);
+    const host = cores.length ? cores[Math.floor(Math.random() * cores.length)] : buildings[0];
+    if (!host) return;
+    garrisonCore = { x: host.x + host.w / 2, y: host.y + host.h / 2, r: 2600 };
+
+    /* The objective goes in a room, not in the middle of a floor. A room the
+       generator has already furnished is a place; a coordinate is not. */
+    const rooms = (host.rooms || []).filter(r => !r.basement && r.w > 90 && r.h > 90);
+    const room = rooms.length ? rooms[Math.floor(Math.random() * rooms.length)] : null;
+    const px = room ? room.x + room.w / 2 : garrisonCore.x;
+    const py = room ? room.y + room.h / 2 : garrisonCore.y;
+
+    if (mission.type === 'retrieve') {
+      /* A crate, but flagged -- it draws and interacts like the rest of the
+         loot on the map, which is deliberate: the asset should not glow. You
+         are told roughly where it is and you have to go through the building. */
+      missionAsset = { x: px, y: py, tier: 'chest', opened: false,
+        room: room ? room.kind : null, mission: true };
+      crates.push(missionAsset);
+    }
+
+    /* Man the compound.
+
+       `setupFor` gives four a side, which is a fireteam and not a garrison.
+       The island needs enough men that the alert system has something to
+       propagate through -- a compound of four is a compound you can clear by
+       accident. They are posted in rings around the objective so the density
+       rises with the difficulty. */
+    const GARRISON = 26;
+    const foeTeam = (player.team + 1) % Math.max(2, nTeams);
+    let posted = 0;
+    for (let ring = 0; ring < 4 && posted < GARRISON; ring++) {
+      /* Pulled in from [260, 700, 1300, 2100]. The outermost ring reached so
+         far that it met the shore, leaving no clear ground to come ashore on;
+         a garrison should be a place on the island, not the island. */
+      const rr = [230, 560, 1000, 1500][ring];
+      const n = [4, 6, 8, 8][ring];
+      for (let i = 0; i < n && posted < GARRISON; i++) {
+        const ang = (i / n) * Math.PI * 2 + rand(-0.35, 0.35);
+        let gx = garrisonCore.x + Math.cos(ang) * (rr + rand(-140, 140));
+        let gy = garrisonCore.y + Math.sin(ang) * (rr + rand(-140, 140));
+        gx = clamp(gx, 200, MAP_W - 200); gy = clamp(gy, 200, MAP_H - 200);
+        // not inside a wall, and not in the sea
+        let okSpot = false;
+        for (let t = 0; t < 20 && !okSpot; t++) {
+          if (!pointInObstacle(gx, gy) && (!terrain || Terrain.isSpawnable(terrain, gx, gy))) okSpot = true;
+          else {
+            const a2 = Math.random() * Math.PI * 2, r2 = 60 + Math.random() * 220;
+            gx = clamp(garrisonCore.x + Math.cos(ang) * rr + Math.cos(a2) * r2, 200, MAP_W - 200);
+            gy = clamp(garrisonCore.y + Math.sin(ang) * rr + Math.sin(a2) * r2, 200, MAP_H - 200);
+          }
+        }
+        if (!okSpot) continue;
+        const g = makeAgent(foeTeam, false, pickBotWeapon());
+        g.x = gx; g.y = gy; g.alive = true; g.hp = g.maxHp;
+        agents.push(g);
+        posted++;
+      }
+    }
+
+    /* Graded outward from the objective, and posted rather than roaming -- a
+       guard belongs to the place it is standing when the map is built, which
+       is what `missionPatrol` walks it back to. */
+    for (const a of agents) {
+      if (a.isPlayer || a.isVehicle || a.team === player.team) continue;
+      const depth = missionDepth(a.x, a.y);
+      const lvl = Mission.levelAt(depth, garrisonCore.r);
+      // `individual` is the per-bot roll BotAI exposes; there is no forLevel
+      a.diff = BotAI.individual(lvl);
+      a.alert = Mission.ALERT.UNAWARE;
+      a.alertT = 0;
+      a.post = { x: a.x, y: a.y };
+      a.noRespawn = true;                 // a garrison is finite; that is the point
+    }
+
+    /* And the man, if the job is a man. The best guard in the compound, in the
+       room with the objective, and he does not wander off it. */
+    if (mission.type === 'assassinate') {
+      let best = null, bd = Infinity;
+      for (const a of agents) {
+        if (a.isPlayer || a.isVehicle || a.team === player.team || !a.alive) continue;
+        const d = dist2(a.x, a.y, px, py);
+        if (d < bd) { bd = d; best = a; }
+      }
+      if (best) {
+        best.x = px; best.y = py;
+        best.post = { x: px, y: py };
+        best.name = mission.target;
+        best.missionTarget = true;
+        best.maxHp = Math.round(best.maxHp * 1.6);
+        best.hp = best.maxHp;
+        best.diff = BotAI.individual(10);
+        missionTarget = best;
+      }
+    }
+
+    /* ---------- where you come ashore ----------
+       You land on the beach, well outside the garrison, and you walk in.
+
+       The ordinary team spawn ring put the squad 1978px from the objective --
+       inside the garrison's own outer ring, close enough that three guards had
+       line of sight before the player had touched a key. An infiltration that
+       begins with you standing among the men you are infiltrating past is not
+       one, so the landing is sited explicitly: as far out as the island
+       allows, on ground you can actually stand on. */
+    /* Swept properly, and relaxing as it goes. The first version wanted a
+       point 0.42 of the map from the compound with no guard inside 1500px of
+       it, and on an island whose shore is 4300px from the middle that is
+       mostly sea -- it failed all ninety attempts every time and fell back to
+       the team spawn. Which also put the boat exactly where the player was
+       standing, so finishing the job won the mission instantly.
+
+       Three passes: the distance it wants, then closer, then closer again,
+       and the clearance it insists on shrinks with them. It cannot fail to
+       find something, because the last pass asks only for dry land. */
+    let land = null;
+    const RINGS = [
+      { r: 0.36, clear: 1300 },
+      { r: 0.30, clear: 1000 },
+      { r: 0.26, clear: 700 },
+      { r: 0.24, clear: 0 },
+    ];
+    const base = Math.min(MAP_W, MAP_H);
+    const landAng = Math.random() * Math.PI * 2;
+    for (const ring of RINGS) {
+      for (let t = 0; t < 72 && !land; t++) {
+        const a2 = landAng + t * (Math.PI * 2 / 72);
+        const r2 = base * ring.r;
+        const lx = clamp(garrisonCore.x + Math.cos(a2) * r2, 300, MAP_W - 300);
+        const ly = clamp(garrisonCore.y + Math.sin(a2) * r2, 300, MAP_H - 300);
+        if (pointInObstacle(lx, ly)) continue;
+        if (terrain && !Terrain.isSpawnable(terrain, lx, ly)) continue;
+        if (ring.clear) {
+          let clear = true;
+          for (const o of agents) {
+            if (o.isPlayer || o.isVehicle || o.team === player.team || !o.alive) continue;
+            if (dist2(o.x, o.y, lx, ly) < ring.clear * ring.clear) { clear = false; break; }
+          }
+          if (!clear) continue;
+        }
+        land = { x: lx, y: ly };
+      }
+      if (land) break;
+    }
+    missionStat.landFellBack = !land;
+    if (!land) land = { x: player.x, y: player.y };
+    missionStat.landDepth = Math.round(Math.hypot(land.x - garrisonCore.x, land.y - garrisonCore.y));
+
+    // the squad comes ashore together
+    for (const a of agents) {
+      if (a.isVehicle || a.team !== player.team || !a.alive) continue;
+      a.x = land.x + rand(-90, 90);
+      a.y = land.y + rand(-90, 90);
+      for (let t = 0; t < 6 && pointInObstacle(a.x, a.y); t++) resolveObstacles(a);
+      a.angle = Math.atan2(garrisonCore.y - a.y, garrisonCore.x - a.x);
+      a.alert = 0;
+    }
+
+    /* And the boat waits where it dropped you. The run out is the way you came
+       -- back through everything you woke up on the way in, which is the whole
+       shape of the mode. */
+    exfil = { x: land.x, y: land.y, r: 190, open: false };
+    missionPhase = Mission.PHASE.INFILTRATE;
+  }
+
+  /* ---------- the job, tick by tick ---------- */
+  function updateMission(dt) {
+    if (!inMission() || !mission || !player) return;
+
+    // the asset changes hands the moment its crate is opened
+    if (mission.type === 'retrieve' && missionAsset && missionAsset.opened && !missionHeld) {
+      missionHeld = true;
+      openExfil('Asset secured — get to extraction');
+    }
+    if (mission.type === 'assassinate' && missionTarget && !missionTarget.alive
+      && missionPhase !== Mission.PHASE.EXFIL) {
+      openExfil(mission.target + ' is down — get to extraction');
+    }
+
+    // reaching the boat with the job done is the win
+    if (missionPhase === Mission.PHASE.EXFIL && exfil
+      && dist2(player.x, player.y, exfil.x, exfil.y) < exfil.r * exfil.r) {
+      missionPhase = Mission.PHASE.DONE;
+      endMatch(true, null);
+      return;
+    }
+    // and the clock is the loss
+    if (timeLeft <= 0 && missionPhase !== Mission.PHASE.DONE) {
+      missionPhase = Mission.PHASE.DONE;
+      endMatch(false, null);
+    }
+  }
+
+  /* The moment the job is done and the island stops being asleep. */
+  function openExfil(msg) {
+    missionPhase = Mission.PHASE.EXFIL;
+    if (exfil) exfil.open = true;
+    hudMsg(msg);
+    SFX.reward();
+    Toast.show('Extraction open — the compound is awake', 'reward');
+    /* Everyone, everywhere. This is the switch the whole mode has been
+       building toward: up to now the island did not know you existed, and now
+       every man on it is looking for you. */
+    for (const o of agents) {
+      if (!o.alive || o.isPlayer || o.isVehicle || o.team === player.team) continue;
+      raiseAlert(o, Mission.ALERT.HUNTING, player.x, player.y);
+    }
+  }
+
   /* ---------------- update ---------------- */
   function update(dt) {
     updateFeel(dt);
@@ -6249,7 +7742,8 @@ const Game = (() => {
       if (a.fireCd > 0) a.fireCd -= ms;
       if (a.postBurstCd > 0) a.postBurstCd -= ms;
       if (a.blindTimer > 0) a.blindTimer -= dt;
-      if (a.toolCd > 0) a.toolCd -= dt;
+      if (a.toolCd > 0) a.toolCd -= dt / Perks.mod(a, 'toolCdMult', 1);   // Toolkit
+      if (a.swapT > 0) { a.swapT -= dt; if (a.swapT < 0) a.swapT = 0; }
       if (a.markedUntil > 0) a.markedUntil -= dt;
       if (a.swingT > 0) a.swingT -= dt;
       // how long since anyone shot at them — what squad deploy is judged on
@@ -6270,8 +7764,13 @@ const Game = (() => {
       if (!a.alive) {
         /* In training the targets stand back up and so do you, but the
            hostiles of the last lesson stay down — beating them is the lesson. */
-        const comesBack = mode === 'domination' || mode === 'range'
-          || (mode === 'tutorial' && !a.noRespawn);
+        /* `noRespawn` now means what it says, in every mode. It was only
+           honoured in training, so a body a test had deliberately taken out of
+           the match came back three seconds later at the spawn ring -- and any
+           probe still holding a reference to it read a healthy stranger. */
+        const comesBack = !a.noRespawn
+          && (mode === 'domination' || mode === 'range' || mode === 'armsrace'
+            || mode === 'tutorial');
         if (comesBack && !a.isVehicle) {
           a.respawnTimer -= dt;
           if (a.respawnTimer <= 0) { a.isDummy ? resetDummy(a) : respawnAgent(a); }
@@ -6418,6 +7917,7 @@ const Game = (() => {
     // objectives (domination) — online the host owns them, and the snapshot
     // brings back who holds what
     if ((mode === 'domination' || mode === 'tutorial') && !online) updateObjectives(dt);
+    if (inMission()) updateMission(dt);
 
     // tactical layer
     updateComms(dt);
@@ -6727,7 +8227,8 @@ const Game = (() => {
   function lastStand(a) {
     if (a.isVehicle) return false;
     if (a.standT > 0) { a.hp = 1; return true; }      // already on borrowed time
-    const secs = Combat.adrenaline(a.adrenaline).lastStand;
+    // Second Wind stretches the clock you are already running on
+    const secs = Combat.adrenaline(a.adrenaline).lastStand * Perks.mod(a, 'standMult', 1);
     if (secs <= 0) return false;
     a.standT = secs;
     a.hp = 1;
@@ -6800,6 +8301,11 @@ const Game = (() => {
       return;
     }
     if (a.isPlayer && debugNoDamage) return;
+    /* Test scaffolding: a body a probe has parked somewhere to be measured
+       has to survive being measured. A bot stood on an objective is a sitting
+       duck -- it was being shot inside the first second, respawning across the
+       map, and the capture probe was reporting that capturing does not work. */
+    if (a.debugInvuln) return;
     a.hp -= dmg;
     if (owner) a.lastHitBy = owner;      // credited if a last stand runs out
     if (owner && owner.isPlayer && a !== owner) {
@@ -6887,6 +8393,15 @@ const Game = (() => {
     a.standT = 0;
     spawnFx(a.x, a.y, teamInk(a.team), 14);
     if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
+    /* Arms Race: the kill is the promotion, and the promotion off the last
+       rung is the match. Checked before the feed so the banner reads right. */
+    const wonRace = mode === 'armsrace' && raceAdvance(owner);
+    /* On a mission a dead guard is evidence lying on the floor until somebody
+       walks past it. This is the list `missionSenses` reads. */
+    if (inMission() && !a.isPlayer && !a.isVehicle && a.team !== player.team) {
+      missionBodies.push({ x: a.x, y: a.y, found: false });
+      if (missionBodies.length > 60) missionBodies.shift();
+    }
     creditAssists(a, owner);
     pushKill(owner, a, zone);
     if (a.isPlayer) {
@@ -6903,8 +8418,13 @@ const Game = (() => {
       matchStats.bestStreak = Math.max(matchStats.bestStreak, owner.streak || 0);
       earnStreaks(owner.streak || 0);
     }
-    if (mode === 'domination' || mode === 'range' || mode === 'tutorial') {
+    if (mode === 'domination' || mode === 'range' || mode === 'tutorial' || mode === 'armsrace') {
       a.respawnTimer = a.isDummy ? DUMMY_RESPAWN : 3;
+    }
+    if (wonRace) {
+      Toast.show(nameOf(owner, 'Someone') + ' finished the ladder');
+      endMatch(!!(owner && owner.isPlayer), null);
+      return;
     }
     if (a.isPlayer) SFX.hurt();
     // brewed up with someone inside: throw the driver clear rather than
@@ -6985,7 +8505,8 @@ const Game = (() => {
       for (const o of agents) {
         if (!o.alive || o.team === player.team) continue;
         if (dist2(o.x, o.y, player.x, player.y) > RECON_RANGE * RECON_RANGE) continue;
-        o.markedUntil = Math.max(o.markedUntil || 0, 9);   // longer than a gadget sweep
+        // longer than a gadget sweep, and longer again with Spotter
+        o.markedUntil = Math.max(o.markedUntil || 0, 9 * Perks.mod(player, 'markMult', 1));
         found++;
       }
       hudMsg(found ? `📡  Recon sweep — ${found} contact${found > 1 ? 's' : ''} marked` : '📡  Recon sweep — nobody out there');
@@ -7301,7 +8822,9 @@ const Game = (() => {
     const board = buildLeaderboard(roster);
 
     const profile = DB.getProfile();
-    const score = mode === 'domination' ? Math.round(teamScores[0]) : matchStats.kills * 10;
+    const score = mode === 'domination' ? Math.round(teamScores[0])
+      : mode === 'armsrace' ? ((player && player.rung || 0) + 1) * 25
+      : matchStats.kills * 10;
     const xp = 100 + matchStats.kills * 25 + (won ? 150 : 0);
     const credits = 50 + matchStats.kills * 10 + (won ? 100 : 0);
 
@@ -7330,7 +8853,10 @@ const Game = (() => {
     title.textContent = won ? 'VICTORY' : 'DEFEAT';
     title.className = won ? 'is-victory' : 'is-defeat';
     document.getElementById('result-sub').textContent = won
-      ? (mode === 'domination' ? 'Your squad held the objectives.' : 'Last squad standing — GG.')
+      ? (mode === 'domination' ? 'Your squad held the objectives.'
+        : mode === 'mission' ? 'Off the island, job done. Nobody left to say you were there.'
+        : mode === 'armsrace' ? 'Top of the ladder. Every gun in the crate, and you got through them first.'
+        : 'Last squad standing — GG.')
       : 'Better luck next deployment, soldier.';
     document.getElementById('res-kills').textContent = matchStats.kills;
     document.getElementById('res-score').textContent = score;
@@ -7405,26 +8931,113 @@ const Game = (() => {
      the magazine size stayed on the last gun you personally held and only the
      round count moved. It reads "M16 25/20" against a squadmate's FAMAS.
      It runs every frame now, and writes only what actually changed. */
+  /* ================= two guns =================
+     A body carries `guns`: an array of slots, each holding a weapon and its
+     own magazine. `weapon` and `ammo` stay on the agent as the *live* ones,
+     which is the whole trick -- every one of the two hundred places that read
+     `a.weapon` or `a.ammo` keeps working untouched, and swapping is just
+     writing the live pair back into the slot it came from and loading the
+     other one out.
+
+     Anything with no `guns` array has one gun, and behaves exactly as before:
+     bots, vehicles, training dummies, and anyone in an Arms Race match where
+     the ladder decides what you hold. */
+  const SWAP_BASE = 0.45;         // seconds to bring a new gun up
+
+  function slotsOf(a) { return (a && a.guns) || null; }
+
+  /* How long this gun takes to raise. Heavier guns come up slower, which is
+     the only thing stopping a sniper from carrying an SMG as a free answer to
+     everything inside twenty metres. */
+  function swapTimeFor(w) {
+    const weight = (w && w.weight) || 0;
+    return SWAP_BASE + Math.min(0.5, weight * 0.02);
+  }
+
+  function selectGun(a, i, quiet) {
+    const g = slotsOf(a);
+    if (!g || i < 0 || i >= g.length || i === a.gun) return false;
+    if (a.swapT > 0) return false;                 // already changing hands
+    if (!g[i] || !g[i].weapon) return false;
+    // put the live magazine back where it came from
+    g[a.gun].ammo = a.ammo;
+    g[a.gun].reloadTimer = a.reloadTimer;
+    a.gun = i;
+    a.weapon = g[i].weapon;
+    a.ammo = g[i].ammo;
+    /* A reload does not continue in a bag. Cancelling it is also what makes
+       swapping a real tactical option -- it is the fast way out of a long
+       reload, at the cost of the rounds you were about to load. */
+    a.reloadTimer = 0;
+    a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
+    a.bloom = 0;
+    a.swapT = swapTimeFor(a.weapon);
+    if (isYours(a)) { SFX.click(); updateWeaponHud(); }
+    if (!quiet && online && isYours(a)) online.transport.send('swap', { i });
+    return true;
+  }
+
+  const nextGun = (a, dir) => {
+    const g = slotsOf(a);
+    if (!g || g.length < 2) return false;
+    return selectGun(a, ((a.gun + dir) % g.length + g.length) % g.length);
+  };
+
   function updateWeaponHud() {
     if (!player) return;
     const s = hudSubject();
     if (!s || !s.weapon) return;
     const name = s.isVehicle ? `${vehicleDef(s).icon} ${s.weapon.name}` : s.weapon.name;
-    const nameEl = document.getElementById('hud-weapon');
-    if (nameEl.textContent !== name) nameEl.textContent = name;
+    /* Both slots, every frame, writing only what changed.
+
+       The live one carries the name, the big count and the low-ammo state;
+       the spare shows what it is and how much is in it, because "can I switch
+       out of this reload" is a question you ask mid-fight and should not have
+       to open a menu to answer. A subject with one gun -- a vehicle, a
+       squadmate you are spectating, anyone in an Arms Race -- hides the second
+       row rather than showing an empty one. */
+    const g = slotsOf(s);
+    const live = g ? s.gun : 0;
+    const put = (id, txt) => {
+      const el = document.getElementById(id);
+      if (el && el.textContent !== txt) el.textContent = txt;
+    };
+    const rowFor = (i) => document.getElementById('gunslot-' + i);
+
+    put('hud-weapon', name);
+    put('hud-ammo', s.swapT > 0 ? '–' : s.reloadTimer > 0 ? '⟳' : String(s.ammo));
+    put('hud-ammomax', '/' + s.weapon.mag);
+
+    const other = g && g[1 - live];
+    if (other && other.weapon) {
+      put('hud-weapon2', other.weapon.name);
+      put('hud-ammo2', String(other.ammo));
+      put('hud-ammomax2', '/' + other.weapon.mag);
+    }
+    for (const i of [0, 1]) {
+      const row = rowFor(i);
+      if (!row) continue;
+      const isLive = i === 0;                      // row 0 always holds the live gun
+      row.classList.toggle('is-live', isLive);
+      row.classList.toggle('is-empty', !g && i === 1);
+      row.classList.toggle('is-swapping', isLive && s.swapT > 0);
+      row.hidden = !g && i === 1;
+    }
+    // the key chip shows which slot the live gun actually is
+    const k0 = rowFor(0) && rowFor(0).querySelector('.gunslot__key');
+    const k1 = rowFor(1) && rowFor(1).querySelector('.gunslot__key');
+    if (k0) k0.textContent = String(live + 1);
+    if (k1) k1.textContent = String(2 - live);
+
     const ammoEl = document.getElementById('hud-ammo');
-    const shown = s.reloadTimer > 0 ? '⟳' : String(s.ammo);
-    if (ammoEl.textContent !== shown) ammoEl.textContent = shown;
-    const maxEl = document.getElementById('hud-ammomax');
-    const max = '/' + s.weapon.mag;
-    if (maxEl.textContent !== max) maxEl.textContent = max;
     /* Running dry mid-fight is the most common avoidable death in the game and
        nothing told you it was coming — the count was the same colour at 30 as
        at 2. Under a quarter of a magazine the readout goes amber and pulses;
        empty, it goes red. Reloading is exempt: it is already being fixed. */
     const frac = s.weapon.mag > 0 ? s.ammo / s.weapon.mag : 1;
-    const state = s.reloadTimer > 0 ? '' : s.ammo === 0 ? 'empty' : frac <= 0.25 ? 'low' : '';
-    if (ammoEl.dataset.ammo !== state) ammoEl.dataset.ammo = state;
+    const state = (s.reloadTimer > 0 || s.swapT > 0) ? ''
+      : s.ammo === 0 ? 'empty' : frac <= 0.25 ? 'low' : '';
+    if (ammoEl && ammoEl.dataset.ammo !== state) ammoEl.dataset.ammo = state;
   }
 
   /* ---------------- hosted-match chip ----------------
@@ -7516,6 +9129,21 @@ const Game = (() => {
     updateViewBounds();
     perfMark('island', drawIsland);   // ocean, beach, grass, river, bridges, roads
     drawTerrain();     // grass patches the ghillie uses, and dug trenches
+
+    /* The boat. Only once the job is done -- an extraction point marked from
+       the start would tell you where the easy way out is before you have
+       earned it. */
+    if (inMission() && exfil && exfil.open) {
+      const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 320);
+      ctx.beginPath(); ctx.arc(exfil.x, exfil.y, exfil.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(127,242,193,${(0.07 + pulse * 0.05).toFixed(3)})`; ctx.fill();
+      ctx.strokeStyle = `rgba(127,242,193,${(0.5 + pulse * 0.4).toFixed(2)})`;
+      ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = 'rgba(127,242,193,0.85)';
+      ctx.font = 'bold 30px Outfit, Segoe UI, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('EXFIL', exfil.x, exfil.y);
+    }
 
     // objectives
     for (const obj of objectives) {
@@ -7788,7 +9416,8 @@ const Game = (() => {
       // online the host decides when you're back, so show its count, not ours
       const left = online ? online.respawn : Math.ceil(player.respawnTimer || 0);
       ctx.fillText(
-        mode === 'domination' ? (left > 0 ? `RESPAWNING IN ${left}` : 'RESPAWNING…')
+        (mode === 'domination' || mode === 'armsrace')
+          ? (left > 0 ? `RESPAWNING IN ${left}` : 'RESPAWNING…')
           : 'ELIMINATED — spectating',
         W / 2, H / 2);
     }
@@ -7801,7 +9430,9 @@ const Game = (() => {
     drawTacticalHud();
     drawSoundPings();
     drawCaptureBar();       // standing on a point: how it is going, and who with
-    drawMinimap();
+    drawRaceLadder();       // arms race: your rung, and whoever is closest to the top
+    drawMissionHud();       // mission: your orders, and whether they know you are here
+    perfMark('minimap', drawMinimap);
     drawCompass();          // which way to turn, as opposed to where things are
     drawEdgeIndicators();   // squad and objectives that are off the screen
     drawRangeHud();         // firing range only: target distances and the readout
@@ -8108,7 +9739,20 @@ const Game = (() => {
      by their tangents, which is what a tree trunk's shadow actually is. */
   function sweepRoundInto(cx, cy, r, dx, dy) {
     const ang = Math.atan2(dy, dx);
-    ctx.ellipse(cx, cy, r, r * SHADOW_FLATTEN, 0, ang - Math.PI / 2, ang + Math.PI / 2, false);
+    /* Start the subpath explicitly.
+
+       `ctx.ellipse` does not begin one -- it draws a line from the current
+       point to the arc's start, exactly like `lineTo`. Every round shadow was
+       therefore joined to the previous shape in the batch by a straight line,
+       and since all of them share one path for one fill, the result was a web
+       of long thin diagonals stitching every tree, rock and barrel on the map
+       to the next one. It looked like scratches on the ground and it is the
+       single messiest thing on the island.
+
+       `sweepInto` never had the problem because it opens with `moveTo`. */
+    const a0 = ang - Math.PI / 2;
+    ctx.moveTo(cx + Math.cos(a0) * r, cy + Math.sin(a0) * r * SHADOW_FLATTEN);
+    ctx.ellipse(cx, cy, r, r * SHADOW_FLATTEN, 0, a0, ang + Math.PI / 2, false);
     ctx.ellipse(cx + dx, cy + dy, r, r * SHADOW_FLATTEN, 0, ang + Math.PI / 2, ang - Math.PI / 2, false);
     ctx.closePath();
   }
@@ -8322,7 +9966,9 @@ const Game = (() => {
      because the world is lit the same way either way. */
   const shadowHeight = (k) => (k.passable ? 0 : (HEIGHT_OF[k.height] || 0) * (RISE[k.name] || 1));
 
+  let dbgShadows = 3;      // bit 1 = structures, bit 2 = buildings
   function drawStructureShadows() {
+    if (!(dbgShadows & 1)) return;
     /* Two passes, each one path.
 
        The near pass is the shadow proper. The far pass is a longer, fainter
@@ -8332,7 +9978,12 @@ const Game = (() => {
     for (const pass of [0, 1]) {
       const far = pass === 0;
       ctx.beginPath();
-      for (const s of structureRects()) {
+      /* Only the rects near the viewport. This walked every wall, fence and
+         crate on the island -- twice, once per pass -- to draw the sixty or so
+         that are visible. The padding covers the throw: a shadow reaches
+         further than the thing casting it, so a wall just off screen still
+         lays one across the corner of it. */
+      for (const s of visibleRects(240)) {
         const k = kindOf(s);
         if (s.open || k.passable) continue;
         if (!rectOnScreen(s)) continue;
@@ -8356,6 +10007,7 @@ const Game = (() => {
      rug. It was 22px before, barely more than a fence. */
   const ROOF_H = 74;
   function drawBuildingShadows() {
+    if (!(dbgShadows & 2)) return;
     /* Bucketed by how far the roof has lifted, so a whole group of buildings
        is one path and one fill. Bucketed rather than merged because a roof
        fading up for the squad inside has to take its shadow with it. */
@@ -10248,7 +11900,7 @@ const Game = (() => {
          person you are already watching is the person you would deploy on, so
          the offer belongs here rather than in a menu of its own. */
       ctx.textAlign = 'center';
-      if (mode === 'domination' || mode === 'range') {
+      if (mode === 'domination' || mode === 'range' || mode === 'armsrace') {
         const ok = deployTargetOk(t);
         ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
         ctx.fillStyle = deployAnchor === t ? '#7ff2c1' : ok ? '#ffcf4a' : 'rgba(255,120,120,0.75)';
@@ -10706,8 +12358,57 @@ const Game = (() => {
     ctx.fillStyle = view.crosshairColor;
     ctx.lineWidth = 1.6; ctx.lineCap = 'round';
     ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 3;
+    /* Bloom is in world pixels; on screen it is scaled by the current zoom.
+       Every shape that opens up shares this so they all report the same thing
+       about the same gun. */
+    const spreadOf = () => ((view.crosshair === 'dynamic' || view.crosshair === 'circle'
+      || view.crosshair === 'chevron')
+      ? Math.min(46, (player.bloom || 0) * 40 * zoom) : 0);
+
     if (view.crosshair === 'dot') {
       ctx.beginPath(); ctx.arc(x, y, Math.max(1.5, s / 5), 0, Math.PI * 2); ctx.fill();
+    } else if (view.crosshair === 'circle') {
+      /* A ring that grows with the spread rather than four lines that part.
+         Reads the cone as an area, which is what it actually is, and does not
+         clutter the middle of the screen while you are aiming through it. */
+      const r = s * 0.9 + spreadOf();
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 1.3, 0, Math.PI * 2); ctx.fill();
+    } else if (view.crosshair === 'chevron') {
+      // a single mark under the point of aim, so nothing sits on the target
+      const g = s * 0.5 + spreadOf();
+      ctx.beginPath();
+      ctx.moveTo(x - s * 0.8, y + g + s * 0.8);
+      ctx.lineTo(x, y + g);
+      ctx.lineTo(x + s * 0.8, y + g + s * 0.8);
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 1.2, 0, Math.PI * 2); ctx.fill();
+    } else if (view.crosshair === 'tee') {
+      /* Three arms, none of them above the point of aim: the top arm is the
+         one that covers a head at range, and leaving it off is the oldest
+         trick in the book. */
+      const gap = s * 0.45;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1]]) {
+        ctx.beginPath();
+        ctx.moveTo(x + dx * gap, y + dy * gap);
+        ctx.lineTo(x + dx * (gap + s), y + dy * (gap + s));
+        ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(x, y, 1.3, 0, Math.PI * 2); ctx.fill();
+    } else if (view.crosshair === 'brackets') {
+      // four corners of a box; the middle stays completely clear
+      const g = s * 0.9, len = s * 0.55;
+      for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        ctx.beginPath();
+        ctx.moveTo(x + sx * g, y + sy * (g - len));
+        ctx.lineTo(x + sx * g, y + sy * g);
+        ctx.lineTo(x + sx * (g - len), y + sy * g);
+        ctx.stroke();
+      }
+    } else if (view.crosshair === 'pip') {
+      // a hollow ring, no centre dot at all
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(2.5, s / 3), 0, Math.PI * 2); ctx.stroke();
     } else {
       // bloom is in world pixels; on screen it is scaled by the current zoom
       const spread = view.crosshair === 'dynamic'
@@ -10904,6 +12605,93 @@ const Game = (() => {
     ctx.restore();
   }
 
+  /* ---------------- arms race ladder ----------------
+     Two things you need constantly in this mode and cannot get anywhere else:
+     which rung you are on, and how close the leader is to ending the match.
+     Everything else on the HUD tells you about the fight in front of you; this
+     is the only thing that tells you about the race. */
+  function drawRaceLadder() {
+    if (mode !== 'armsrace' || !player) return;
+    const top = raceTop();
+    // whoever is furthest up, so you know how much time you have
+    let lead = null;
+    for (const a of agents) {
+      if (a.isVehicle || !a.rung && a.rung !== 0) continue;
+      if (!lead || a.rung > lead.rung) lead = a;
+    }
+
+    const w = 250, h = 6, x = (W - w) / 2, y = 148;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+    // the pips: one per rung, filled to where you are
+    const gap = 3, pw = (w - gap * (top - 1)) / top;
+    for (let i = 0; i < top; i++) {
+      const px = x + i * (pw + gap);
+      const mine = i < (player.rung || 0);
+      const here = i === (player.rung || 0);
+      ctx.fillStyle = here ? '#ffcf4a' : mine ? 'rgba(255,207,74,0.55)' : 'rgba(255,255,255,0.14)';
+      roundRect(px, y, pw, here ? h + 3 : h, 2); ctx.fill();
+    }
+
+    ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
+    ctx.fillStyle = player.raceKnife ? '#7ff2c1' : '#e9f0ff';
+    ctx.fillText(player.raceKnife
+      ? 'FINAL RUNG - ' + raceMelee() + ' kill to win'
+      : 'RUNG ' + ((player.rung || 0) + 1) + '/' + RACE_RUNGS + '  ·  ' + player.weapon.name,
+      W / 2, y - 12);
+
+    // and the leader, but only once somebody is actually threatening to finish
+    if (lead && lead !== player && lead.rung >= top - 3) {
+      ctx.font = '10px Azeret Mono, ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(255,159,67,0.9)';
+      ctx.fillText(nameOf(lead, 'Someone') + ' is on ' + (lead.rung + 1) + '/' + RACE_RUNGS,
+        W / 2, y + h + 14);
+    }
+    ctx.restore();
+  }
+
+  /* ---------------- mission HUD ----------------
+     Two things you need constantly and cannot get anywhere else: what the job
+     is, and whether the island has noticed you. The second is the one the mode
+     lives or dies on -- a stealth game that does not tell you your state is a
+     guessing game -- so it is a bar, not a word. */
+  function drawMissionHud() {
+    if (!inMission() || !mission || !player) return;
+
+    // how awake the garrison is: the worst state anybody nearby is in
+    let worst = 0, hunting = 0;
+    for (const a of agents) {
+      if (!a.alive || a.isPlayer || a.isVehicle || a.team === player.team) continue;
+      const al = a.alert || 0;
+      if (al > worst) worst = al;
+      if (al >= Mission.ALERT.HUNTING) hunting++;
+    }
+
+    const y = 148;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+    ctx.font = 'bold 13px Outfit, Segoe UI, sans-serif';
+    ctx.fillStyle = missionPhase === Mission.PHASE.EXFIL ? '#ffcf4a' : '#e9f0ff';
+    ctx.fillText(Mission.orders(mission, missionPhase, missionHeld), W / 2, y - 14);
+
+    const label = worst >= Mission.ALERT.HUNTING ? 'HUNTING YOU'
+      : worst >= Mission.ALERT.SUSPICIOUS ? 'SEARCHING' : 'UNDETECTED';
+    const ink = worst >= Mission.ALERT.HUNTING ? '#ff4b5c'
+      : worst >= Mission.ALERT.SUSPICIOUS ? '#ff9f43' : '#4be08a';
+
+    const w = 190, h = 5, x = (W - w) / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; roundRect(x, y, w, h, 3); ctx.fill();
+    ctx.fillStyle = ink;
+    roundRect(x, y, w * (worst / 2 || 0.06), h, 3); ctx.fill();
+
+    ctx.font = 'bold 10px Azeret Mono, ui-monospace, monospace';
+    ctx.fillStyle = ink;
+    ctx.fillText(label + (hunting ? '  ·  ' + hunting + ' closing' : ''), W / 2, y + h + 11);
+    ctx.restore();
+  }
+
   const MINIMAP_W = 180;
   /* Where the minimap ended up last frame, so a click can be turned back into
      a world position without recomputing the layout in two places. */
@@ -10916,7 +12704,15 @@ const Game = (() => {
     ctx.fillStyle = 'rgba(26,38,66,0.78)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
     ctx.strokeStyle = 'rgba(175,210,255,0.55)'; ctx.lineWidth = 1; ctx.stroke();
     const sx = mw / MAP_W, sy = mh / MAP_H;
-    // building footprints, so you can read the map at a glance
+    /* Drawn straight, not cached.
+
+       This looked like an obvious win -- thousands of fillRects every frame to
+       produce the same 180px image -- so it was baked into an offscreen canvas
+       and blitted. A/B'd in one session with a switch, it measured 0.49ms
+       either way: the loop is dominated by the `height !== 'high'` rejection,
+       which is a property read, and the handful of rects that survive are
+       tiny. The cache was a second canvas, an invalidation path and a stale
+       tile to get wrong, in exchange for nothing measurable, so it is gone. */
     ctx.fillStyle = 'rgba(205,225,255,0.38)';
     for (const s of structureRects()) {
       if (kindOf(s).height !== 'high') continue;
@@ -12174,7 +13970,7 @@ const Game = (() => {
     // applied when an agent is made, not every frame
     respawnFresh() {
       if (!player) return;
-      const perk = player.perk;
+      const perk = player.perks || player.perk;
       player.maxHp = Combat.maxHpFor('infantry', perk);
       player.hp = player.maxHp;
       player.weapon = Perks.applyToWeapon(player.baseWeapon || player.weapon, perk);
@@ -12652,7 +14448,13 @@ const Game = (() => {
          loop does — calling updateBot on its own starves the pathfinder after
          a couple of frames and never counts anybody standing over anybody. */
       for (let i = 0; i < 400; i++) {
+        /* Both budgets, because the real loop resets both. Resetting only
+           `pathBudget` left the node budget to drain to nothing after a few
+           frames, so every search bailed at its 400-node floor and the bot
+           fell back to slide-steering -- it still arrived, just too slowly to
+           beat the bleed-out clock, which read as "bots stopped reviving". */
         pathBudget = 4;
+        navNodeBudget = NAV_NODES_PER_FRAME;
         updateBot(helper, 0.05);
         updateDowned(mate, 0.05);
         closed = Math.min(closed, Math.hypot(helper.x - mate.x, helper.y - mate.y));
@@ -12666,6 +14468,10 @@ const Game = (() => {
         downedTeammate: wasDowned,
         closedToWithin: Math.round(closed),
         pickedThemUp: revived,
+        why: { reviveT: +(mate.reviveT || 0).toFixed(2), bleed: +(mate.bleed || 0).toFixed(1),
+          alive: mate.alive, downed: mate.downed,
+          endDist: Math.round(Math.hypot(helper.x - mate.x, helper.y - mate.y)),
+          helperAlive: helper.alive, helperTeam: helper.team, mateTeam: mate.team },
       };
     },
     teamColor: (t) => teamInk(t),
@@ -12710,7 +14516,7 @@ const Game = (() => {
         crate: A.crate && { ...at(A.crate), opened: !!A.crate.opened },
         objective: objectives[0] && { ...at(objectives[0]), owner: objectives[0].owner, progress: Math.round(objectives[0].progress) },
         targets: agents.filter(a => a.tutorTag).map(a => ({ tag: a.tutorTag, alive: a.alive, m: a.rangeM, ...at(a) })),
-        hostiles: agents.filter(a => a.noRespawn).map(a => ({ alive: a.alive, hp: Math.round(a.hp), ...at(a) })),
+        hostiles: agents.filter(a => a.noRespawn).map(a => ({ alive: a.alive, hp: Math.round(a.hp), inWall: pointInObstacle(a.x, a.y), ...at(a) })),
         player: at(player),
       };
     },
@@ -12729,6 +14535,43 @@ const Game = (() => {
         stuck: moveStat.stuck,
         crowdPct: +((moveStat.crowd / f) * 100).toFixed(1),
         nav: Object.assign({}, navStat),
+      };
+    },
+
+    /* ---- where everything spawned ----
+       The whole opening state of a match in one object: each squad's ring
+       anchor, the capture points, every crate with its tier, and the parked
+       hulls. Enough to ask whether two squads are being handed the same game,
+       which is not a question you can answer by playing one. */
+    spawnMap() {
+      const anchors = [];
+      for (let t = 0; t < nTeams; t++) {
+        const cx = MAP_W / 2, cy = MAP_H / 2;
+        const ang = -Math.PI / 2 + (t / Math.max(1, nTeams)) * Math.PI * 2;
+        const tight = nTeams >= 9;
+        const band = spawnBands ? spawnBands[t] : (tight && (t % 2) ? 0.62 : 1);
+        const rx = (MAP_W / 2 - SPAWN_INSET) * band, ry = (MAP_H / 2 - SPAWN_INSET) * band;
+        anchors.push({ team: t, x: Math.round(cx + Math.cos(ang) * rx), y: Math.round(cy + Math.sin(ang) * ry) });
+      }
+      return {
+        map: { w: MAP_W, h: MAP_H }, mode, teams: nTeams,
+        bands: spawnBands ? spawnBands.map(b => +b.toFixed(2)) : null,
+        spawns: anchors,
+        objectives: objectives.map(o => ({ name: o.name, x: Math.round(o.x), y: Math.round(o.y), r: o.r })),
+        crates: crates.map(c => ({ x: Math.round(c.x), y: Math.round(c.y), tier: c.tier, indoors: !!c.indoors })),
+        vehicles: parkedVehicles.map(v => ({ vtype: v.vtype, x: Math.round(v.x), y: Math.round(v.y) })),
+        supply: { first: SUPPLY_FIRST, every: SUPPLY_EVERY, max: SUPPLY_MAX },
+        vehBal: Object.assign({}, vehBal),
+        loot: Object.assign({}, lootStat),
+        respawns: {
+          n: spawnStat.rolls,
+          meanEnemyDist: Math.round(spawnStat.sumDist / Math.max(1, spawnStat.rolls)),
+          unsafePct: Math.round((spawnStat.unsafe / Math.max(1, spawnStat.rolls)) * 100),
+          // what the very first roll would have handed out, on the same spawns
+          meanFirstDist: Math.round(spawnStat.sumFirst / Math.max(1, spawnStat.rolls)),
+          unsafeFirstPct: Math.round((spawnStat.unsafeFirst / Math.max(1, spawnStat.rolls)) * 100),
+          improvedPct: Math.round((spawnStat.improved / Math.max(1, spawnStat.rolls)) * 100),
+        },
       };
     },
 
@@ -13236,7 +15079,7 @@ const Game = (() => {
       counts.sort((x, y) => x - y);
       return { total: counts.reduce((x, y) => x + y, 0), median: counts[Math.floor(counts.length / 2)] || 0 };
     },
-    carryLimit: () => (player ? Classes.limitFor(player.cls, player.cls.consumable, carryTier(player), player.perk) : 0),
+    carryLimit: () => (player ? Classes.limitFor(player.cls, player.cls.consumable, carryTier(player), player.perks) : 0),
     soundPings: () => soundPings.length,
     // a contact somewhere off to the east, for the Portable Satellite
     enemyShot() {
@@ -13268,6 +15111,65 @@ const Game = (() => {
     },
     // the exact number the movement code is using this frame
     moveSpeed: () => (player ? RoomSim.moveSpeedFor(player, false) : 0),
+    /* Just enough of the island for the briefing map: footprints, the
+       compound, and where you come ashore. */
+    briefWorld: () => ({
+      w: MAP_W, h: MAP_H,
+      buildings: buildings.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),
+      core: garrisonCore ? { x: garrisonCore.x, y: garrisonCore.y } : null,
+      land: player ? { x: player.x, y: player.y } : null,
+    }),
+    mission: () => (mission ? {
+      type: mission.type, name: mission.name, brief: mission.brief,
+      target: mission.target, asset: mission.asset,
+      phase: missionPhase, held: missionHeld,
+      exfil: exfil ? { x: Math.round(exfil.x), y: Math.round(exfil.y), open: !!exfil.open } : null,
+      core: { x: Math.round(garrisonCore.x), y: Math.round(garrisonCore.y) },
+      stat: { ...missionStat },
+      alerts: (() => {
+        const c = [0, 0, 0];
+        for (const a of agents) {
+          if (!a.alive || a.isPlayer || a.isVehicle || a.team === player.team) continue;
+          c[Math.min(2, a.alert || 0)]++;
+        }
+        return { unaware: c[0], searching: c[1], hunting: c[2] };
+      })(),
+      /* Who is awake, and what they are looking at -- the only way to tell a
+         guard that has seen you from one that started that way. */
+      awake: agents.filter(a => a.alive && !a.isPlayer && !a.isVehicle
+        && a.team !== player.team && (a.alert || 0) > 0)
+        .slice(0, 6).map(a => ({
+          alert: a.alert,
+          toPlayer: Math.round(Math.hypot(a.x - player.x, a.y - player.y)),
+          toMate: Math.round(Math.min(...agents.filter(q => q.team === player.team
+            && !q.isPlayer && q.alive).map(q => Math.hypot(a.x - q.x, a.y - q.y)).concat([9e9]))),
+          depth: Math.round(missionDepth(a.x, a.y)),
+        })),
+      playerToCore: Math.round(missionDepth(player.x, player.y)),
+      levels: (() => {
+        // the difficulty gradient, sampled by distance from the objective
+        const near = [], far = [];
+        for (const a of agents) {
+          if (a.isPlayer || a.isVehicle || a.team === player.team || !a.diff) continue;
+          (missionDepth(a.x, a.y) < 1200 ? near : far).push(a.diff.level || 0);
+        }
+        const mean = (v) => (v.length ? +(v.reduce((x, y) => x + y, 0) / v.length).toFixed(1) : 0);
+        return { nearCore: mean(near), outer: mean(far), n: near.length + far.length };
+      })(),
+    } : null),
+    missionTakeAsset() {
+      if (!missionAsset) return false;
+      missionAsset.opened = true; return true;
+    },
+    missionKillTarget() {
+      if (!missionTarget) return false;
+      killAgent(missionTarget, player, 'body'); return !missionTarget.alive;
+    },
+    missionWarp(where) {
+      if (where === 'exfil' && exfil) { player.x = exfil.x; player.y = exfil.y; return true; }
+      if (where === 'core') { player.x = garrisonCore.x; player.y = garrisonCore.y; return true; }
+      return false;
+    },
     /* What the generator actually built: which buildings, and what each kind
        of room ended up holding. The loot table is a set of counts, and counts
        are only worth writing down if you can check them. */
@@ -13291,6 +15193,21 @@ const Game = (() => {
     marks: () => marks.length,
     // objectives as the capture rules see them, for testing that a point
     // cannot be flipped faster than the bar allows
+    /* Who the capture rules think is standing on the first point, which is
+       the only way to tell "nobody arrived" from "two sides arrived". */
+    pointCounts() {
+      const o = objectives[0]; if (!o) return null;
+      const c = {};
+      let near = [];
+      for (const a of agents) {
+        if (!a.alive || a.riding) continue;
+        if (dist2(a.x, a.y, o.x, o.y) < o.r * o.r) {
+          c[a.team] = (c[a.team] || 0) + 1;
+          near.push({ n: a.name || 'you', t: a.team, v: !!a.isVehicle, f: !!a.frozen });
+        }
+      }
+      return { counts: c, near, r: o.r, owner: o.owner, progress: Math.round(o.progress) };
+    },
     objectives: () => objectives.map(o =>
       ({ name: o.name, owner: o.owner, progress: Math.round(o.progress), capTeam: o.capTeam })),
     // where the minimap ended up, so a click can be aimed at it
@@ -13299,41 +15216,102 @@ const Game = (() => {
     stackPoint(team) {
       const o = objectives[0];
       if (!o) return null;
-      for (const a of agents) if (!a.isVehicle && !a.isPlayer) { a.x = -9e4; a.y = -9e4; }
-      const bots = agents.filter(a => !a.isVehicle && a.alive && a.team === team).slice(0, 1);
-      for (const a of bots) { a.x = o.x; a.y = o.y; }
-      return { name: o.name, owner: o.owner, progress: Math.round(o.progress), moved: bots.length };
+      /* The player too. Leaving them where they stood meant that whenever
+         they happened to be on the point the probe was measuring a contested
+         capture, which does not climb -- and reads as the capture rules being
+         broken. */
+      for (const a of agents) if (!a.isVehicle) { a.x = -9e4; a.y = -9e4; }
+      /* A team that actually has somebody standing. Asking for team 1 by name
+         meant that on any run where team 1 happened to be entirely dead and
+         waiting to respawn, nobody was placed, nothing captured, and the
+         capture rules got the blame. */
+      /* On its feet, not merely `alive`. A downed agent is still alive in this
+         codebase -- that is what makes a last stand possible -- so picking one
+         got a body that bled out mid-measurement and respawned across the map,
+         leaving the point empty and the capture rules looking broken. */
+      const live = (t) => agents.filter(a => !a.isVehicle && !a.isPlayer
+        && a.alive && !a.downed && a.team === t);
+      let use = team, bots = live(team);
+      if (!bots.length) {
+        for (let t = 0; t < nTeams && !bots.length; t++) {
+          if (t === player.team) continue;
+          bots = live(t); if (bots.length) use = t;
+        }
+      }
+      bots = bots.slice(0, 1);
+      // frozen, or it walks off the point mid-measurement and the bar decays
+      for (const a of bots) {
+        a.x = o.x; a.y = o.y; a.frozen = true; a.debugInvuln = true;
+        a.hp = a.maxHp; a.downed = false; a.reviveT = 0; a.standT = 0;
+      }
+      return { name: o.name, owner: o.owner, progress: Math.round(o.progress),
+        moved: bots.length, team: use };
     },
     // the kill feed, including the weapon each row now carries
     feed: () => killFeed.map(k => ({ killer: k.killer, victim: k.victim, weapon: k.weapon })),
     /* Stand an enemy in front of the player at point-blank range, facing away,
        so a shot cannot miss. Accuracy, headshots and assists are only worth
        counting if a hit can be made to happen on demand. */
-    enemyInFront(dist = 90) {
-      const foe = agents.find(a => a.alive && !a.isVehicle && a.team !== player.team);
-      if (!foe) return null;
-      /* Somewhere the player can actually shoot.
+    /* Stand an enemy in front of the player, on ground where the shot can
+       actually be taken.
 
-         This used to drop the target on the player's current bearing and hope.
-         Inside a building that bearing is often a wall, so twelve rounds at
-         ninety pixels would land nothing and the probe would report that hit
-         registration was broken when what was broken was the probe. Sweep for
-         a heading with a clear line and turn the player to face it. */
-      let ang = player.angle, found = false;
+       This has been patched four times and kept coming back, because each fix
+       addressed the symptom that run happened to hit: the target was riding a
+       jeep and got pinned back to it; the bearing was into a wall; the
+       magazine was empty; the player was dead; and most recently the player
+       was mid-weapon-swap, which blocks firing outright. Every one of those is
+       the same underlying mistake -- the probe was measuring hit registration
+       inside a live match with a dozen uncontrolled variables.
+
+       So it is deterministic by construction now. The scene is cleared, the
+       player is put into a known state, and the target is placed on a bearing
+       with a proven clear line. What is left varying is the thing being
+       measured. */
+    enemyInFront(dist = 90) {
+      if (!player || !player.alive) return null;
+      // a target that will stay where it is put: on foot, not in a hull
+      const foe = agents.find(a => a.alive && !a.isVehicle && !a.riding
+        && a.team !== player.team);
+      if (!foe) return null;
+
+      /* Everyone else out of the way. A third body between the two of them
+         eats the rounds and the probe reports a miss. */
+      for (const a of agents) {
+        if (a === player || a === foe || a.isVehicle || !a.alive) continue;
+        if (dist2(a.x, a.y, player.x, player.y) < 600 * 600) { a.x = -9e4; a.y = -9e4; }
+      }
+
+      /* The player, in a known state. Every one of these has been the cause of
+         a false failure at least once. */
+      if (player.riding) { player.riding.driver = null; player.riding = null; }
+      player.swapT = 0;
+      player.reloadTimer = 0;
+      player.ammo = player.weapon.mag;
+      player.burstLeft = 0; player.fireCd = 0; player.bloom = 0;
+
+      /* Along where the mouse is pointing, not along `player.angle`.
+
+         This is why the probe kept missing. `player.angle` is *derived* -- the
+         update loop recomputes it from the cursor every single frame -- so
+         assigning it here was overwritten before a round ever left the barrel,
+         and the player went on shooting at wherever the test had last put the
+         mouse. Placing the target on the live aim bearing means the shot the
+         probe fires is aimed at the thing it just placed. */
+      const wm = worldMouse();
+      const base = Math.atan2(wm.y - player.y, wm.x - player.x);
+      let ang = base, found = false;
       for (let k = 0; k < 24 && !found; k++) {
-        const t = player.angle + (k % 2 ? -1 : 1) * Math.floor(k / 2) * (Math.PI / 12);
+        const t = base + (k % 2 ? -1 : 1) * Math.floor(k / 2) * (Math.PI / 24);
         const tx = player.x + Math.cos(t) * dist, ty = player.y + Math.sin(t) * dist;
         if (hasLOS(player.x, player.y, tx, ty)) { ang = t; found = true; }
       }
-      player.angle = ang;
       foe.x = player.x + Math.cos(ang) * dist;
       foe.y = player.y + Math.sin(ang) * dist;
-      if (!foe.frozen) foe.hp = foe.maxHp;   // repositioning must not also heal
-      foe.frozen = true;
-      // a full magazine, or the probe measures a reload instead of a hit
-      player.ammo = player.weapon.mag; player.reloadTimer = 0;                 // stand still long enough to be shot
-      return { name: foe.name, hp: foe.hp, team: foe.team, dist,
-        px: Math.round(player.x), py: Math.round(player.y),
+      if (!foe.frozen) foe.hp = foe.maxHp;    // repositioning must not also heal
+      foe.frozen = true;                      // and it stands there and takes it
+      foe.swapT = 0;
+      return { name: foe.name, hp: Math.round(foe.hp), team: foe.team, dist,
+        clearLine: found, px: Math.round(player.x), py: Math.round(player.y),
         fx: Math.round(foe.x), fy: Math.round(foe.y),
         angle: +player.angle.toFixed(2), alive: foe.alive, pAlive: player.alive };
     },
@@ -13355,6 +15333,448 @@ const Game = (() => {
       return { name: b.name, w: Math.round(b.w), h: Math.round(b.h), rooms: (b.rooms || []).length };
     },
     weather: () => { const w = weatherNow(); return w ? w.id : 'clear'; },
+    shadowMask(m) { dbgShadows = m; return dbgShadows; },
+    /* What the interiors actually contain, per room: whether the room kind has
+       a furniture table at all, how much it got, and how much of the floor it
+       covers. An empty room is the thing that most makes a generated building
+       read as generated. */
+    interiors() {
+      const perKind = {};
+      let rooms = 0, bare = 0, unstyled = 0, noTable = 0, props = 0, sumFill = 0;
+      const tally = new Set();
+      for (const b of buildings) {
+        for (const r of (b.rooms || [])) {
+          rooms++;
+          const anchors = Game.__anchors ? Game.__anchors(r) : null;
+          const n = anchors ? anchors.length : 0;
+          props += n;
+          if (!n) bare++;
+          if (!Structures.roomStyleOf(r.kind)) unstyled++;
+          if (!ROOM_PROPS[r.kind]) { noTable++; tally.add(r.kind); }
+          const area = Math.max(1, r.w * r.h);
+          sumFill += (n * 900) / area;               // rough: a prop is ~30px across
+          const e = perKind[r.kind] || (perKind[r.kind] = { n: 0, props: 0, bare: 0 });
+          e.n++; e.props += n; if (!n) e.bare++;
+        }
+      }
+      const worst = Object.entries(perKind)
+        .filter(([, e]) => e.n >= 2)
+        .sort((a2, b2) => (a2[1].props / a2[1].n) - (b2[1].props / b2[1].n))
+        .slice(0, 8)
+        .map(([k, e]) => `${k} ${(e.props / e.n).toFixed(1)}/room${e.bare ? ' (' + e.bare + ' bare)' : ''}`);
+      return { dress: { ...dressStat, pct: +(dressStat.got / Math.max(1, dressStat.want) * 100).toFixed(1) },
+        rooms, props, propsPerRoom: +(props / Math.max(1, rooms)).toFixed(2),
+        bareRooms: bare, barePct: +(bare / Math.max(1, rooms) * 100).toFixed(1),
+        unstyled, noFurnitureTable: noTable, kindsWithNoTable: [...tally].slice(0, 10),
+        meanFloorFill: +(sumFill / Math.max(1, rooms) * 100).toFixed(1),
+        emptiest: worst };
+    },
+
+    genProfile() {
+      const out = {};
+      let tot = 0;
+      for (const k in genProf) { out[k] = +genProf[k].toFixed(1); tot += genProf[k]; }
+      out.TOTAL = +tot.toFixed(1);
+      return out;
+    },
+    /* How crowded the island actually is: what fraction of the walkable land
+       is under a roof, and how much room there is between neighbours. */
+    density() {
+      let roof = 0;
+      for (const b of buildings) roof += b.w * b.h;
+      // gaps between every pair that are near each other
+      const gaps = [];
+      for (let i = 0; i < buildings.length; i++) {
+        let best = Infinity;
+        for (let j = 0; j < buildings.length; j++) {
+          if (i === j) continue;
+          const a2 = buildings[i], b2 = buildings[j];
+          const dx = Math.max(a2.x - (b2.x + b2.w), b2.x - (a2.x + a2.w), 0);
+          const dy = Math.max(a2.y - (b2.y + b2.h), b2.y - (a2.y + a2.h), 0);
+          const d = Math.hypot(dx, dy);
+          if (d < best) best = d;
+        }
+        if (best < Infinity) gaps.push(Math.round(best));
+      }
+      gaps.sort((x, y) => x - y);
+      const land = MAP_W * MAP_H * 0.62;      // rough: the island inside the sea
+      return { buildings: buildings.length,
+        roofPct: +(roof / land * 100).toFixed(1),
+        gapMin: gaps[0], gapMedian: gaps[Math.floor(gaps.length / 2)],
+        gapUnder80: gaps.filter(g => g < 80).length,
+        gapUnder40: gaps.filter(g => g < 40).length };
+    },
+    /* What a respawn actually lands in. Sampled by asking for spawn points the
+       way respawnAgent does, then measuring the four things that decide
+       whether coming back feels fair: how close the nearest enemy is, whether
+       one of them can see you, whether there is anything to get behind, and
+       how far you have to walk to matter. */
+    /* The real thing: drive respawnAgent and measure where it actually put
+       people, rather than sampling the ring by hand. */
+    respawnAudit(n = 160) {
+      const bots = agents.filter(a => !a.isVehicle && !a.isPlayer);
+      if (!bots.length) return null;
+      const out = { seen: 0, close: 0, sumEnemy: 0, sumWalk: 0, facing: 0, n: 0 };
+      for (let i = 0; i < n; i++) {
+        const a = bots[i % bots.length];
+        const ox = a.x, oy = a.y;
+        respawnAgent(a);
+        let ed = Infinity, seen = false;
+        for (const b of agents) {
+          if (!b.alive || b.isVehicle || b.team === a.team || b === a) continue;
+          const d = Math.hypot(a.x - b.x, a.y - b.y);
+          if (d < ed) ed = d;
+          if (d < 1500 && hasLOS(b.x, b.y, a.x, a.y)) seen = true;
+        }
+        let wd = Infinity, aim = null;
+        for (const o of objectives) {
+          const d = Math.hypot(a.x - o.x, a.y - o.y);
+          if (d < wd) { wd = d; aim = o; }
+        }
+        if (aim) {
+          const want = Math.atan2(aim.y - a.y, aim.x - a.x);
+          if (Math.abs(angDiff(a.angle, want)) < 0.7) out.facing++;
+        }
+        out.n++;
+        if (seen) out.seen++;
+        if (ed < 900) out.close++;
+        out.sumEnemy += (ed === Infinity ? 4000 : ed);
+        out.sumWalk += (wd === Infinity ? 0 : wd);
+        a.x = ox; a.y = oy;
+      }
+      const r = (v) => Math.round(v / Math.max(1, out.n));
+      return { samples: out.n,
+        pctSeenByEnemy: +(out.seen / out.n * 100).toFixed(1),
+        pctEnemyWithin900: +(out.close / out.n * 100).toFixed(1),
+        pctFacingThePoint: +(out.facing / out.n * 100).toFixed(1),
+        meanEnemyDist: r(out.sumEnemy), meanWalkToPoint: r(out.sumWalk),
+        chosenFrom: { ...spawnStat.byKind } };
+    },
+    /* ---------------- the test arena ----------------
+       An isolated scene, because measuring a single interaction inside a live
+       sixteen-body battle does not work and repeatedly patching the probe was
+       treating the symptom.
+
+       Every failure this harness has produced came from something else in the
+       match: a third body eating the round, the target being shot by somebody
+       else, a bot walking back onto the objective, the target bleeding out,
+       the player dying. None of those are what the checks are about.
+
+       `arena` empties the stage. Everyone but the player is parked far away
+       and frozen, the player is put on known open ground in a known state, and
+       the world stops interfering. What is left moving is the thing under
+       test. Call it once; every probe afterwards runs inside it. */
+    arena() {
+      if (!player) return null;
+      debugNoDamage = true;
+
+      /* Open ground, found rather than assumed: the middle of the largest
+         building's yard is walls, and a probe that fires into a wall is the
+         bug I kept re-fixing. Walk out from the map centre for a spot with a
+         clear 400px in every direction. */
+      /* Three passes, loosening as it goes, and never a blind fallback.
+
+         The first version wanted a clear four hundred pixels in all eight
+         directions. On an island with fifteen compounds and two thousand props
+         on it there is almost nowhere like that, so it found nothing and fell
+         back to the exact centre of the map -- which is inside something, and
+         gave the probe a target it had no line to. The clearance that actually
+         matters is the ninety pixels to the target and a little either side. */
+      const clearAt = (x, y, reach, dirs) => {
+        if (pointInObstacle(x, y)) return false;
+        if (terrain && !Terrain.isBuildable(terrain, x, y, 40)) return false;
+        for (let k = 0; k < dirs; k++) {
+          const t = (k / dirs) * Math.PI * 2;
+          if (!hasLOS(x, y, x + Math.cos(t) * reach, y + Math.sin(t) * reach)) return false;
+        }
+        return true;
+      };
+      let spot = null;
+      const passes = [[320, 8, true], [180, 4, true], [140, 2, false]];
+      for (const [reach, dirs, noBuild] of passes) {
+        for (let r = 0; r < 220 && !spot; r++) {
+          const ang = r * 2.399963;                     // golden angle, spirals out
+          const rad = 140 + r * 34;
+          const x = clamp(MAP_W / 2 + Math.cos(ang) * rad, 420, MAP_W - 420);
+          const y = clamp(MAP_H / 2 + Math.sin(ang) * rad, 420, MAP_H - 420);
+          if (noBuild && insideAnyBuilding(x, y, 60)) continue;
+          if (clearAt(x, y, reach, dirs)) spot = { x, y };
+        }
+        if (spot) break;
+      }
+      // still nothing: take any standable point rather than the middle of a wall
+      if (!spot) {
+        for (let r = 0; r < 400 && !spot; r++) {
+          const ang = r * 2.399963, rad = 140 + r * 26;
+          const x = clamp(MAP_W / 2 + Math.cos(ang) * rad, 420, MAP_W - 420);
+          const y = clamp(MAP_H / 2 + Math.sin(ang) * rad, 420, MAP_H - 420);
+          if (!pointInObstacle(x, y) && (!terrain || Terrain.isBuildable(terrain, x, y, 40))) spot = { x, y };
+        }
+      }
+      if (!spot) spot = { x: MAP_W / 2, y: MAP_H / 2 };
+
+      // the player, parked and unable to be interfered with
+      if (player.riding) { player.riding.driver = null; player.riding = null; }
+      player.x = spot.x; player.y = spot.y;
+      player.alive = true; player.downed = false; player.hp = player.maxHp;
+      player.swapT = 0; player.reloadTimer = 0; player.burstLeft = 0;
+      player.fireCd = 0; player.bloom = 0; player.standT = 0;
+      player.ammo = player.weapon.mag;
+
+      /* Everybody else off the stage and frozen, so nothing walks back into
+         the measurement. Frozen agents are skipped by the update loop, so they
+         cost nothing and stay exactly where they are put. */
+      let parked = 0;
+      for (const a of agents) {
+        if (a === player || a.isVehicle) continue;
+        a.x = -9e4 - parked * 300; a.y = -9e4;
+        a.frozen = true; a.debugInvuln = true;
+        a.hurtBy = null;
+        a.arenaTarget = false;
+        /* Stood up, not merely parked. A downed body goes on bleeding while it
+           sits off-stage, dies, respawns in the middle of the map -- still
+           carrying the `frozen` flag -- and then answers to any probe that
+           looks for "a frozen body that is on the map". That is how the state
+           probe ended up reporting a target 5083px away. */
+        a.downed = false; a.reviveT = 0; a.standT = 0;
+        a.hp = a.maxHp; a.alive = true; a.respawnTimer = 0; a.noRespawn = false;
+        parked++;
+      }
+      // and no live rounds left over from before
+      bullets.length = 0; grenades.length = 0;
+      return { x: Math.round(spot.x), y: Math.round(spot.y), parked,
+        clear: clearAt(spot.x, spot.y, 150, 4) };
+    },
+
+    /* Bring one parked body back, at `dist` along the bearing the player is
+       actually aiming — which is the mouse, since `player.angle` is derived
+       from it every frame and cannot be assigned. */
+    arenaTarget(dist = 90) {
+      /* An *enemy*. Picking the first parked body regardless of side handed
+         the probe a teammate, and friendly fire does nothing -- so the rounds
+         went through it, the hit counter stayed at zero, and the harness
+         reported that hit registration was broken. It was the probe shooting
+         its own squad. */
+      const foe = agents.find(a => a !== player && !a.isVehicle && a.frozen
+        && a.team !== player.team);
+      if (!foe) return null;
+      /* Due east of the player, at a fixed bearing, and the caller is told
+         where that lands on screen so it can put the cursor on it.
+
+         Deriving the bearing from `worldMouse()` did not work: `arena` has
+         just teleported the player, and the camera eases toward them over
+         several frames, so the world point under the cursor is still computed
+         from where the camera *was*. The probe was aiming at a bearing the
+         game would never adopt -- measured, it placed the target due north
+         while the cursor pointed due east. Fixing the bearing and reporting
+         the screen position removes the camera from the question entirely. */
+      const ang = 0;
+      foe.x = player.x + dist;
+      foe.y = player.y;
+      foe.alive = true; foe.downed = false; foe.reviveT = 0; foe.standT = 0;
+      foe.hp = foe.maxHp;
+      foe.debugInvuln = false;              // this one is meant to be shot
+      foe.hurtBy = null;
+      /* Tagged. Selecting it back by position meant any other body that found
+         its way onto the map answered instead. */
+      for (const a of agents) a.arenaTarget = false;
+      foe.arenaTarget = true;
+      /* And it stays dead when it dies. Otherwise it respawns at the ring
+         mid-measurement and the probe reports a target at full health two
+         thousand pixels away -- which reads as "the rounds did nothing". */
+      foe.noRespawn = true;
+      player.ammo = player.weapon.mag; player.reloadTimer = 0; player.swapT = 0;
+      player.bloom = 0;
+      return { name: foe.name, team: foe.team, hp: Math.round(foe.hp),
+        dist: Math.round(Math.hypot(foe.x - player.x, foe.y - player.y)),
+        los: hasLOS(player.x, player.y, foe.x, foe.y),
+        aim: +ang.toFixed(3), pAlive: player.alive,
+        // where to put the cursor so the player is aiming at it
+        sx: Math.round((foe.x - camX) * zoom), sy: Math.round((foe.y - camY) * zoom) };
+    },
+
+    /* State of the arena target, for asserting on afterwards. */
+    arenaTargetState() {
+      const foe = agents.find(a => a.arenaTarget);
+      if (!foe) return null;
+      const want = Math.atan2(foe.y - player.y, foe.x - player.x);
+      return { hp: Math.round(foe.hp), max: foe.maxHp, alive: foe.alive,
+        downed: !!foe.downed, hurtBy: foe.hurtBy ? foe.hurtBy.size : 0,
+        aimErr: +angDiff(player.angle, want).toFixed(3),
+        pAng: +player.angle.toFixed(3), want: +want.toFixed(3),
+        bullets: bullets.length, pAmmo: player.ammo, pSwap: +(player.swapT || 0).toFixed(2),
+        pAlive: player.alive, foeD: Math.round(Math.hypot(foe.x - player.x, foe.y - player.y)),
+        mx: Math.round(input.mx), my: Math.round(input.my), zoom: +zoom.toFixed(2),
+        px: Math.round(player.x), py: Math.round(player.y),
+        fx: Math.round(foe.x), fy: Math.round(foe.y), fFrozen: !!foe.frozen };
+    },
+
+    /* A capture measured with one body on the point and nothing else near it. */
+    arenaCapture(team) {
+      const o = objectives[0];
+      if (!o) return null;
+      /* Not the body the shooting test just killed. `arenaCapture` runs after
+         it, and picking the first frozen agent handed it the corpse -- revived
+         on the spot, but the update loop had already queued its respawn, so it
+         vanished off the point mid-measurement and the capture read as zero. */
+      const foe = agents.find(a => a !== player && !a.isVehicle && a.frozen
+        && !a.arenaTarget && a.alive);
+      if (!foe) return null;
+      o.owner = -1; o.progress = 0; o.capTeam = -1;
+      // the player out of the circle, or it reads as contested
+      player.x = o.x + o.r * 3; player.y = o.y;
+      foe.team = (team === undefined ? (player.team + 1) % Math.max(2, nTeams) : team);
+      foe.x = o.x; foe.y = o.y;
+      foe.alive = true; foe.downed = false; foe.hp = foe.maxHp;
+      foe.frozen = true; foe.debugInvuln = true; foe.respawnTimer = 0;
+      return { name: o.name, team: foe.team, r: Math.round(o.r),
+        who: foe.name, alive: foe.alive };
+    },
+
+    spawnAudit(n = 240) {
+      const out = { seen: 0, close: 0, open: 0, sumEnemy: 0, sumCover: 0, sumWalk: 0, n: 0 };
+      for (let i = 0; i < n; i++) {
+        const team = i % Math.max(1, nTeams);
+        let sp = spawnPoint(team);
+        for (let k = 0; k < 16; k++) {
+          if (!pointInObstacle(sp.x, sp.y) && (!terrain || Terrain.isBuildable(terrain, sp.x, sp.y, 40))) break;
+          sp = spawnPoint(team);
+        }
+        // nearest living enemy, and whether they have a clear line to it
+        let ed = Infinity, seen = false;
+        for (const b of agents) {
+          if (!b.alive || b.isVehicle || b.team === team) continue;
+          const d = Math.hypot(sp.x - b.x, sp.y - b.y);
+          if (d < ed) ed = d;
+          if (d < 1400 && hasLOS(b.x, b.y, sp.x, sp.y)) seen = true;
+        }
+        // nearest thing you could get behind
+        let cd = Infinity;
+        for (const r of structureRects()) {
+          const k2 = kindOf(r);
+          if (k2.passable || k2.height === 'under') continue;
+          const dx = Math.max(r.x - sp.x, 0, sp.x - (r.x + r.w));
+          const dy = Math.max(r.y - sp.y, 0, sp.y - (r.y + r.h));
+          const d = Math.hypot(dx, dy);
+          if (d < cd) cd = d;
+        }
+        // walk to the nearest objective
+        let wd = Infinity;
+        for (const o of objectives) wd = Math.min(wd, Math.hypot(sp.x - o.x, sp.y - o.y));
+        out.n++;
+        if (seen) out.seen++;
+        if (ed < 900) out.close++;
+        if (cd > 300) out.open++;
+        out.sumEnemy += (ed === Infinity ? 4000 : ed);
+        out.sumCover += (cd === Infinity ? 2000 : cd);
+        out.sumWalk += (wd === Infinity ? 0 : wd);
+      }
+      const r = (v) => Math.round(v / Math.max(1, out.n));
+      return { samples: out.n,
+        pctSeenByEnemy: +(out.seen / out.n * 100).toFixed(1),
+        pctEnemyWithin900: +(out.close / out.n * 100).toFixed(1),
+        pctInTheOpen: +(out.open / out.n * 100).toFixed(1),
+        meanEnemyDist: r(out.sumEnemy), meanCoverDist: r(out.sumCover), meanWalkToPoint: r(out.sumWalk) };
+    },
+    botGuns() {
+      const bots = agents.filter(a => !a.isPlayer && !a.isVehicle && a.alive && !a.riding);
+      const two = bots.filter(a => a.guns && a.guns.length === 2);
+      return {
+        bots: bots.length, withTwo: two.length,
+        onSecondary: bots.filter(a => a.gun === 1).length,
+        allPistols: two.every(a => a.guns[1].weapon.type === 'Pistol'),
+        noDupes: two.every(a => a.guns[0].weapon.id !== a.guns[1].weapon.id),
+        sample: two.slice(0, 3).map(a => a.guns.map(g => g.weapon.name).join(' + ')),
+      };
+    },
+    /* Empty every bot's live magazine and stand an enemy next to them, so the
+       choice between reloading and drawing the sidearm actually comes up. */
+    dryBots() {
+      let n = 0;
+      const foes = agents.filter(a => a.alive && !a.isVehicle && !a.isPlayer);
+      for (const a of foes) {
+        const enemy = foes.find(q => q.team !== a.team && q.alive);
+        if (!enemy) continue;
+        enemy.x = a.x + 120; enemy.y = a.y;
+        a.ammo = 0; a.reloadTimer = 0; a.swapT = 0;
+        n++;
+        if (n >= 6) break;
+      }
+      return n;
+    },
+    guns() {
+      if (!player) return null;
+      return {
+        // the live slot's magazine is on the agent, not in the slot -- the
+        // slot copy is only written back when you swap out of it
+        slots: (player.guns || []).map((g, i) => ({ name: g.weapon.name,
+          ammo: i === player.gun ? player.ammo : g.ammo, mag: g.weapon.mag })),
+        live: player.gun, swapT: +(player.swapT || 0).toFixed(2),
+        weapon: player.weapon.name, ammo: player.ammo,
+      };
+    },
+    swapTo(i) { return selectGun(player, i); },
+    perks() {
+      if (!player) return null;
+      return { mine: (player.perks || [player.perk]).slice(),
+        folded: { hp: Perks.mod(player, 'hpPlus', 0), mags: Perks.mod(player, 'magsPlus', 0),
+          speed: Perks.mod(player, 'speedMult', 1), dr: Perks.mod(player, 'dr', 0),
+          dash: Perks.mod(player, 'dashCdMult', 1) },
+        maxHp: player.maxHp, mag: player.weapon.mag };
+    },
+    /* Layout quality, per building. Two numbers matter: how much the room
+       sizes vary (a plan where every room is the same size reads as a grid,
+       not a building), and whether the sizes line up with what the rooms are
+       for. */
+    roomsOf(name) {
+      const b = buildings.find(bb => bb.name === name);
+      if (!b) return null;
+      return (b.rooms || []).map(r => ({ kind: r.kind, w: Math.round(r.w), h: Math.round(r.h) }));
+    },
+    layout() {
+      const out = [];
+      for (const b of buildings) {
+        const rs = (b.rooms || []).filter(r => !r.basement);
+        if (rs.length < 2) continue;
+        const areas = rs.map(r => r.w * r.h);
+        const mean = areas.reduce((a, c) => a + c, 0) / areas.length;
+        const sd = Math.sqrt(areas.reduce((a, c) => a + (c - mean) ** 2, 0) / areas.length);
+        out.push({ name: b.name, rooms: rs.length,
+          cv: +(sd / mean).toFixed(2),
+          smallest: Math.round(Math.min(...areas) / 1000),
+          largest: Math.round(Math.max(...areas) / 1000) });
+      }
+      const cvs = out.map(o => o.cv);
+      return { buildings: out.length,
+        meanVariation: +(cvs.reduce((a, c) => a + c, 0) / cvs.length).toFixed(3),
+        flat: out.filter(o => o.cv < 0.12).length,
+        each: out.sort((a, c) => a.cv - c.cv).slice(0, 10) };
+    },
+    /* Arms Race, from the outside: the ladder that was built, where everybody
+       is on it, and what the player is holding. */
+    race() {
+      const me = player && !player.isVehicle ? {
+        rung: player.rung || 0, weapon: player.weapon.name,
+        ammo: player.ammo, mag: player.weapon.mag, knife: !!player.raceKnife,
+      } : null;
+      return {
+        rungs: RACE_RUNGS, ladder: raceLadder.slice(),
+        first: raceLadder.length ? Weapons.byId[raceLadder[0]].name : null,
+        me,
+        agents: agents.filter(a => !a.isVehicle).map(a =>
+          ({ rung: a.rung, weapon: a.weapon && a.weapon.name })),
+      };
+    },
+    setRungTo(n) { if (player) setRung(player, n); return player ? player.rung : -1; },
+    /* Kill the nearest enemy outright and credit it to the player -- the same
+       path a real kill takes, so the promotion is the one the mode would give
+       rather than one the probe invented. */
+    forceKill() {
+      const foe = agents.find(a => a.alive && !a.isVehicle && !a.riding && a.team !== player.team);
+      if (!foe) return null;
+      killAgent(foe, player, 'body');
+      return { name: foe.name, rung: player.rung };
+    },
     /* Where the dressing actually is: how much of it, of what, and whether it
        is anywhere near something it could plausibly belong to. */
     decorAudit() {
@@ -13596,6 +16016,7 @@ const Game = (() => {
 
   return {
     start, startOnline, isOnline, netDebug, debug,
+    __anchors: (r) => roomAnchors.get(r) || [],
     setupFor,
     /* Called by the settings panel when it closes, so a change to the sight
        options lands on the very next frame instead of the next match. */

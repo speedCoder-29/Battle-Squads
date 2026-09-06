@@ -46,7 +46,8 @@ const Matchmaking = (() => {
     queuing = false;
     const mode = Screens.getSelectedMode();
     const overlay = document.getElementById('overlay-found');
-    document.getElementById('found-mode').textContent = mode === 'domination' ? 'Domination' : 'Elimination';
+    const MODE_NAME = { domination: 'Domination', elimination: 'Elimination', armsrace: 'Arms Race', mission: 'Mission' };
+    document.getElementById('found-mode').textContent = MODE_NAME[mode] || 'Domination';
     // draw squad blips
     const squadsEl = document.getElementById('found-squads');
     squadsEl.innerHTML = '';
@@ -79,11 +80,18 @@ const Matchmaking = (() => {
         /* Deploy behind the loading screen. Game.start builds a whole island
            on the main thread; run bare, it froze the menu and then cut into a
            match already in progress with nothing in between. */
-        Loading.run('Deploying', [
-          ['Generating the island', 0.25, () => {}],
+        /* A mission is briefed on the way in, so the transit is a real beat:
+           the island is generated, then you are shown the job and the map
+           while the boat closes. Every other mode just deploys. */
+        const inbound = mode === 'mission';
+        Loading.run(inbound ? 'Inbound' : 'Deploying', [
+          [inbound ? 'Crossing to the island' : 'Generating the island', 0.25, () => {}],
           ['Placing structures and loot', 0.6, () => Game.start(mode)],
-          ['Briefing the squads', 0.9, () => {}],
-        ]);
+          [inbound ? 'Mission briefing' : 'Briefing the squads', 0.9, () => {
+            if (!inbound) return;
+            try { Loading.brief(Game.debug.mission(), Game.debug.briefWorld()); } catch (e) {}
+          }],
+        ], inbound ? 4200 : 0);
       } else {
         document.getElementById('found-count').textContent = count;
         SFX.click();

@@ -51,7 +51,12 @@ const Combat = (() => {
     { tier: 0, name: 'No Vest',  body: 1.00, speed: 0 },
     { tier: 1, name: 'Vest T1',  body: 0.70, speed: -0.15 },
     { tier: 2, name: 'Vest T2',  body: 0.40, speed: -0.30 },
-    { tier: 3, name: 'Vest T3',  body: 0.10, speed: -0.45 },
+    /* 0.10 was a step change rather than a step: T1 and T2 are worth 1.28x
+       and 1.79x your effective health, and T3 was worth 2.94x — a bigger jump
+       than the two below it put together, and enough that a fight against
+       anyone wearing one was decided by who found the crate. 0.18 keeps T3 the
+       best armour in the game (2.5x) on a ladder that climbs evenly. */
+    { tier: 3, name: 'Vest T3',  body: 0.18, speed: -0.45 },
   ];
   const HELMETS = [
     { tier: 0, name: 'No Helmet', head: 2.00, speed: 0 },
@@ -118,9 +123,18 @@ const Combat = (() => {
      stockpile becomes minutes of invulnerability. 150 is the cap, which is
      ten seconds — long enough to be the comeback the band is clearly for. */
   const ADREN_MAX = 150;
+  /* The damage reduction on the top two bands used to be 0.50 and 0.30.
+
+     Every band already carries a speed, reload or handling bonus and the top
+     one carries a last stand; halving incoming damage on top of that made
+     full adrenaline worth as much as a complete set of armour, and the two
+     multiply. Measured: a T3 set at 100 adrenaline had 538 effective HP,
+     5.4x a bare player, while moving and reloading 50% faster — a state no
+     gun on the roster can kill inside a magazine. 0.35 and 0.25 keep the
+     ladder's shape and leave the boost worth drinking. */
   const ADREN_BANDS = [
-    { at: 100, dr: 0.50, speed: true, reload: true, handling: true, lastStand: true },
-    { at: 75,  dr: 0.30, speed: true, reload: true, handling: true },
+    { at: 100, dr: 0.35, speed: true, reload: true, handling: true, lastStand: true },
+    { at: 75,  dr: 0.25, speed: true, reload: true, handling: true },
     { at: 50,  dr: 0.15, speed: true, reload: true },
     { at: 25,  dr: 0.05, speed: true },
   ];
@@ -160,22 +174,44 @@ const Combat = (() => {
     const type = DAMAGE_TYPES.includes(src.type) ? src.type : 'normal';
     const t = targetOf(target);
     let dmg = src.damage * (t.mult[type] !== undefined ? t.mult[type] : 1);
+    const raw = dmg;                 // before zones, armour, adrenaline and perks
 
     // vehicles have no anatomy — no zones, no armour. Nor does 'true' damage.
     const isInfantry = !target || !target.klass || target.klass === 'infantry';
     let zone = null;
     if (isInfantry && dmg > 0 && type !== 'true') {
       zone = src.zone || rollZone();
-      if (zone === 'head')      dmg *= helmet(target.helmet).head;
+      /* Hard Head reads the tier up, rather than adding a separate
+         multiplier: a perk that says "one tier better" should behave exactly
+         like the tier it names, including at the top where there is no tier
+         above and it therefore does nothing. */
+      const hTier = (target.helmet || 0) + P().mod(target, 'helmetPlus', 0);
+      if (zone === 'head')      dmg *= helmet(hTier).head;
       else if (zone === 'body') dmg *= vest(target.vest).body * zoneMult('body');
       else                      dmg *= zoneMult('limb');
     }
-    dmg *= (1 - adrenaline(target && target.adrenaline, target && target.perk).dr);
+    /* The whole loadout, not the Body slot. `perk` is the legacy single
+       field and holds one of the four passives a body carries -- reading it
+       here meant a Field perk that touches adrenaline did nothing. */
+    dmg *= (1 - adrenaline(target && target.adrenaline,
+      target && (target.perks || target.perk)).dr);
     /* Perks come last, on whatever survived the armour. Kevlar takes a tenth
        off everything; a Flak Jacket halves a blast and nothing else. */
     dmg *= (1 - P().mod(target, 'dr', 0));
     if (type === 'explosive') dmg *= P().mod(target, 'explosiveMult', 1);
-    return { damage: Math.max(0, dmg), zone, type };
+
+    /* A floor under how much of a hit can be taken away.
+
+       Armour, adrenaline and perks are four independent multipliers, and each
+       was tuned on its own — so nobody ever priced the product. Stacked at
+       their maxima they took 88% off a body shot, and every one of them is
+       obtainable in the same match. The cap is deliberately generous: it does
+       not touch any single source, or any ordinary pair of them, and only
+       binds on the full stack. What it guarantees is that a round that hits
+       always does something, and that the best kit in the game multiplies
+       your health by about four rather than by nine. */
+    const floored = Math.max(dmg, raw * MIN_DAMAGE_THROUGH);
+    return { damage: Math.max(0, isInfantry && type !== 'true' ? floored : dmg), zone, type };
   }
 
   /* ---------- structures ----------
@@ -191,6 +227,11 @@ const Combat = (() => {
     6: 'Indestructible',
   };
   const MAX_TOUGHNESS = 6;
+  /* The least a hit may be reduced to, as a share of what it started with:
+     see the floor at the end of resolve(). A limb hit through T3 plate at full
+     adrenaline is still a limb hit through T3 plate — this only stops the
+     product of every reduction in the game from approaching zero. */
+  const MIN_DAMAGE_THROUGH = 0.12;
   /* src: { kind: 'melee'|'bullet'|'explosive'|'heat'|'c4', pierce?, clears?, ap? }
 
      Each rung of the ladder can do everything the rungs below it can. HEAT
@@ -212,7 +253,7 @@ const Combat = (() => {
 
   return {
     DAMAGE_TYPES, TARGETS, HIT_ZONES, VESTS, HELMETS, BAGS, TOUGHNESS_MEANING,
-    MAX_TOUGHNESS, ADREN_MAX,
+    MAX_TOUGHNESS, ADREN_MAX, MIN_DAMAGE_THROUGH,
     targetOf, rollZone, zoneMult, vest, helmet, bag, armorSpeed, adrenaline,
     resolve, canDamageStructure,
     /* `perk` is optional: Beefy adds to the class's base, everyone else gets

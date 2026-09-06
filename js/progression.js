@@ -17,7 +17,15 @@ const Progression = (() => {
     }
     // and perks after those — an older profile has no perk field at all, and
     // one naming a perk that has since been removed should fall back, not break
-    if (!profile.perk || !Perks.PERKS[profile.perk]) { profile.perk = Perks.DEFAULT; changed = true; }
+    /* Normalised rather than merely checked: a profile from an older build
+       carries one perk and no slots, and a hand-edited one could carry three
+       from the same section. `normalise` turns either into one per section. */
+    const want = Perks.normalise(Array.isArray(profile.perks) ? profile.perks : profile.perk);
+    if (!Array.isArray(profile.perks) || want.join() !== profile.perks.join()) {
+      profile.perks = want; changed = true;
+    }
+    // the legacy single field mirrors the Body slot, for older builds
+    if (profile.perk !== want[0]) { profile.perk = want[0]; changed = true; }
     // drop anything that no longer exists in the roster
     for (const id of Object.keys(profile.attachments)) {
       const w = WEAPONS[id];

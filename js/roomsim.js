@@ -54,7 +54,28 @@
      bases and the three landmarks no longer fit on a 6400px board with room
      to walk between them. Everything scattered on the map is placed per unit
      of area, so cover, props and loot scale with this by themselves. */
-  const MAP_SIZES = { domination: { w: 7400, h: 7400 }, elimination: { w: 5200, h: 5200 } };
+  /* Domination grew from 7400 to 8600.
+
+     Measured, the old board came out 69% roof: thirty buildings, several of
+     them eight hundred to fifteen hundred pixels across, on 34 million pixels
+     of land. That is not a map with places on it -- it is one continuous
+     building with gaps, and it defeated the placement code's own spacing
+     rules, which degrade from 120px of clearance to 54 so that a required
+     building always finds somewhere. On a board that full almost every
+     placement fell through to the worst tier.
+
+     The alternative was deleting buildings, and every one of them carries room
+     types and loot tables with it. Giving the same content half again as much
+     ground costs nothing but a slightly longer generate, which now happens
+     behind a loading screen anyway. */
+  const MAP_SIZES = { domination: { w: 8600, h: 8600 }, elimination: { w: 5200, h: 5200 },
+    /* Mission needs a long approach. It inherited the 5200 elimination board
+       by omission, and with a garrison ringed out to 2100px on a board whose
+       half-width is 2600 there was nowhere to land that was not already inside
+       the compound -- the insertion put the squad 1248px from the objective
+       with nine guards looking at them. An infiltration needs somewhere to
+       infiltrate from. */
+    mission: { w: 7400, h: 7400 } };
   /* How many squads each mode is fought between, matching TEAM_SETUP in
      game.js. This used to be the literal 4 in three separate places — the
      team-balancing loop, the score array and the spawn ring — so an
@@ -149,7 +170,7 @@
     if (relief > 0) base = Math.min(W.WEIGHT_FREE, base + (W.WEIGHT_FREE - base) * relief);
 
     let spd = base * p.cls.speed * C.armorSpeed(p)
-      * C.adrenaline(p.adrenaline, p.perk).speed
+      * C.adrenaline(p.adrenaline, p.perks || p.perk).speed
       * PK().mod(p, 'speedMult', 1);            // Jogger, flat and always on
     if (ads) {
       spd *= 0.55;
@@ -168,7 +189,10 @@
     const speed = typeof surf === 'number' ? surf : surf.speed;
     if (typeof speed !== 'number' || !(speed > 0)) return 1;
     // a diver swims as fast as they walk; a river is no longer a wall
-    if (surf.swim && p && p.perk === 'diver') return 1;
+    // through `has`, so it sees all three rather than only the first
+    // through the mod, not the id: the perk declares `swim` and that is the
+    // thing worth reading, so a second swimming perk would work for free
+    if (surf.swim && PERK.mod(p, 'swim', false)) return 1;
     return speed;
   }
 
@@ -198,7 +222,12 @@
   }
   /* A Mule counts as wearing one bag better than they are, exactly as
      carryTier() does on the client. */
-  const carryTier = (p) => Math.min(3, (p.bag || 0) + (p.perk === 'mule' ? 1 : 0));
+  /* Bag tier only. This used to add one for a `mule` perk, and there has
+     never been a perk called mule -- so the branch was dead, and worse, it was
+     a trap: the client's carryTier is bag-only, so the day somebody added a
+     mule perk the room and the client would have disagreed about how much
+     everyone could carry, silently. */
+  const carryTier = (p) => Math.min(3, p.bag || 0);
   /* Put `n` of something into a slot, returning what wouldn't fit. Swapping an
      occupied slot for a different item drops the old contents rather than
      binning them, which is what the client does too. */
@@ -595,6 +624,28 @@
       if (typeof msg.seq === 'number' && msg.seq > p.seq) p.seq = msg.seq;
       p.lastSeen = now();
     }
+    /* Change weapons. The room owns which gun you are holding for the same
+       reason it owns your health: two clients disagreeing about it means one
+       of them is computing damage off the wrong barrel. The live magazine goes
+       back into the slot it came from, an in-flight reload is cancelled, and
+       the gun takes time to come up -- all of it mirrored from game.js so the
+       client's prediction and the room's answer describe the same swap. */
+    swapGun(p, i) {
+      if (!p || !p.alive || !p.guns || p.guns.length < 2) return false;
+      i = Math.max(0, Math.min(p.guns.length - 1, i | 0));
+      if (i === p.gun || (p.swapT || 0) > 0) return false;
+      p.guns[p.gun].ammo = p.ammo;
+      p.gun = i;
+      p.weapon = p.guns[i].weapon;
+      p.ammo = p.guns[i].ammo;
+      p.reloadUntil = 0; p.reloading = false;
+      p.burstLeft = 0;
+      // a deadline, not a countdown -- the room measures everything else the
+      // same way, and a countdown would need a tick that does not exist here
+      p.swapUntil = now() + (450 + Math.min(500, (p.weapon.weight || 0) * 20));
+      return true;
+    }
+
     reload(p) {
       if (!p || !p.alive) return false;
       /* The magazine fills when the reload *ends* — step() does that. Filling
@@ -610,8 +661,8 @@
        charge everyone the flat table figure, so a Quick Hands player watched
        their own reload finish and then stood there unable to fire. */
     reloadMs(p) {
-      return p.weapon.reloadMs / C.adrenaline(p.adrenaline, p.perk).reload
-        * (p.perk === 'quickhands' ? 0.75 : 1);
+      return p.weapon.reloadMs / C.adrenaline(p.adrenaline, p.perks || p.perk).reload
+        * PERK.mod(p, 'reloadMult', 1);
     }
 
     /* ================= CONSUMABLES =================
@@ -806,11 +857,11 @@
       if (!c || c.opened) return false;
       if (dist2(p.x, p.y, c.x, c.y) > CRATE_REACH * CRATE_REACH) return false;
       // some crates are gated behind a perk — a Swimming Pool wants a Diver
-      if (c.needs && p.perk !== c.needs) return false;
+      if (c.needs && !PERK.has(p, c.needs)) return false;
       c.opened = true;
       this.grantLoot(p, I.rollLoot(c.tier));
       // a Scavenger finds the thing at the bottom of the box
-      if (p.perk === 'scavenger') this.grantLoot(p, I.rollLoot(c.tier));
+      if (PERK.has(p, 'scavenger')) this.grantLoot(p, I.rollLoot(c.tier));
       this.pushEvent({ e: 'crate', i: idx | 0, by: p.id });
       return true;
     }
@@ -956,13 +1007,37 @@
          meant the two disagreed about damage, magazine size and — because a
          suppressor or a bipod changes the weight — how fast they walk. */
       const base = W.byId[info.weapon] || W.byId[W.default];
-      const perk = (info.perk && String(info.perk).slice(0, 16)) || 'none';
+      /* Three perks off the join, run through `normalise` -- which is the
+         room's whole job here. A client can send anything it likes; the room
+         is the thing that decides you cannot arrive wearing three body perks,
+         and it has to decide it the same way the client's own picker does or
+         the two disagree about how much health you have. */
+      const raw = Array.isArray(info.perks)
+        ? info.perks.slice(0, 6).map(x => String(x).slice(0, 16))
+        : (info.perk ? [String(info.perk).slice(0, 16)] : []);
+      const perks = PK().normalise(raw);
+      const perk = perks[0];
       const built = (info.attachments || info.ammo)
         ? W.configure(base, { attachments: info.attachments, ammo: info.ammo })
         : base;
       // Bullet Strap rewrites the magazine, so it has to be applied here as
       // well as on the client or the two disagree about how many rounds you have
-      const weapon = PK().applyToWeapon(built, perk);
+      /* The class passive, granted here as well. The room computes speed,
+         health and magazine size for itself; if it does not know a Scout is
+         eight per cent quicker, every Scout in the match rubber-bands. */
+      const cn = (K.forWeapon(built) || {}).name;   // K is Classes, see the module head
+      const full = PK().loadout(perks, cn);
+      const weapon = PK().applyToWeapon(built, full);
+      /* The sidearm, built the same way. The room has to hold both or a client
+         that switches is firing a gun the room has never heard of -- it would
+         keep computing damage, magazine size and walking speed off the primary
+         while the player was holding a pistol. */
+      const secBase = info.secondary && W.byId[info.secondary];
+      const guns = [{ weapon, ammo: weapon.mag, reloadTimer: 0 }];
+      if (secBase && secBase.id !== weapon.id) {
+        const sw = PK().applyToWeapon(secBase, perks);
+        guns.push({ weapon: sw, ammo: sw.mag, reloadTimer: 0 });
+      }
       const cls = K.forWeapon(weapon);
       // a party is handed a team so it stays together; otherwise the smallest
       // team wins the new player, keeping squads even
@@ -973,12 +1048,13 @@
       const p = {
         id, send, name: (info.name || 'Operator').slice(0, 16), team,
         x: spawn.x, y: spawn.y, angle: 0,
-        hp: C.maxHpFor('infantry', perk), maxHp: C.maxHpFor('infantry', perk),
+        hp: C.maxHpFor('infantry', perks), maxHp: C.maxHpFor('infantry', perks),
         klass: 'infantry', vest: 0, helmet: 0, bag: 0, adrenaline: 0,
         /* The perk changes numbers the client computes for itself — swim
            speed, armour weight, magazine size, max HP — so the room has to
            hold the same one or the two drift apart. */
-        perk,
+        perk, perks: full,
+        guns, gun: 0, swapUntil: 0,
         weaponId: weapon.id, weapon, cls,
         ammo: weapon.mag, reloadUntil: 0, fireCd: 0,
         alive: true, respawnAt: 0, kills: 0, deaths: 0,
@@ -1208,7 +1284,7 @@
 
         // adrenaline heals, and spends itself doing it
         if (p.adrenaline > 0) {
-          const adr = C.adrenaline(p.adrenaline, p.perk);
+          const adr = C.adrenaline(p.adrenaline, p.perks || p.perk);
           if (p.hp < p.maxHp) {
             p.hp = Math.min(p.maxHp, p.hp + adr.regen * dt);
             p.adrenaline = Math.max(0, p.adrenaline - adr.burn * dt);
@@ -1218,6 +1294,7 @@
         // firing — not while you have a bottle to your lips
         p.fireCd -= dt * 1000;
         if (p.channel) continue;
+        if (now() < p.swapUntil) continue;      // still bringing the new gun up
         if (now() < p.reloadUntil) continue;
         /* A reload finishes here, not where it starts. Filling the magazine at
            the moment the reload began meant the ammo counter — which the
@@ -1975,6 +2052,7 @@
         case 'crate': return this.openCrate(p, msg.i);
         case 'token': return this.callVehicle(p, msg.x, msg.y);
         case 'ride': return this.useVehicle(p);
+        case 'swap': return this.swapGun(p, msg.i);
         case 'mark': return this.mark(p, msg.x, msg.y, msg.kind);
         case 'emote': return this.emote(p, msg.id);
         case 'bye': this.leave(p.id); return true;

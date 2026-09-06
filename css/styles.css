@@ -466,7 +466,13 @@ p  { text-wrap: pretty; }
    positive tracking to stay even. */
 .play-hub__title { font-size: clamp(30px, 3vw, 42px); font-weight: 800; letter-spacing: 0.01em; line-height: 1.02; }
 .play-hub__sub { color: var(--muted); margin-top: 6px; }
-.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; width: 100%; max-width: 640px; }
+/* Three modes, three columns. Two columns left the third card alone on a row
+   of its own, which reads as an afterthought rather than as a choice. */
+.mode-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 14px; width: 100%; max-width: 860px;
+}
+@media (max-width: 1180px) { .mode-grid { grid-template-columns: 1fr 1fr; max-width: 640px; } }
 .mode-card {
   position: relative; text-align: left;
   background: var(--panel); border: 1px solid var(--line);
@@ -1567,4 +1573,173 @@ p  { text-wrap: pretty; }
 
 @media (max-width: 720px) {
   .tour__card { width: min(94vw, 400px); }
+}
+
+/* ---------- weapon slots ----------
+   Two guns, stacked, the live one lit and the other dim under it — the
+   arrangement every shooter has used for twenty years, and the only one that
+   answers "what am I holding, and what can I switch to" without a menu.
+   The slot number is on the chip because that is the key that selects it. */
+/* column-reverse, so the live gun stays exactly where the single-line
+   readout used to sit and the spare grows upward from it. Laid out the other
+   way the block pushed the second row off the bottom of the screen and across
+   the item chips. */
+.hud__guns { display: flex; flex-direction: column-reverse; gap: 4px; align-items: flex-end; }
+.gunslot {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 12px; border-radius: 10px;
+  background: rgba(0,0,0,0.34); border: 1px solid transparent;
+  opacity: 0.5; transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.gunslot.is-live {
+  opacity: 1;
+  background: rgba(0,0,0,0.5); border-color: var(--line);
+}
+.gunslot.is-empty { opacity: 0.22; }
+.gunslot__key {
+  font: 700 10px/1 'Azeret Mono', ui-monospace, monospace;
+  padding: 3px 5px; border-radius: 4px;
+  background: rgba(255,255,255,0.10); color: var(--muted);
+}
+.gunslot.is-live .gunslot__key { background: var(--accent, #e8763f); color: #12161f; }
+.gunslot__name { font-size: 13px; font-weight: 700; letter-spacing: 0.2px; }
+.gunslot.is-live .gunslot__name { font-size: 15px; }
+.gunslot__ammo { font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
+.gunslot__ammo b { font-size: 15px; font-weight: 900; transition: color 140ms ease; }
+.gunslot.is-live .gunslot__ammo b { font-size: 20px; }
+.gunslot__ammo span { color: var(--muted); }
+/* Running dry, on the live slot only — the spare's count is information, not
+   an alarm. Amber under a quarter magazine, red at zero. */
+.gunslot.is-live .gunslot__ammo b[data-ammo="low"]   { color: #ffb038; animation: ammo-pulse 900ms ease-in-out infinite; }
+.gunslot.is-live .gunslot__ammo b[data-ammo="empty"] { color: #ff5a5f; animation: ammo-pulse 420ms ease-in-out infinite; }
+/* Mid-swap: the incoming slot lights up before its ammo means anything. */
+.gunslot.is-swapping { border-color: rgba(255,207,74,0.7); }
+
+/* A perk you were given rather than chose: shown lit, but plainly not a
+   button. No hover, no pointer, and it never dims like an unpicked one. */
+.gs-perk.is-locked { cursor: default; opacity: 1; }
+.gs-perk.is-locked:hover { background: inherit; }
+
+/* ============================================================
+   HOME: the moving chart, the mode art, and how it all arrives
+   ============================================================ */
+
+/* The backdrop canvas fills the home screen and sits under everything. The
+   screen itself needs a stacking context or the panels' own backdrop-filter
+   composites against the page instead of against this. */
+.screen--home { position: relative; isolation: isolate; }
+.home-backdrop {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  z-index: 0; pointer-events: none;
+  /* Faded at the edges so it reads as something the interface is sitting on
+     rather than a rectangle behind it. */
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 45%, #000 35%, transparent 100%);
+          mask-image: radial-gradient(120% 100% at 50% 45%, #000 35%, transparent 100%);
+  /* Raised from 0.85: at three columns the cards cover more of the middle,
+     and the chart had gone from quiet to invisible. Still well under the
+     panels, which is where it belongs. */
+  opacity: 1;
+}
+.screen--home > .topbar,
+.screen--home > .home { position: relative; z-index: 1; }
+
+/* ---------- mode card artwork ----------
+   Line art rather than a glyph. An emoji is somebody else's drawing at
+   somebody else's weight, and three of them side by side never look like a
+   set; these share a stroke width and take the accent, so they do. */
+.mode-card__art { width: 46px; height: 46px; display: block; overflow: visible; }
+.mode-card__art .mA,
+.mode-card__art .mB {
+  fill: none; stroke-linecap: round; stroke-linejoin: round;
+}
+.mode-card__art .mA { stroke: var(--text); stroke-width: 2.4; opacity: 0.9; }
+.mode-card__art .mB { stroke: var(--muted); stroke-width: 2; }
+.mode-card__art .mF { fill: var(--accent, #e8763f); stroke: none; }
+/* The selected mode's art lights up; the others stay quiet. */
+.mode-card.is-selected .mode-card__art .mA { stroke: var(--accent, #e8763f); opacity: 1; }
+.mode-card:hover .mode-card__art { transform: translateY(-1px) scale(1.04); }
+.mode-card__art { transition: transform 220ms cubic-bezier(.2,.8,.3,1); }
+
+/* ---------- arrival ----------
+   Everything used to appear at once, fully formed, which reads as a page load
+   rather than as an interface. A short stagger costs nothing and makes the
+   screen feel assembled. Transform and opacity only, so it is compositor
+   work and never touches layout. */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.screen--home.is-live .panel,
+.screen--home.is-live .play-hub,
+.screen--home.is-live .mode-card,
+.screen--home.is-live .queue-bar {
+  animation: rise-in 420ms cubic-bezier(.2,.8,.3,1) both;
+}
+.screen--home.is-live .panel--news   { animation-delay: 40ms; }
+.screen--home.is-live .play-hub      { animation-delay: 80ms; }
+.screen--home.is-live .mode-card:nth-child(1) { animation-delay: 140ms; }
+.screen--home.is-live .mode-card:nth-child(2) { animation-delay: 190ms; }
+.screen--home.is-live .mode-card:nth-child(3) { animation-delay: 240ms; }
+.screen--home.is-live .queue-bar     { animation-delay: 300ms; }
+
+/* The deploy button is the thing the screen is for, so it gets a slow breath
+   when nothing else is happening — enough to draw the eye, not enough to
+   nag. It stops the moment you are queuing. */
+@keyframes deploy-breathe {
+  0%, 100% { box-shadow: 0 8px 26px rgba(232,118,63,0.20); }
+  50%      { box-shadow: 0 8px 34px rgba(232,118,63,0.42); }
+}
+.btn--play:not(.is-queuing) { animation: deploy-breathe 3.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .screen--home.is-live .panel,
+  .screen--home.is-live .play-hub,
+  .screen--home.is-live .mode-card,
+  .screen--home.is-live .queue-bar { animation: none; }
+  .btn--play:not(.is-queuing) { animation: none; }
+  .mode-card__art { transition: none; }
+}
+
+/* Three columns made the cards narrower, and the meta line broke mid-pair —
+   "4 squads / of 3" across two lines reads as two facts. Each fact is now
+   unbreakable and the separators are the only place a wrap can happen. */
+.mode-card__meta { flex-wrap: wrap; row-gap: 2px; }
+.mode-card__meta > span { white-space: nowrap; }
+/* The card body sets its own rhythm rather than inheriting the wide-card one. */
+.mode-card__body p { text-wrap: pretty; }
+
+
+/* ---------- mission briefing ----------
+   Shown on the way in, on the deployment screen. Two columns: what the job is,
+   and where you are going. The map is drawn from the world that has just been
+   generated, so it is the island you are about to land on rather than a
+   picture of an island. */
+.brief {
+  display: grid; grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 22px; align-items: center;
+  margin-top: 22px; padding-top: 20px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+.brief__tag {
+  display: inline-block; margin-bottom: 8px;
+  font: 800 10px/1 'Azeret Mono', ui-monospace, monospace; letter-spacing: 2px;
+  padding: 4px 7px; border-radius: 4px;
+  background: var(--accent, #e8763f); color: #12161f;
+}
+.brief__line {
+  margin: 0 0 12px; font-size: 15px; line-height: 1.45; color: var(--text);
+  text-wrap: pretty;
+}
+.brief__notes { margin: 0; padding-left: 16px; }
+.brief__notes li {
+  font-size: 12px; line-height: 1.6; color: var(--muted); text-wrap: pretty;
+}
+.brief__map {
+  width: 260px; height: 260px; border-radius: 10px;
+  background: rgba(0,0,0,0.35); border: 1px solid var(--line);
+}
+@media (max-width: 760px) {
+  .brief { grid-template-columns: 1fr; }
+  .brief__map { width: 100%; height: auto; aspect-ratio: 1; }
 }

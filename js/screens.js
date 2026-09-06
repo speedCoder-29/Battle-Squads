@@ -24,6 +24,22 @@ const Screens = (() => {
   function show(name) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('is-active'));
     document.getElementById('screen-' + name).classList.add('is-active');
+    /* The home screen's backdrop only runs while you are looking at it -- a
+       canvas animating behind a match is frames spent on something nobody can
+       see. `is-live` is what the entrance animations key off, and it is set on
+       the next frame so they actually play rather than being applied to an
+       element that is already in its final state. */
+    const home = document.getElementById('screen-home');
+    if (typeof Backdrop !== 'undefined' && home) {
+      if (name === 'home') {
+        Backdrop.start(); Backdrop.resize();
+        home.classList.remove('is-live');
+        requestAnimationFrame(() => requestAnimationFrame(() => home.classList.add('is-live')));
+      } else {
+        Backdrop.stop();
+        home.classList.remove('is-live');
+      }
+    }
   }
 
   function enterHome() {
@@ -314,8 +330,15 @@ const Screens = (() => {
     set('kit-class', cls);
     const w = lo.weapon && typeof Weapons !== 'undefined' && Weapons.byId[lo.weapon];
     set('kit-weapon', w ? w.name : (lo.weapon || 'Class default'));
-    const perk = lo.perk && typeof Perks !== 'undefined' && Perks.byId(lo.perk);
-    set('kit-perk', perk ? perk.name : 'None');
+    /* All three, not just the first. The strip is the one-line summary of
+       what you are deploying with, and showing a third of it is worse than
+       showing none -- it reads as "you have one perk". */
+    if (typeof Perks !== 'undefined') {
+      const names = Perks.normalise(lo.perks || lo.perk)
+        .map(id => (id === 'none' ? null : Perks.byId(id).name))
+        .filter(Boolean);
+      set('kit-perk', names.length ? names.join(' · ') : 'None');
+    } else set('kit-perk', 'None');
   }
 
   /* ---- the pointer-lit edge ----
@@ -612,10 +635,31 @@ const Screens = (() => {
         ${delta('PEN', (built.penetration || 0) * 100, 0, false, '%')}
       </div>
 
+      ${(() => {
+        /* The one you did not pick. Your class comes from the gun in your
+           hands, and the class brings a passive with it -- so this changes the
+           moment you change your primary, and the loadout screen has to say
+           so or it looks like a bug. Shown locked because it is. */
+        const cp = Perks.forClass(base.className);
+        if (!cp) return '';
+        const d = Perks.byId(cp);
+        return `
       <div class="gs-section">
-        <h4>Perk <span class="gs-hint">one only — carried whatever you're holding</span></h4>
-        <div class="gs-row" id="gs-perks"></div>
-      </div>
+        <h4>${base.className} perk <span class="gs-hint">granted by your primary &mdash; not a choice</span></h4>
+        <div class="gs-row">
+          <div class="gs-mod gs-perk is-on is-locked">
+            <span class="gs-mod-head">${d.icon} ${d.name}</span>
+            <span class="gs-mod-buff">${d.effects.map(x => '▲ ' + x).join('<br>')}</span>
+            <span class="gs-perk-blurb">${d.blurb}</span>
+          </div>
+        </div>
+      </div>`;
+      })()}
+      ${Perks.SECTIONS.map(sec => `
+      <div class="gs-section">
+        <h4>${sec.name} perk <span class="gs-hint">${sec.blurb} one from each section</span></h4>
+        <div class="gs-row" id="gs-perks-${sec.id}"></div>
+      </div>`).join('')}
 
       <div class="gs-section">
         <h4>Skin <span class="gs-hint">cosmetic only — never changes a stat</span></h4>
@@ -635,24 +679,36 @@ const Screens = (() => {
       </div>` : ''}
     `;
 
-    // --- perks ---
-    /* Not weapon-specific: you carry one perk, whatever you're holding. It
-       lives in the gunsmith panel because that is where a loadout decision
-       belongs, but it is saved on the profile rather than per weapon. */
-    const perkRow = host.querySelector('#gs-perks');
-    if (perkRow) Perks.list.forEach(perk => {
-      const on = (p.perk || Perks.DEFAULT) === perk.id;
-      const b = document.createElement('button');
-      b.className = 'gs-mod gs-perk' + (on ? ' is-on' : '');
-      b.innerHTML = `
-        <span class="gs-mod-head">${perk.icon} ${perk.name}${perk.extra ? '<i class="gs-perk-x">EXTRA</i>' : ''}</span>
-        <span class="gs-mod-buff">${perk.effects.map(x => '▲ ' + x).join('<br>') || '—'}</span>
-        <span class="gs-perk-blurb">${perk.blurb}</span>`;
-      b.addEventListener('click', () => {
-        p.perk = on ? Perks.DEFAULT : perk.id;
-        DB.saveProfile(p); SFX.click(); renderGunsmith();
-      });
-      perkRow.appendChild(b);
+    /* --- perks ---
+       Not weapon-specific: you carry three, whatever you are holding. They
+       live in the gunsmith panel because that is where a loadout decision
+       belongs, but they are saved on the profile rather than per weapon.
+
+       One picker per section, and picking inside a section replaces that
+       slot rather than adding to a pile -- which is the whole reason the
+       sections exist, and has to be visible in the interface or it is just an
+       invisible rule that eats your choices. */
+    const picked = Perks.normalise(p.perks || p.perk);
+    Perks.SECTIONS.forEach((sec, slot) => {
+      const row = host.querySelector('#gs-perks-' + sec.id);
+      if (!row) return;
+      for (const perk of Perks.inSection(sec.id)) {
+        const on = picked[slot] === perk.id;
+        const b = document.createElement('button');
+        b.className = 'gs-mod gs-perk' + (on ? ' is-on' : '');
+        b.innerHTML = `
+          <span class="gs-mod-head">${perk.icon} ${perk.name}${perk.extra ? '<i class="gs-perk-x">EXTRA</i>' : ''}</span>
+          <span class="gs-mod-buff">${perk.effects.map(x => '▲ ' + x).join('<br>') || '—'}</span>
+          <span class="gs-perk-blurb">${perk.blurb}</span>`;
+        b.addEventListener('click', () => {
+          const next = picked.slice();
+          next[slot] = on ? 'none' : perk.id;      // clicking the live one clears it
+          p.perks = Perks.normalise(next);
+          p.perk = p.perks[0];                      // legacy mirror, see js/storage.js
+          DB.saveProfile(p); SFX.click(); renderGunsmith();
+        });
+        row.appendChild(b);
+      }
     });
 
     // --- skins ---
@@ -814,9 +870,11 @@ const Screens = (() => {
       weapons.forEach(w => {
         const unlocked = p.unlockedWeapons.includes(w.id);
         const equipped = p.weapon === w.id;
+        const isSecond = p.secondary === w.id;
         const wSkin = Skins.get(Skins.equipped(p, w.id));
         const card = document.createElement('button');
-        card.className = 'weapon-card' + (equipped ? ' is-equipped' : '') + (unlocked ? '' : ' is-locked');
+        card.className = 'weapon-card' + (equipped ? ' is-equipped' : '')
+          + (isSecond ? ' is-secondary' : '') + (unlocked ? '' : ' is-locked');
         card.style.setProperty('--skin', wSkin.accent);
         card.innerHTML = `
           <div class="weapon-card__head">
@@ -831,10 +889,36 @@ const Screens = (() => {
             <span>🔧 ${w.mag} mag</span><span>⏱ ${(w.reloadMs / 1000).toFixed(1)}s</span><span>⚖ ${w.weight}</span><span>↔ ${Math.round((w.effectiveRange || w.range) / 50)}t</span>
           </div>
           ${ratingBadges(w)}
-          <div class="weapon-card__badge">${equipped ? '✓ EQUIPPED' : unlocked ? 'Equip' : '🔒 Locked'}</div>`;
-        if (unlocked) card.addEventListener('click', () => {
-          p.weapon = w.id; DB.saveProfile(p); SFX.click(); renderLoadout();
-        });
+          <div class="weapon-card__badge">${equipped ? '✓ PRIMARY' : isSecond ? '✓ SECONDARY' : unlocked ? 'Equip' : '🔒 Locked'}</div>
+          ${unlocked ? `<div class="weapon-card__slots">
+            <button class="wslot" data-slot="1"${equipped ? ' disabled' : ''}>Primary</button>
+            <button class="wslot" data-slot="2"${isSecond ? ' disabled' : ''}>Secondary</button>
+          </div>` : ''}`;
+        /* Two buttons rather than one click that guesses. A weapon can go in
+           either hand and the interface has to let you say which -- clicking a
+           card to mean "primary" and something else to mean "secondary" is the
+           kind of hidden rule that makes people think a feature is broken.
+           The same gun in both slots is refused: two of the same rifle is one
+           rifle and a wasted slot. */
+        if (unlocked) {
+          card.querySelectorAll('.wslot').forEach((btn) => {
+            btn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              if (btn.dataset.slot === '1') {
+                if (p.secondary === w.id) p.secondary = null;
+                p.weapon = w.id;
+              } else {
+                if (p.weapon === w.id) return;
+                p.secondary = p.secondary === w.id ? null : w.id;
+              }
+              DB.saveProfile(p); SFX.click(); renderLoadout();
+            });
+          });
+          card.addEventListener('click', () => {
+            if (p.secondary === w.id) p.secondary = null;
+            p.weapon = w.id; DB.saveProfile(p); SFX.click(); renderLoadout();
+          });
+        }
         row.appendChild(card);
       });
       section.appendChild(row);

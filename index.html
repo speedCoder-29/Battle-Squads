@@ -87,6 +87,9 @@
 
   <!-- ============ HOME / MAIN MENU SCREEN ============ -->
   <section id="screen-home" class="screen screen--home">
+    <!-- The moving chart behind the menus (js/backdrop.js). Decorative, so it
+         is hidden from assistive tech and sits under everything. -->
+    <canvas id="home-backdrop" class="home-backdrop" aria-hidden="true"></canvas>
     <!-- Top bar -->
     <header class="topbar">
       <div class="brand brand--inline">
@@ -186,7 +189,15 @@
 
         <div class="mode-grid">
           <button class="mode-card is-selected" data-mode="domination">
-            <div class="mode-card__icon">🚩</div>
+            <div class="mode-card__icon">
+              <svg class="mode-card__art" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="34" r="20" class="mA"/>
+                <circle cx="32" cy="34" r="12" class="mA"/>
+                <path d="M24 34h16" class="mA"/><path d="M32 26v16" class="mA"/>
+                <path d="M32 30V10" class="mB"/>
+                <path d="M32 11l16 5-16 5z" class="mF"/>
+              </svg>
+            </div>
             <div class="mode-card__body">
               <h3>Domination</h3>
               <p>Capture and hold objectives across a large map. First squad to the score cap wins.</p>
@@ -198,7 +209,16 @@
           </button>
 
           <button class="mode-card" data-mode="elimination">
-            <div class="mode-card__icon">💀</div>
+            <div class="mode-card__icon">
+              <svg class="mode-card__art" viewBox="0 0 64 64" aria-hidden="true">
+                <path d="M14 50V30a18 18 0 0 1 36 0v20" class="mA"/>
+                <path d="M14 50h36" class="mA"/>
+                <circle cx="24" cy="34" r="4" class="mF"/>
+                <circle cx="40" cy="34" r="4" class="mF"/>
+                <path d="M27 44h10" class="mB"/>
+                <path d="M30 44v6M34 44v6" class="mB"/>
+              </svg>
+            </div>
             <div class="mode-card__body">
               <h3>Elimination</h3>
               <p>Last squad standing. Wipe every other team to win — no respawns.</p>
@@ -207,6 +227,45 @@
               <span id="mode-meta-elimination">6 squads of 4</span><span>•</span><span>~6 min</span>
             </div>
             <div class="mode-card__check">✓</div>
+          </button>
+          <button class="mode-card" data-mode="mission">
+            <div class="mode-card__icon">
+              <svg class="mode-card__art" viewBox="0 0 64 64" aria-hidden="true">
+                <path d="M8 44l14-6 12 5 22-9" class="mA"/>
+                <path d="M8 52l14-6 12 5 22-9" class="mB"/>
+                <circle cx="44" cy="22" r="7" class="mA"/>
+                <path d="M44 8v6M44 30v6M30 22h6M52 22h6" class="mB"/>
+                <circle cx="44" cy="22" r="2.5" class="mF"/>
+              </svg>
+            </div>
+            <div class="mode-card__body">
+              <h3>Mission</h3>
+              <p>Land unseen, take the asset or the man, and get back to the boat before they find you.</p>
+            </div>
+            <div class="mode-card__meta">
+              <span id="mode-meta-mission">4 operators</span><span>&bull;</span><span>garrison</span><span>&bull;</span><span>10 min</span>
+            </div>
+            <div class="mode-card__check">&check;</div>
+          </button>
+
+          <button class="mode-card" data-mode="armsrace">
+            <div class="mode-card__icon">
+              <svg class="mode-card__art" viewBox="0 0 64 64" aria-hidden="true">
+                <path d="M10 46h20l4-8h20" class="mA"/>
+                <path d="M10 46v-6M18 46v-10M26 46v-14" class="mB"/>
+                <path d="M40 38l8-6 6 4" class="mA"/>
+                <circle cx="54" cy="36" r="3" class="mF"/>
+                <path d="M14 22h14l-3 6H17z" class="mF"/>
+              </svg>
+            </div>
+            <div class="mode-card__body">
+              <h3>Arms Race</h3>
+              <p>Every kill hands you the next gun on the ladder. Work through all twelve first &mdash; the last one is a knife.</p>
+            </div>
+            <div class="mode-card__meta">
+              <span id="mode-meta-armsrace">4 squads of 3</span><span>&bull;</span><span>medium map</span><span>&bull;</span><span>~6 min</span>
+            </div>
+            <div class="mode-card__check">&check;</div>
           </button>
         </div>
 
@@ -289,7 +348,7 @@
         <div class="kitstrip" id="kitstrip">
           <div class="kitstrip__item"><span class="kitstrip__k">Class</span><b id="kit-class">—</b></div>
           <div class="kitstrip__item"><span class="kitstrip__k">Weapon</span><b id="kit-weapon">—</b></div>
-          <div class="kitstrip__item"><span class="kitstrip__k">Perk</span><b id="kit-perk">—</b></div>
+          <div class="kitstrip__item"><span class="kitstrip__k">Perks</span><b id="kit-perk">—</b></div>
           <button class="btn btn--ghost btn--tiny" data-nav="loadout">Change loadout</button>
         </div>
 
@@ -507,9 +566,14 @@
         <div class="setting">
           <label>Crosshair</label>
           <select id="set-crosshair">
-            <option value="dynamic">Dynamic (opens with spread)</option>
+            <option value="dynamic">Dynamic cross (opens with spread)</option>
+            <option value="circle">Dynamic ring (opens with spread)</option>
+            <option value="chevron">Chevron (opens with spread)</option>
             <option value="cross">Static cross</option>
+            <option value="tee">Tee &mdash; no top arm</option>
+            <option value="brackets">Corner brackets</option>
             <option value="dot">Dot</option>
+            <option value="pip">Ring</option>
             <option value="system">System cursor</option>
           </select>
         </div>
@@ -522,9 +586,16 @@
           <select id="set-chcolor">
             <option value="#7ff2c1">Mint</option>
             <option value="#ffffff">White</option>
+            <option value="#111318">Black</option>
             <option value="#ffe14a">Yellow</option>
+            <option value="#ff9d2e">Amber</option>
             <option value="#ff4b5c">Red</option>
+            <option value="#ff6ad5">Magenta</option>
+            <option value="#c46bff">Violet</option>
             <option value="#39c0ff">Cyan</option>
+            <option value="#3d7bff">Blue</option>
+            <option value="#4be08a">Green</option>
+            <option value="#b6ff3a">Lime</option>
           </select>
         </div>
         <!-- Keybinds. Rows are generated by js/screens.js from Controls.ACTIONS
@@ -620,6 +691,20 @@
       <p class="loading__sub" id="loading-sub">Building the island</p>
       <div class="loading__bar"><i id="loading-fill"></i></div>
       <p class="loading__tip" id="loading-tip"></p>
+      <!-- Mission only: the job and the island, read on the way in. This is
+           the only time the map is available before you are standing on it. -->
+      <div class="brief" id="loading-brief" hidden>
+        <div class="brief__text">
+          <span class="brief__tag" id="brief-tag">RETRIEVAL</span>
+          <p class="brief__line" id="brief-line"></p>
+          <ul class="brief__notes">
+            <li>The garrison does not know you are coming.</li>
+            <li>They get better the closer you get to the middle.</li>
+            <li>A body they find is a compound that knows.</li>
+          </ul>
+        </div>
+        <canvas class="brief__map" id="brief-map" width="260" height="260" aria-hidden="true"></canvas>
+      </div>
     </div>
   </div>
 
@@ -642,8 +727,21 @@
           <span class="hud__hp-label">HP</span>
           <div class="hud__hp-bar" id="hud-hpbar" data-hp="100 / 100"><div class="hud__hp-fill" id="hud-hpfill"></div></div>
         </div>
-        <div class="hud__weapon" id="hud-weapon">Rifle</div>
-        <div class="hud__ammo"><b id="hud-ammo">30</b><span id="hud-ammomax">/30</span></div>
+        <!-- Two slots, the active one large and lit, the other dim beneath
+             it: the arrangement every shooter uses, and the only one that
+             answers "what am I holding and what can I switch to" at a glance. -->
+        <div class="hud__guns" id="hud-guns">
+          <div class="gunslot is-live" id="gunslot-0">
+            <span class="gunslot__key">1</span>
+            <span class="gunslot__name" id="hud-weapon">Rifle</span>
+            <span class="gunslot__ammo"><b id="hud-ammo">30</b><span id="hud-ammomax">/30</span></span>
+          </div>
+          <div class="gunslot" id="gunslot-1">
+            <span class="gunslot__key">2</span>
+            <span class="gunslot__name" id="hud-weapon2">Pistol</span>
+            <span class="gunslot__ammo"><b id="hud-ammo2">8</b><span id="hud-ammomax2">/8</span></span>
+          </div>
+        </div>
       </div>
       <div class="hud__hint" id="hud-hint">
         <span class="hint-group"><b>MOVE</b> WASD · Shift dash</span>
@@ -758,6 +856,8 @@
   <script src="js/auth.js"></script>
   <script src="js/progression.js"></script>
   <script src="js/screens.js"></script>
+  <script src="js/mission.js"></script>
+  <script src="js/backdrop.js"></script>
   <script src="js/loading.js"></script>
   <script src="js/matchmaking.js"></script>
   <!-- the base tour: the home-screen half of the tutorial -->

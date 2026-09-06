@@ -34,7 +34,11 @@ const Items = (() => {
     flag:      { name: 'Cool Flag',  cat: 'tactical', mode: 'flag',  icon: '🚩', radius: 250, adr: 10, speed: 0.25, life: 40 },
     // 14 tiles of reach — short of an assault rifle, so a sentry holds a room
     // or a doorway rather than a whole approach
-    sentry:    { name: 'Sentry Gun', cat: 'tactical', mode: 'sentry',icon: '🔫', hp: 180, range: 700, damage: 15.8, rof: 7.5, life: 75 },
+    /* 15.8 at 7.5 rounds a second is 118 DPS — an assault rifle that aims
+       itself, for 75 seconds, out of a deployable. 13 at 6.5 is 85, which
+       still wins the corner it is covering and no longer out-damages the
+       person who placed it. */
+    sentry:    { name: 'Sentry Gun', cat: 'tactical', mode: 'sentry',icon: '🔫', hp: 180, range: 700, damage: 13, rof: 6.5, life: 75 },
 
     // heals / boosts (self, channeled) -----------------------------------
     medkit:    { name: 'Medkit',     cat: 'heal', icon: '⛑️', hp: 100, time: 7.5 },
@@ -243,10 +247,18 @@ const Items = (() => {
     // no extra pellet damage: a shotgun already one-shots at contact, so the
     // gold version gets the semi-auto action and the reload instead
     'Shotgun':       { dMag: 4, dReloadS: -0.5, dAcc: -0.6, dRec: -0.08, actionOverride: 'semi' },
-    // it already kills in one — what it wants is more of them, faster
-    'Sniper Rifle':  { dMag: 6, dFirerate: 1, dReloadS: -0.8, dAcc: -0.4, dRec: -0.05, dHandS: -0.08 },
+    /* It already kills in one, so rate is the one stat that has to be handled
+       carefully: +1/s doubled the Barrett and made a gold one a 2/s one-shot
+       rifle with sixteen rounds in it, at 204 DPS — the joint highest number
+       on the roster, out of a crate. +0.4 leaves the upgrade in the magazine,
+       the reload and the accuracy, where a legendary belongs. */
+    'Sniper Rifle':  { dMag: 6, dFirerate: 0.4, dReloadS: -0.8, dAcc: -0.4, dRec: -0.05, dHandS: -0.08 },
     'DMR':           { dDamage: 2, dFirerate: 1, dAcc: -0.4, dRec: -0.12, dMag: 8, dReloadS: -0.4 },
-    'Pistol':        { dDamage: 3, dFirerate: 2, dMag: 6, dReloadS: -0.3, dAcc: -0.4 },
+    /* +3 damage and +2/s took a gold DEagle from 112 DPS to 198 — a 77% jump,
+       the largest of any legendary, on the sidearm class. +1 keeps it the
+       biggest proportional upgrade in the game without making a pistol the
+       best weapon on the island. */
+    'Pistol':        { dDamage: 3, dFirerate: 1, dMag: 6, dReloadS: -0.3, dAcc: -0.4 },
     'Carbine':       { dDamage: 1, dFirerate: 1, dMag: 10, dReloadS: -0.5, dAcc: -0.4, dRec: -0.04, dWeight: -2 },
     // one in the tube either way; what changes is how fast the next one is
     'Launcher':      { dReloadS: -0.9, dAcc: -0.4, dHandS: -0.1 },

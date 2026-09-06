@@ -147,7 +147,8 @@ const Classes = (() => {
      the class already allow. */
   const limitFor = (cls, itemId, bag, perk) => Math.ceil(bagMult(bag)
     * (cls.consumable === itemId ? Math.ceil(cls.limit * CARRY_MULT) : GENERIC_LIMIT))
-    + (typeof Perks !== 'undefined' ? Perks.byId(perk).mods.consumablePlus || 0 : 0);
+    // through `mod`, not `byId`: `perk` may be three of them now
+    + (typeof Perks !== 'undefined' ? Perks.mod({ perk }, 'consumablePlus', 0) : 0);
   /* what you actually spawn holding */
   const startFor = (cls, bag, perk) => Math.min(
     Math.ceil(cls.startCount * CARRY_MULT * bagMult(bag)),

@@ -55,18 +55,69 @@ const Loading = (() => {
     if (fill) fill.style.width = Math.round(pct * 100) + '%';
   }
 
+  /* The briefing. Only the mission mode has one, and it is only meaningful
+     after the world exists -- so it is filled in by the phase that generates
+     the map, not when the screen opens.
+
+     The map is drawn here rather than reusing the in-game minimap because it
+     is answering a different question: not "where am I" but "what am I about
+     to be dropped into". Buildings, the compound, and nothing else. */
+  function brief(m, world) {
+    const box = el('loading-brief');
+    if (!box || !m) return;
+    box.hidden = false;
+    el('brief-tag').textContent = m.name.toUpperCase();
+    el('brief-line').textContent = m.brief;
+
+    const cv = el('brief-map');
+    if (!cv || !world) return;
+    const g = cv.getContext('2d');
+    const S = cv.width / Math.max(world.w, world.h);
+    g.clearRect(0, 0, cv.width, cv.height);
+    // the island
+    g.fillStyle = 'rgba(120,150,200,0.10)';
+    g.fillRect(0, 0, cv.width, cv.height);
+    // every building the recon flight picked up
+    g.fillStyle = 'rgba(200,222,255,0.42)';
+    for (const b of world.buildings) {
+      g.fillRect(b.x * S, b.y * S, Math.max(2, b.w * S), Math.max(2, b.h * S));
+    }
+    // the compound, ringed
+    if (world.core) {
+      g.strokeStyle = 'rgba(232,118,63,0.9)'; g.lineWidth = 1.5;
+      g.beginPath(); g.arc(world.core.x * S, world.core.y * S, 26, 0, Math.PI * 2); g.stroke();
+      g.setLineDash([3, 3]);
+      g.beginPath(); g.arc(world.core.x * S, world.core.y * S, 48, 0, Math.PI * 2); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = '#e8763f';
+      g.font = 'bold 9px Azeret Mono, ui-monospace, monospace';
+      g.textAlign = 'center';
+      g.fillText('OBJECTIVE', world.core.x * S, world.core.y * S - 34);
+    }
+    // and where you come ashore
+    if (world.land) {
+      g.fillStyle = '#7ff2c1';
+      g.beginPath(); g.arc(world.land.x * S, world.land.y * S, 4, 0, Math.PI * 2); g.fill();
+    }
+  }
+
   function hide() {
     const box = el('overlay-loading');
     if (!box) return;
     open = false;
     box.classList.remove('is-open');
     box.setAttribute('aria-hidden', 'true');
+    const br = el('loading-brief');
+    if (br) br.hidden = true;
   }
 
   /* Run `phases` — [label, fraction, fn] — with the overlay up, painting
      between each so the labels are actually seen rather than all landing in
      the same frame as the work. */
-  async function run(title, phases) {
+  /* `hold` keeps the screen up after the work is done. A mission briefing is
+     something to read, and a screen that vanishes the instant the island
+     finishes generating gives you a tenth of a second to read it. */
+  async function run(title, phases, hold) {
     show(title);
     await paint();
     for (const [label, pct, fn] of phases) {
@@ -77,9 +128,9 @@ const Loading = (() => {
     step('Ready', 1);
     // let the first frame of the match land underneath before lifting
     await paint();
-    await new Promise(r => setTimeout(r, 260));
+    await new Promise(r => setTimeout(r, hold || 260));
     hide();
   }
 
-  return { show, step, hide, run, TIPS };
+  return { show, step, hide, run, brief, TIPS };
 })();

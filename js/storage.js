@@ -32,12 +32,23 @@ const DB = (() => {
       bpXp: 0,
       // loadout — all weapons unlocked in this prototype build
       weapon: Weapons.default,
+      /* The sidearm. You carry two guns and switch between them; this is the
+         one in the second slot. A pistol by default because that is what a
+         secondary is for -- something light to fall back to rather than a
+         second primary, which is a balance decision the loadout screen is
+         free to let you override. */
+      secondary: 'makarov-pm',
       unlockedWeapons: Weapons.allIds(),
       skins: [],                 // skin ids owned (account-wide)
       weaponSkins: {},           // weaponId -> skin id
       attachments: {},           // weaponId -> [attachment name]
       ammo: {},                  // weaponId -> specialized ammo name
-      perk: 'none',              // the one passive you deploy with (js/perks.js)
+      /* Three passives, one per section (js/perks.js). `perk` is kept
+         alongside them so a profile written by this build still loads in one
+         that only knows about a single perk -- it holds whichever of the three
+         is in the Body slot. */
+      perks: (typeof Perks !== 'undefined' ? Perks.EMPTY.slice() : ['none', 'none', 'none']),
+      perk: 'none',
       /* Three saved kits, the way every shooter since Modern Warfare has done
          it: the gun and the passive, named, switchable from the loadout screen
          without rebuilding the set piece by piece. `null` is an empty slot. */

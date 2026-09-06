@@ -684,30 +684,85 @@ const Structures = (() => {
      door on the side named by `access` ('n'|'s'|'w'|'e'), which is where the
      corridor runs. Returns { parts, cells } — the cells are plain rects, ready
      to be handed to `room()` with whatever kind they hold. */
+  /* Columns sized by what stands in them.
+
+     `roomGrid` divided its footprint into equal cells, which is the thing the
+     note under ROOM_SIZE has always complained about: it gives a bathroom the
+     same floor as a ballroom, and a plan built that way reads as a spreadsheet
+     rather than as a building. Every caller then named the cells afterwards --
+     opsRoom, radioRoom, armoury -- so the plan knew perfectly well what each
+     room was for and simply had no way to say so.
+
+     Pass `kinds` and the columns are laid out in proportion to the real sizes
+     already in ROOM_SIZE: the ops room comes out half again the width of the
+     radio room beside it, because that is the difference between a 4.5 x 6.0
+     room and a 3.0 x 3.6 one. Without `kinds` it behaves exactly as before, so
+     nothing that does not want this has to change.
+
+     Only the long axis is weighted. Weighting both would push the partitions
+     off the corridor line they have to meet. */
+  function gridWeights(kinds, n) {
+    if (!kinds || !kinds.length) return null;
+    const w = [];
+    for (let i = 0; i < n; i++) {
+      const sz = ROOM_SIZE[kinds[i]];
+      // area, so a room that is big in both directions counts as big
+      w.push(sz ? sz[0] * sz[1] : 12);
+    }
+    const total = w.reduce((a, b) => a + b, 0) || n;
+    /* Clamped towards the mean. Taken raw, a mess hall (5.4 x 8.0 = 43) beside
+       a radio room (3.0 x 3.6 = 11) is four to one, which leaves the small one
+       too narrow to fight in and the big one an empty barn. Sizes are a
+       relationship, not a measurement -- what matters is that you can see one
+       is bigger. */
+    const mean = 1 / n;
+    return w.map(v => {
+      const frac = v / total;
+      return mean + (frac - mean) * 0.62;
+    });
+  }
+
   function roomGrid(type, x, y, w, h, cols, rows, opts = {}) {
     const th = opts.thickness || 0.22;
     const doorType = opts.doorType === null ? null : (opts.doorType || 'door');
     const access = opts.access || 'n';
-    const cw = w / cols, ch = h / rows;
     const parts = [], cells = [];
+
+    /* The run is the axis the rooms are laid out along -- columns for a row of
+       rooms, rows for a column of them -- and it is the one that gets weighted. */
+    const byCol = cols >= rows;
+    const n = byCol ? cols : rows;
+    const runLen = byCol ? w : h;
+    const wts = gridWeights(opts.kinds, n);
+    // cumulative offsets down the run, in px
+    const edge = [0];
+    for (let i = 0; i < n; i++) edge.push(edge[i] + runLen * (wts ? wts[i] : 1 / n));
+    edge[n] = runLen;                       // no drift from the rounding
+
+    const colX = (c) => (byCol ? edge[c] : (c * w) / cols);
+    const colW = (c) => (byCol ? edge[c + 1] - edge[c] : w / cols);
+    const rowY = (r) => (byCol ? (r * h) / rows : edge[r]);
+    const rowH = (r) => (byCol ? h / rows : edge[r + 1] - edge[r]);
+
     // the walls between columns, and between rows
     for (let c = 1; c < cols; c++) {
-      const doors = access === 'n' || access === 's' ? [] : [ch / 2];
       for (let r = 0; r < rows; r++) {
-        parts.push(...partition(type, x + c * cw, y + r * ch, ch, 'v', th,
-          doors.map(d => d), doorType));
+        const doors = access === 'n' || access === 's' ? [] : [rowH(r) / 2];
+        parts.push(...partition(type, x + colX(c), y + rowY(r), rowH(r), 'v', th,
+          doors, doorType));
       }
     }
     for (let r = 1; r < rows; r++) {
-      const doors = access === 'w' || access === 'e' ? [] : [cw / 2];
       for (let c = 0; c < cols; c++) {
-        parts.push(...partition(type, x + c * cw, y + r * ch, cw, 'h', th,
-          doors.map(d => d), doorType));
+        const doors = access === 'w' || access === 'e' ? [] : [colW(c) / 2];
+        parts.push(...partition(type, x + colX(c), y + rowY(r), colW(c), 'h', th,
+          doors, doorType));
       }
     }
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        cells.push({ x: x + c * cw + 14, y: y + r * ch + 14, w: cw - 28, h: ch - 28 });
+        cells.push({ x: x + colX(c) + 14, y: y + rowY(r) + 14,
+          w: colW(c) - 28, h: rowH(r) - 28 });
       }
     }
     return { parts, cells };
@@ -1820,7 +1875,8 @@ const Structures = (() => {
         { side: 's', at: 200, type: 'door', len: 2 }, { side: 'w', at: 160 },
       ]);
       out.push(...partition('wood', ox + 14, oy + 180, w - 28, 'h', 0.25, [120, 300], 'door'));
-      const g = roomGrid('wood', ox + 14, oy + 14, w - 28, 166, 2, 1, { access: 's' });
+      const g = roomGrid('wood', ox + 14, oy + 14, w - 28, 166, 2, 1,
+        { access: 's', kinds: ['ward', 'surgery'] });
       out.push(...g.parts);
       out.push(seg('window', ox + 80, oy + 12, 1.4, 'h', 0.15));
       out.push(seg('window', ox + 300, oy + 12, 1.4, 'h', 0.15));
@@ -1938,8 +1994,10 @@ const Structures = (() => {
         doorsA: [150, 420, 700], doorsB: [220, 500, 800],
       });
       out.push(...hall.parts);
-      const north = roomGrid('metal', ox + 14, oy + 14, w - 28, HALL_Y - 14, 3, 1, { access: 's' });
-      const south = roomGrid('metal', ox + 14, oy + HALL_Y + HALL_H + 14, w - 28, h - HALL_Y - HALL_H - 28, 3, 1, { access: 'n' });
+      const north = roomGrid('metal', ox + 14, oy + 14, w - 28, HALL_Y - 14, 3, 1,
+        { access: 's', kinds: ['opsRoom', 'radioRoom', 'armoury'] });
+      const south = roomGrid('metal', ox + 14, oy + HALL_Y + HALL_H + 14, w - 28, h - HALL_Y - HALL_H - 28, 3, 1,
+        { access: 'n', kinds: ['briefing', 'mess', 'bunkroom'] });
       out.push(...north.parts, ...south.parts);
       // posts hard against the corridor walls, clear of the walking line
       for (const dx of [250, 620]) {
@@ -2374,7 +2432,8 @@ const Structures = (() => {
       out.push(...hall.parts);
       // offices along the west wall
       out.push(...partition('metal', ox + 226, oy + 14, h - 28, 'v', 0.4, [140, 420], 'door'));
-      const offices = roomGrid('metal', ox + 14, oy + 14, 212, h - 28, 1, 3, { access: 'e' });
+      const offices = roomGrid('metal', ox + 14, oy + 14, 212, h - 28, 1, 3,
+        { access: 'e', kinds: ['office', 'controlRoom', 'office'] });
       out.push(...offices.parts);
       // parts store, reinforced, along the south strip
       out.push(...partition('rwall', ox + 240, oy + h - 152, w - 254, 'h', 0.4, [200, 620], 'rdoor'));
