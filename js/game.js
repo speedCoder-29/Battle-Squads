@@ -528,14 +528,26 @@ const Game = (() => {
        building -- it falls through to the ordinary generator rather than
        shipping a map with nowhere to put the objective. */
     const missionSite = mode === 'mission' ? gp('site', buildMissionSite) : null;
-    gp('bases', placeTeamBases);                        // one per squad, at their corner
+    /* No team bases on a mission. They go at the squad spawn ring, which on
+       this mode is the beach you land on -- a fortified base in the middle of
+       the empty approach is the one thing the outer band is defined by not
+       having. */
+    if (!missionSite) gp('bases', placeTeamBases);      // one per squad, at their corner
     if (!missionSite) {
       gp('landmarks', placeLandmarks);                  // the big one-offs get first pick
       gp('required', placeRequiredBuildings);           // then the ones the map must have
     }
-    gp('procedural', () => placeBuildingsProcedural(Math.round(area * DENSITY.buildings)));
+    /* The procedural scatter is skipped on a mission. Its whole job is to
+       spread buildings evenly over an island, which is exactly what the banded
+       site is built not to do -- run together they produced a zoned compound
+       with forty unrelated buildings sprinkled through every band, and the
+       gradient the mode depends on being *readable* was invisible. */
+    if (!missionSite) {
+      gp('procedural', () => placeBuildingsProcedural(Math.round(area * DENSITY.buildings)));
+    }
     gp('yards', layOutYards);                           // now that nothing else needs the ground
-    gp('cover', () => placeCover(Math.round(area * DENSITY.cover)));
+    // and no loose cover out in the approach, for the same reason
+    if (!missionSite) gp('cover', () => placeCover(Math.round(area * DENSITY.cover)));
     gp('grass', () => placeGrass(Math.round(area * DENSITY.grassPatches)));
     gp('groves', () => placeGroves(Math.round(area * DENSITY.groves)));
     gp('props', () => placeProps(Math.round(area * DENSITY.props)));
@@ -3136,6 +3148,7 @@ const Game = (() => {
     zoom = zoomTarget = baseZoom();
     hudMessage = ''; hudMessageT = 0;
     killFeed = []; killBanner = null; soundPings = [];
+    mapOpen = false;
     hereBuilding = null; hereEffect = null; resupplyT = 0;
     marks = []; emotes = []; wheel = null; commsCd = 0;
     online = null;
@@ -3320,6 +3333,7 @@ const Game = (() => {
     });
     window.addEventListener('keyup', e => {
       switch (Controls.actionFor(e.code)) {
+        case 'map': mapOpen = !mapOpen; SFX.click(); break;
         case 'slot1': if (canAct()) selectGun(player, 0); break;
         case 'slot2': if (canAct()) selectGun(player, 1); break;
         case 'up': input.up = false; break;
@@ -7178,6 +7192,7 @@ const Game = (() => {
   let missionEndAt = 0;
   let garrisonCore = { x: 0, y: 0, r: 1 };
   let missionStat = { spotted: 0, bodiesFound: 0, shotsHeard: 0, peakAlert: 0 };
+  let missionSide = null;        // which side of the island you came in on
   /* Corpses the garrison has not walked past yet. Kept as its own short list
      rather than scanned out of `agents`, because a dead body stops being an
      agent the moment it respawns in every other mode and here it must not. */
@@ -7197,66 +7212,129 @@ const Game = (() => {
      shape is what makes the difficulty curve legible -- you can see that you
      are getting closer to something, because the buildings get bigger and the
      gaps between them get smaller. */
+  /* ---------- laying out the site ----------
+     Built in bands, and the bands are the difficulty curve made out of
+     architecture -- you can see how far in you are without being told.
+
+       OUTER   empty land and trees. Nothing to loot and nowhere to hide but
+               the trees. This is where you land, and the walk is meant to be
+               a walk.
+       SHACKS  small buildings, spread thin. One or two men each, easy to
+               isolate, and the first place a body can be left where nobody
+               will walk past it.
+       MIDDLE  medium buildings, close enough together that a fight in one is
+               heard in the next.
+       CORE    the big building. Everything you came for is inside it.
+
+     Read outward, each band is also a warning about the next one. Nothing
+     lootable goes in the outer band on purpose: it would turn the approach
+     into a shopping trip and give you a reason to make noise a long way from
+     anything that matters. */
+  const MISSION_BANDS = { core: 430, middle: 1150, shacks: 2000 };
+
   function buildMissionSite() {
     const cx = MAP_W / 2, cy = MAP_H / 2;
     garrisonCore = { x: cx, y: cy, r: 2600 };
 
-    /* One or two big buildings in the middle. These are where the job is, so
-       they need interiors worth clearing -- the blueprints picked here are the
-       ones with real floor plans rather than open sheds. */
-    const coreKinds = ['base', 'factory', 'keep', 'hospital', 'mansion'];
-    const wanted = 1 + (Math.random() < 0.5 ? 1 : 0);
-    const cores = [];
-    for (let i = 0; i < wanted; i++) {
-      const name = coreKinds[Math.floor(Math.random() * coreKinds.length)];
-      const ang = Math.random() * Math.PI * 2;
-      const r = i === 0 ? 0 : 520 + Math.random() * 200;
-      for (let t = 0; t < 60 && cores.length <= i; t++) {
-        const jx = cx + Math.cos(ang) * r + rand(-140, 140);
-        const jy = cy + Math.sin(ang) * r + rand(-140, 140);
-        const parts = placeBuilding(name, jx - 300, jy - 260, 90);
-        if (!parts.length) continue;
-        const bb = boundsOf(parts);
-        for (const part of parts) genAdd(part);
-        obstacles.push(...parts);
-        invalidateRects();
-        const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-        const b = { name, ...bb, style: st, floor: st.floor, rooms: parts.rooms,
-          shape: parts.shape, missionCore: true };
-        buildings.push(b);
-        furnish(name, bb, parts.rooms);
-        cores.push(b);
-      }
-    }
-    /* If the middle would not take a building at all the mode has nowhere to
-       put its objective, so fall back to the ordinary generator rather than
-       shipping a broken map. */
-    if (!cores.length) return null;
+    const drop = (name, x, y, pad, tag) => {
+      const parts = placeBuilding(name, x, y, pad);
+      if (!parts.length) return null;
+      const bb = boundsOf(parts);
+      for (const part of parts) genAdd(part);
+      obstacles.push(...parts);
+      invalidateRects();
+      const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+      const b = { name, ...bb, style: st, floor: st.floor, rooms: parts.rooms,
+        shape: parts.shape };
+      if (tag) b[tag] = true;
+      buildings.push(b);
+      furnish(name, bb, parts.rooms);
+      return b;
+    };
 
-    /* The screen. Small stuff in a loose ring, far enough out that clearing it
-       is a separate problem from the compound itself. */
-    const outer = ['house', 'shanty', 'checkpoint', 'garage', 'depot', 'camp',
-      'watermill', 'clinic', 'workshop'];
-    const ringN = 7 + Math.floor(Math.random() * 4);
-    for (let i = 0; i < ringN; i++) {
-      const name = outer[Math.floor(Math.random() * outer.length)];
-      const ang = (i / ringN) * Math.PI * 2 + rand(-0.28, 0.28);
-      for (let t = 0; t < 40; t++) {
-        const r = 1350 + Math.random() * 1000;
-        const jx = cx + Math.cos(ang) * r, jy = cy + Math.sin(ang) * r;
-        const parts = placeBuilding(name, jx, jy, 110);
-        if (!parts.length) continue;
-        const bb = boundsOf(parts);
-        for (const part of parts) genAdd(part);
-        obstacles.push(...parts);
-        invalidateRects();
-        const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-        buildings.push({ name, ...bb, style: st, floor: st.floor,
-          rooms: parts.rooms, shape: parts.shape });
-        furnish(name, bb, parts.rooms);
-        break;
+    // CORE — has to have real rooms, because the objective is hidden in one
+    const coreKinds = ['base', 'factory', 'keep', 'hospital', 'mansion'];
+    const cores = [];
+    /* Spiralled outward, not jittered in place.
+
+       The first version retried eighty times inside a 90px box, which is the
+       same spot eighty times -- so a river through the middle of the island
+       rejected every attempt, `buildMissionSite` returned null, and the whole
+       mode quietly fell back to the ordinary scattered generator. Measured,
+       the site phase ran for 15ms and placed nothing, every seed.
+
+       It also relaxes the clearance as it goes: the middle of the map is where
+       this building has to be, and a compound slightly tight against a tree
+       beats no compound at all. */
+    outer:
+    for (let ring = 0; ring < 9; ring++) {
+      const rr = ring * 130;
+      const steps = ring === 0 ? 1 : 8;
+      for (let i = 0; i < steps; i++) {
+        const ang = (i / steps) * Math.PI * 2;
+        const x = cx + Math.cos(ang) * rr - 300;
+        const y = cy + Math.sin(ang) * rr - 260;
+        for (const name of coreKinds) {
+          const b = drop(name, x, y, ring < 5 ? 90 : 40, 'missionCore');
+          if (b) { cores.push(b); break outer; }
+        }
       }
     }
+    if (!cores.length) return null;
+    // the compound is wherever the big building actually landed
+    garrisonCore = { x: cores[0].x + cores[0].w / 2, y: cores[0].y + cores[0].h / 2, r: 2600 };
+
+    // MIDDLE — ringed round the core so they cover each other
+    const midKinds = ['warehouse', 'clinic', 'library', 'workshop', 'depot',
+      'garage', 'apartments', 'hangar'];
+    const midN = 4 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < midN; i++) {
+      const name = midKinds[Math.floor(Math.random() * midKinds.length)];
+      /* The angle moves as well as the radius. Holding the bearing fixed and
+         only varying the distance meant that when a bearing was blocked all
+         forty attempts failed together, and the band came out with one
+         building in it instead of five. */
+      const base = (i / midN) * Math.PI * 2;
+      for (let t = 0; t < 48; t++) {
+        const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.09;
+        const r = MISSION_BANDS.core + 200
+          + Math.random() * (MISSION_BANDS.middle - MISSION_BANDS.core - 280);
+        if (drop(name, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r,
+          t < 24 ? 110 : 60, 'missionMid')) break;
+      }
+    }
+
+    // SHACKS — out where a man can be on his own
+    const shackKinds = ['shanty', 'checkpoint', 'camp', 'house', 'tower', 'watermill'];
+    const shackN = 6 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < shackN; i++) {
+      const name = shackKinds[Math.floor(Math.random() * shackKinds.length)];
+      const base = (i / shackN) * Math.PI * 2;
+      for (let t = 0; t < 48; t++) {
+        const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.09;
+        const r = MISSION_BANDS.middle + 140
+          + Math.random() * (MISSION_BANDS.shacks - MISSION_BANDS.middle - 220);
+        if (drop(name, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r,
+          t < 24 ? 150 : 80, 'missionShack')) break;
+      }
+    }
+
+    // OUTER — trees and rock, and nothing worth stopping for
+    for (let i = 0; i < 150; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const r = MISSION_BANDS.shacks + 140 + Math.random() * 1500;
+      const x = clamp(cx + Math.cos(ang) * r, 240, MAP_W - 240);
+      const y = clamp(cy + Math.sin(ang) * r, 240, MAP_H - 240);
+      if (terrain && !Terrain.isSpawnable(terrain, x, y)) continue;
+      if (insideAnyBuilding(x, y, 30)) continue;
+      const kind = Math.random() < 0.82 ? 'tree' : 'rock';
+      const pr = Structures.prop(kind, x, y,
+        (Sprites.META[kind] || { r: 23 }).r * 2, 0.85 + Math.random() * 0.4);
+      if (genHits(pr, 20)) continue;
+      obstacles.push(pr);
+      genAdd(pr);
+    }
+    invalidateRects();
     return cores;
   }
 
@@ -7344,6 +7422,52 @@ const Game = (() => {
     }
   }
 
+  /* ---------- patrol routes ----------
+     A guard walks a beat. It used to drift at random inside a circle, which
+     reads as a man who has lost something rather than a man on duty -- and,
+     more practically, a random drift cannot be learned. A patrol you can watch
+     for thirty seconds and then predict is the thing that makes a stealth
+     approach a plan rather than a gamble.
+
+     Two shapes, both closed loops so the guard always comes back:
+
+       ARC     walks along its own ring, back and forth between two bearings.
+               This is the perimeter beat.
+       BOX     a small rectangle round its post. This is the man watching one
+               building.
+
+     Which one it gets depends on how deep in it is, because that is what the
+     job would be: the outer ring covers ground, the inner ring covers doors. */
+  function givePatrol(a, ang, radius) {
+    const cx = garrisonCore.x, cy = garrisonCore.y;
+    const pts = [];
+    if (radius >= 1400) {
+      // ARC: a stretch of the ring, walked end to end
+      const span = 0.28 + Math.random() * 0.34;
+      const steps = 4;
+      for (let i = 0; i <= steps; i++) {
+        const t = ang - span / 2 + (span * i) / steps;
+        pts.push({ x: cx + Math.cos(t) * radius, y: cy + Math.sin(t) * radius });
+      }
+      // and back again, so the loop closes without teleporting
+      for (let i = steps - 1; i > 0; i--) pts.push({ ...pts[i] });
+    } else {
+      // BOX: a beat around the post
+      const w = 130 + Math.random() * 150, h = 110 + Math.random() * 140;
+      const ox = a.x - w / 2, oy = a.y - h / 2;
+      pts.push({ x: ox, y: oy }, { x: ox + w, y: oy },
+        { x: ox + w, y: oy + h }, { x: ox, y: oy + h });
+    }
+    /* Clamped and de-watered here rather than while walking: a waypoint in the
+       sea is a guard who stands at the shoreline forever. */
+    a.patrol = pts
+      .map(p => ({ x: clamp(p.x, 200, MAP_W - 200), y: clamp(p.y, 200, MAP_H - 200) }))
+      .filter(p => !terrain || Terrain.isSpawnable(terrain, p.x, p.y));
+    if (a.patrol.length < 2) a.patrol = null;
+    a.patrolI = Math.floor(Math.random() * (a.patrol ? a.patrol.length : 1));
+    a.patrolWait = 0;
+  }
+
   /* What a guard does when it has nothing to shoot at.
 
      Suspicious guards walk to whatever they last heard. Unaware ones hold
@@ -7369,24 +7493,30 @@ const Game = (() => {
         }
       }
     }
-    // holding a post: a slow wander round wherever it started
-    a.postT = (a.postT || 0) - dt;
-    if (!a.post) a.post = { x: a.x, y: a.y };
-    if (a.postT <= 0) {
-      a.postT = 3 + Math.random() * 5;
-      const ang = Math.random() * Math.PI * 2, r = 40 + Math.random() * 190;
-      a.postPt = { x: a.post.x + Math.cos(ang) * r, y: a.post.y + Math.sin(ang) * r };
+    /* Walking the beat. A pause at each corner, because a guard who never
+       stops is a guard you can never slip behind -- the pauses are where the
+       gaps in a patrol come from, and the gaps are the mode. */
+    if (!a.patrol) return;
+    if (a.patrolWait > 0) { a.patrolWait -= dt; return; }
+    const wp = a.patrol[a.patrolI % a.patrol.length];
+    const dx = wp.x - a.x, dy = wp.y - a.y;
+    const m = Math.hypot(dx, dy);
+    if (m < 34) {
+      a.patrolI = (a.patrolI + 1) % a.patrol.length;
+      a.patrolWait = 1.2 + Math.random() * 2.4;
+      return;
     }
-    if (a.postPt) {
-      const dx = a.postPt.x - a.x, dy = a.postPt.y - a.y;
-      const m = Math.hypot(dx, dy);
-      if (m > 26) {
-        const spd = a.weapon.moveSpeed * 0.34 * a.cls.speed * dt;
-        a.x += (dx / m) * spd; a.y += (dy / m) * spd;
-        resolveObstacles(a);
-        a.angle = Math.atan2(dy, dx);
-      }
-    }
+    const spd = a.weapon.moveSpeed * 0.34 * a.cls.speed * dt;
+    const px = a.x, py = a.y;
+    a.x += (dx / m) * spd; a.y += (dy / m) * spd;
+    resolveObstacles(a);
+    a.angle = Math.atan2(dy, dx);
+    /* Stuck on the geometry between two waypoints: skip to the next one rather
+       than grind into a wall for the rest of the match. */
+    if (Math.hypot(a.x - px, a.y - py) < spd * 0.25) {
+      a.patrolStuck = (a.patrolStuck || 0) + dt;
+      if (a.patrolStuck > 1.2) { a.patrolI = (a.patrolI + 1) % a.patrol.length; a.patrolStuck = 0; }
+    } else a.patrolStuck = 0;
   }
 
   /* ---------- putting the job on the map ----------
@@ -7429,7 +7559,14 @@ const Game = (() => {
       /* Pulled in from [260, 700, 1300, 2100]. The outermost ring reached so
          far that it met the shore, leaving no clear ground to come ashore on;
          a garrison should be a place on the island, not the island. */
-      const rr = [230, 560, 1000, 1500][ring];
+      /* One ring per band, and all of them inside the built zones.
+
+         The outermost used to sit at 2200, which is beyond where the shacks
+         stop -- guards standing in the empty tree band, outside the compound
+         they are garrisoning. It also put them within sight of the landing
+         beach, so two of them had spotted the squad before the player touched
+         a key. Nobody is posted further out than the last building. */
+      const rr = [260, 720, 1250, 1750][ring];
       const n = [4, 6, 8, 8][ring];
       for (let i = 0; i < n && posted < GARRISON; i++) {
         const ang = (i / n) * Math.PI * 2 + rand(-0.35, 0.35);
@@ -7449,6 +7586,7 @@ const Game = (() => {
         if (!okSpot) continue;
         const g = makeAgent(foeTeam, false, pickBotWeapon());
         g.x = gx; g.y = gy; g.alive = true; g.hp = g.maxHp;
+        givePatrol(g, ang, rr);
         agents.push(g);
         posted++;
       }
@@ -7509,18 +7647,40 @@ const Game = (() => {
        Three passes: the distance it wants, then closer, then closer again,
        and the clearance it insists on shrinks with them. It cannot fail to
        find something, because the last pass asks only for dry land. */
+    /* You come in off one of the four sides, never from a random bearing.
+
+       North, south, east or west is a thing you can hold in your head and
+       navigate by -- "we came in from the east" is a sentence about the run,
+       and 214 degrees is not. It also means the way out is a direction rather
+       than a marker you have to keep checking. */
+    const SIDES = [
+      { id: 'north', ang: -Math.PI / 2 }, { id: 'south', ang: Math.PI / 2 },
+      { id: 'east', ang: 0 }, { id: 'west', ang: Math.PI },
+    ];
+    const side = SIDES[Math.floor(Math.random() * SIDES.length)];
+    missionSide = side.id;
+
     let land = null;
+    /* The clearance has to beat the guards' sight range, or you are seen from
+       the beach. Sight is TILE*17 = 850px, so the first pass asks for more
+       than that and the fallbacks give it up reluctantly. */
+    /* The clearance has to beat the guards' sight range *plus the distance a
+       patrol covers*, or you are seen from the beach a few seconds after
+       landing. Sight is TILE*17 = 850px and an arc patrol swings a couple of
+       hundred either way, so the first pass asks for well over a thousand and
+       the fallbacks give it up reluctantly. */
     const RINGS = [
-      { r: 0.36, clear: 1300 },
-      { r: 0.30, clear: 1000 },
-      { r: 0.26, clear: 700 },
-      { r: 0.24, clear: 0 },
+      { r: 0.40, clear: 1150 },
+      { r: 0.37, clear: 900 },
+      { r: 0.34, clear: 700 },
+      { r: 0.30, clear: 0 },
     ];
     const base = Math.min(MAP_W, MAP_H);
-    const landAng = Math.random() * Math.PI * 2;
+    /* Swept outward from the chosen side rather than round the whole compass,
+       so the landing stays on that side even when the first choice is sea. */
     for (const ring of RINGS) {
       for (let t = 0; t < 72 && !land; t++) {
-        const a2 = landAng + t * (Math.PI * 2 / 72);
+        const a2 = side.ang + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.045;
         const r2 = base * ring.r;
         const lx = clamp(garrisonCore.x + Math.cos(a2) * r2, 300, MAP_W - 300);
         const ly = clamp(garrisonCore.y + Math.sin(a2) * r2, 300, MAP_H - 300);
@@ -9443,6 +9603,7 @@ const Game = (() => {
     drawKillBanner();
     drawOffscreenMarks();   // pings behind you still have to be findable
     drawDeathRecap();       // what killed you, while you wait to come back
+    drawFullMap();          // M: the whole island, held open
     drawScoreboard();       // hold Tab
     drawWheel();            // the ping / emote wheel, when one is open
     drawCrosshair();        // over everything, because it is where you are looking
@@ -12692,6 +12853,114 @@ const Game = (() => {
     ctx.restore();
   }
 
+  /* ---------------- the full map ----------------
+     The minimap is a corner of the screen and answers "what is around me".
+     This answers "where is everything", which is a different question and the
+     one you actually have on a mission -- you were briefed with a chart on the
+     way in and then had it taken away.
+
+     Held open rather than toggled into a screen: the match keeps running
+     underneath, so opening it is a decision with a cost rather than a pause. */
+  let mapOpen = false;
+
+  function drawFullMap() {
+    if (!mapOpen || !player || !running) return;
+    const pad = 60;
+    const size = Math.min(W, H) - pad * 2;
+    const ox = (W - size) / 2, oy = (H - size) / 2;
+    const sx = size / MAP_W, sy = size / MAP_H;
+
+    ctx.save();
+    // the match dimmed behind it, so the map is plainly a layer over the world
+    ctx.fillStyle = 'rgba(6,10,20,0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = 'rgba(18,30,52,0.9)';
+    roundRect(ox, oy, size, size, 12); ctx.fill();
+    ctx.strokeStyle = 'rgba(175,210,255,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    ctx.save();
+    roundRect(ox, oy, size, size, 12); ctx.clip();
+
+    // every building, so the chart is the island rather than the bit you know
+    ctx.fillStyle = 'rgba(205,225,255,0.40)';
+    for (const s2 of structureRects()) {
+      if (kindOf(s2).height !== 'high') continue;
+      ctx.fillRect(ox + s2.x * sx, oy + s2.y * sy,
+        Math.max(1.5, s2.w * sx), Math.max(1.5, s2.h * sy));
+    }
+
+    // objectives, in the modes that have them
+    for (const o of objectives) {
+      ctx.beginPath(); ctx.arc(ox + o.x * sx, oy + o.y * sy, 7, 0, Math.PI * 2);
+      ctx.fillStyle = o.owner >= 0 ? TEAM_COLORS[o.owner] : '#8ea0c9'; ctx.fill();
+      ctx.fillStyle = '#08101f';
+      ctx.font = 'bold 10px Azeret Mono, ui-monospace, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(o.name, ox + o.x * sx, oy + o.y * sy + 0.5);
+    }
+
+    /* Mission marks. The objective is *always* pinned -- you were shown it in
+       the briefing, and hiding it afterwards would be taking back information
+       the mode has already given you. Finding the room is the puzzle; finding
+       the building is not. */
+    if (inMission()) {
+      if (garrisonCore) {
+        const gx = ox + garrisonCore.x * sx, gy = oy + garrisonCore.y * sy;
+        const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 420);
+        ctx.strokeStyle = `rgba(232,118,63,${(0.55 + pulse * 0.4).toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(gx, gy, 13, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.arc(gx, gy, 13 + pulse * 9, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#e8763f';
+        ctx.font = 'bold 10px Azeret Mono, ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('OBJECTIVE', gx, gy - 22);
+      }
+      if (exfil) {
+        const ex = ox + exfil.x * sx, ey = oy + exfil.y * sy;
+        ctx.fillStyle = exfil.open ? '#7ff2c1' : 'rgba(127,242,193,0.45)';
+        ctx.beginPath(); ctx.arc(ex, ey, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.font = 'bold 9px Azeret Mono, ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(exfil.open ? 'EXTRACTION' : 'LANDING', ex, ey + 17);
+      }
+      /* Only the guards somebody has actually seen. Drawing the whole garrison
+         would hand you the answer to the mode. */
+      for (const a of agents) {
+        if (!a.alive || a.isPlayer || a.isVehicle || a.team === player.team) continue;
+        if ((a.alert || 0) < Mission.ALERT.SUSPICIOUS) continue;
+        ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = (a.alert >= Mission.ALERT.HUNTING) ? '#ff4b5c' : '#ff9f43';
+        ctx.fill();
+      }
+    }
+
+    // your squad, and you
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle || a.team !== player.team) continue;
+      ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, a.isPlayer ? 5 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = a.isPlayer ? '#fff' : teamInk(a.team); ctx.fill();
+    }
+    // which way you are looking
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ox + player.x * sx, oy + player.y * sy);
+    ctx.lineTo(ox + player.x * sx + Math.cos(player.angle) * 14,
+      oy + player.y * sy + Math.sin(player.angle) * 14);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle = 'rgba(200,212,232,0.75)';
+    ctx.font = '12px Outfit, Segoe UI, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(Controls.labelFor('map') + ' to close   ·   the match is still running',
+      W / 2, oy + size + 22);
+    ctx.restore();
+  }
+
   const MINIMAP_W = 180;
   /* Where the minimap ended up last frame, so a click can be turned back into
      a world position without recomputing the layout in two places. */
@@ -15113,6 +15382,23 @@ const Game = (() => {
     moveSpeed: () => (player ? RoomSim.moveSpeedFor(player, false) : 0),
     /* Just enough of the island for the briefing map: footprints, the
        compound, and where you come ashore. */
+    /* Buildings by band, so the zoning is a measurement rather than a look. */
+    zones() {
+      const B = { core: 0, middle: 0, shacks: 0, outer: 0 };
+      for (const b of buildings) {
+        const d = missionDepth(b.x + b.w / 2, b.y + b.h / 2);
+        if (d < 430) B.core++;
+        else if (d < 1150) B.middle++;
+        else if (d < 2000) B.shacks++;
+        else B.outer++;
+      }
+      const trees = obstacles.filter(o => o.isProp
+        && missionDepth(o.x, o.y) > 2000).length;
+      return { ...B, total: buildings.length, outerTrees: trees, side: missionSide,
+        tagged: { core: buildings.filter(b2 => b2.missionCore).length,
+          mid: buildings.filter(b2 => b2.missionMid).length,
+          shack: buildings.filter(b2 => b2.missionShack).length } };
+    },
     briefWorld: () => ({
       w: MAP_W, h: MAP_H,
       buildings: buildings.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),

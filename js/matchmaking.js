@@ -89,7 +89,11 @@ const Matchmaking = (() => {
           ['Placing structures and loot', 0.6, () => Game.start(mode)],
           [inbound ? 'Mission briefing' : 'Briefing the squads', 0.9, () => {
             if (!inbound) return;
-            try { Loading.brief(Game.debug.mission(), Game.debug.briefWorld()); } catch (e) {}
+            /* Not swallowed. A silent catch here hid a broken briefing
+               completely -- the screen came up, the map stayed black, and
+               nothing anywhere said why. */
+            try { Loading.brief(Game.debug.mission(), Game.debug.briefWorld()); }
+            catch (e) { console.error('briefing failed:', e); }
           }],
         ], inbound ? 4200 : 0);
       } else {

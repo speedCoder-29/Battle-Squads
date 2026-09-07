@@ -27,6 +27,10 @@ const Controls = (() => {
     /* Two guns, two keys, and the scroll wheel cycles -- which is what every
        shooter has done since Half-Life and therefore the thing nobody has to
        be taught. */
+    /* The map. You were shown the island on the way in; being able to look
+       at it again is the difference between planning a route and remembering
+       one. */
+    { id: 'map',        name: 'Open map',       group: 'World',    keys: ['KeyM'] },
     { id: 'slot1',      name: 'Primary weapon', group: 'Combat',   keys: ['Digit1'] },
     { id: 'slot2',      name: 'Secondary',      group: 'Combat',   keys: ['Digit2'] },
     { id: 'grenade',    name: 'Throw grenade',  group: 'Combat',   keys: ['KeyQ'] },

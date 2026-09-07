@@ -1743,3 +1743,17 @@ p  { text-wrap: pretty; }
   .brief { grid-template-columns: 1fr; }
   .brief__map { width: 100%; height: auto; aspect-ratio: 1; }
 }
+
+/* The four numbers that turn a sentence into an order: how long, how many,
+   how far, and where out. Read at a glance, so they are a grid rather than
+   another paragraph. */
+.brief__facts {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+  margin: 0 0 12px;
+}
+.brief__fact { display: flex; flex-direction: column; gap: 1px; }
+.brief__fact span {
+  font: 700 9px/1 'Azeret Mono', ui-monospace, monospace;
+  letter-spacing: 1.2px; color: var(--muted); text-transform: uppercase;
+}
+.brief__fact b { font-size: 13px; font-variant-numeric: tabular-nums; }
