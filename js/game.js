@@ -549,8 +549,15 @@ const Game = (() => {
     // and no loose cover out in the approach, for the same reason
     if (!missionSite) gp('cover', () => placeCover(Math.round(area * DENSITY.cover)));
     gp('grass', () => placeGrass(Math.round(area * DENSITY.grassPatches)));
-    gp('groves', () => placeGroves(Math.round(area * DENSITY.groves)));
-    gp('props', () => placeProps(Math.round(area * DENSITY.props)));
+    /* Groves and props are island-wide scatter -- their whole job is to cover
+       the map evenly, which on a banded site means trees standing between the
+       compound buildings and rubble in the approach. Both destroy exactly the
+       reading the bands exist to give. The mission site plants its own, only
+       where they belong. Grass stays: it is ground colour, not an object. */
+    if (!missionSite) {
+      gp('groves', () => placeGroves(Math.round(area * DENSITY.groves)));
+      gp('props', () => placeProps(Math.round(area * DENSITY.props)));
+    }
 
     // Loose cover isn't part of a building, so a piece that landed somewhere it
     // shouldn't can just be dropped — buildings go through placeBuilding() and
@@ -7230,7 +7237,11 @@ const Game = (() => {
      lootable goes in the outer band on purpose: it would turn the approach
      into a shopping trip and give you a reason to make noise a long way from
      anything that matters. */
-  const MISSION_BANDS = { core: 430, middle: 1150, shacks: 2000 };
+  /* Pushed apart deliberately. The bands were close enough together that the
+     medium buildings and the shacks read as one spread of buildings; the gaps
+     between them are what make the progression something you can see rather
+     than something the code knows. */
+  const MISSION_BANDS = { core: 560, middle: 1500, shacks: 2500 };
 
   function buildMissionSite() {
     const cx = MAP_W / 2, cy = MAP_H / 2;
@@ -7284,6 +7295,22 @@ const Game = (() => {
     // the compound is wherever the big building actually landed
     garrisonCore = { x: cores[0].x + cores[0].w / 2, y: cores[0].y + cores[0].h / 2, r: 2600 };
 
+    /* A second big building, half the time. Two makes the middle a compound
+       you have to search rather than one door to walk through, and it is what
+       the mode was asked for -- "one or two big buildings for where the
+       important parts are". */
+    if (Math.random() < 0.55) {
+      const name = coreKinds[Math.floor(Math.random() * coreKinds.length)];
+      const base2 = Math.random() * Math.PI * 2;
+      for (let t = 0; t < 40; t++) {
+        const ang = base2 + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.16;
+        const r = 560 + Math.random() * 180;
+        const b = drop(name, garrisonCore.x + Math.cos(ang) * r - 280,
+          garrisonCore.y + Math.sin(ang) * r - 240, t < 20 ? 90 : 50, 'missionCore');
+        if (b) { cores.push(b); break; }
+      }
+    }
+
     // MIDDLE — ringed round the core so they cover each other
     const midKinds = ['warehouse', 'clinic', 'library', 'workshop', 'depot',
       'garage', 'apartments', 'hangar'];
@@ -7297,8 +7324,8 @@ const Game = (() => {
       const base = (i / midN) * Math.PI * 2;
       for (let t = 0; t < 48; t++) {
         const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.09;
-        const r = MISSION_BANDS.core + 200
-          + Math.random() * (MISSION_BANDS.middle - MISSION_BANDS.core - 280);
+        // tight against the core band, leaving a clear gap before the shacks
+        const r = MISSION_BANDS.core + 160 + Math.random() * 420;
         if (drop(name, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r,
           t < 24 ? 110 : 60, 'missionMid')) break;
       }
@@ -7306,23 +7333,28 @@ const Game = (() => {
 
     // SHACKS — out where a man can be on his own
     const shackKinds = ['shanty', 'checkpoint', 'camp', 'house', 'tower', 'watermill'];
-    const shackN = 6 + Math.floor(Math.random() * 4);
+    const shackN = 7 + Math.floor(Math.random() * 4);
     for (let i = 0; i < shackN; i++) {
       const name = shackKinds[Math.floor(Math.random() * shackKinds.length)];
       const base = (i / shackN) * Math.PI * 2;
       for (let t = 0; t < 48; t++) {
         const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.09;
-        const r = MISSION_BANDS.middle + 140
-          + Math.random() * (MISSION_BANDS.shacks - MISSION_BANDS.middle - 220);
+        // a ring of their own, well clear of the medium buildings
+        const r = MISSION_BANDS.middle + 260 + Math.random() * 520;
         if (drop(name, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r,
           t < 24 ? 150 : 80, 'missionShack')) break;
       }
     }
 
     // OUTER — trees and rock, and nothing worth stopping for
-    for (let i = 0; i < 150; i++) {
+    /* The reach is bounded by the island, not by an arbitrary span. At
+       shacks+1400 most of the candidates were past the shore and rejected, so
+       the "empty land with trees" band came out with a scatter of about 180
+       trees in it rather than woodland. */
+    const treeReach = Math.min(1000, Math.min(MAP_W, MAP_H) * 0.46 - MISSION_BANDS.shacks);
+    for (let i = 0; i < 900; i++) {
       const ang = Math.random() * Math.PI * 2;
-      const r = MISSION_BANDS.shacks + 140 + Math.random() * 1500;
+      const r = MISSION_BANDS.shacks + 150 + Math.random() * Math.max(200, treeReach);
       const x = clamp(cx + Math.cos(ang) * r, 240, MAP_W - 240);
       const y = clamp(cy + Math.sin(ang) * r, 240, MAP_H - 240);
       if (terrain && !Terrain.isSpawnable(terrain, x, y)) continue;
@@ -15387,13 +15419,13 @@ const Game = (() => {
       const B = { core: 0, middle: 0, shacks: 0, outer: 0 };
       for (const b of buildings) {
         const d = missionDepth(b.x + b.w / 2, b.y + b.h / 2);
-        if (d < 430) B.core++;
-        else if (d < 1150) B.middle++;
-        else if (d < 2000) B.shacks++;
+        if (d < MISSION_BANDS.core) B.core++;
+        else if (d < MISSION_BANDS.middle) B.middle++;
+        else if (d < MISSION_BANDS.shacks) B.shacks++;
         else B.outer++;
       }
       const trees = obstacles.filter(o => o.isProp
-        && missionDepth(o.x, o.y) > 2000).length;
+        && missionDepth(o.x, o.y) > MISSION_BANDS.shacks).length;
       return { ...B, total: buildings.length, outerTrees: trees, side: missionSide,
         tagged: { core: buildings.filter(b2 => b2.missionCore).length,
           mid: buildings.filter(b2 => b2.missionMid).length,
