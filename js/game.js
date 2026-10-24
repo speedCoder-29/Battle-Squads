@@ -135,7 +135,19 @@ const Game = (() => {
      ground. The per-team cap is what the agent list and the bot AI stay
      comfortable with on a browser frame budget. */
   const TEAM_SETUP = {
-    domination: { teams: 4, perTeam: 4 },
+    /* Two sides, not four.
+
+       Domination is a three-point mode and the genre settled on three points
+       in a triangle with two sides for a reason: A and C are home flags, B is
+       the contested middle, and the whole strategy of the mode -- hold two of
+       three, and you know which flag the enemy has to spawn on -- only exists
+       when there are exactly two owners to hold them. Four squads over three
+       points produced a scramble with no home ground and no readable front,
+       which is a different game that happens to share a scoreboard.
+
+       Eight a side rather than six, so the island is no emptier than it was
+       with four squads of four. */
+    domination: { teams: 2, perTeam: 8 },
     elimination: { teams: 6, perTeam: 4 },
     /* Arms Race is fought between more, smaller squads than Domination.
        The mode is a race up a weapon ladder and every kill is a rung, so what
@@ -157,8 +169,13 @@ const Game = (() => {
     let pick = null;
     try { pick = (DB.getProfile() || {}).matchSetup; } catch (e) { pick = null; }
     const lim = (v, d, [lo, hi]) => clamp(Math.round(v === undefined || v === null ? d : v), lo, hi);
+    /* Mission is two sides and cannot be anything else. It is not a contest
+       between squads -- it is you against the island -- so a third team has
+       nobody to be. The lobby's team slider is ignored here rather than
+       clamped away quietly in six places downstream. */
+    const cap = m === 'mission' ? [2, 2] : TEAM_LIMITS.teams;
     return {
-      teams: lim(pick && pick.teams, base.teams, TEAM_LIMITS.teams),
+      teams: lim(pick && pick.teams, base.teams, cap),
       perTeam: lim(pick && pick.perTeam, base.perTeam, TEAM_LIMITS.perTeam),
     };
   }
@@ -182,6 +199,43 @@ const Game = (() => {
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
   let grenades = [], deployables = [], smokes = [], crates = [], drops = [], airstrikes = [];
   let supplyDrop = null, supplyTimer = 0, supplyCount = 0;
+  /* ---------------- the closing zone ----------------
+     Elimination's pacing, and the only thing on the board that makes people
+     move who do not want to. The rules live in RoomSim.Zone so the host and
+     every client step exactly one schedule; this is the local copy -- stepped
+     here offline, and overwritten by the host's every snapshot online, because
+     the edge is what does the damage and two machines must not disagree about
+     where it is. Null in every mode that does not close. */
+  let zone = null;
+  const zoneOutside = (a) => !!zone && RoomSim.Zone.outside(zone, a.x, a.y);
+  /* Somewhere inside the circle this phase is closing to, for anybody caught
+     out. Not the dead centre -- a whole lobby converging on one pixel is a
+     pile-up -- but inside the target circle with room to spare, on the bearing
+     they are already coming from, which is the shortest honest route in. */
+  function zoneRunPoint(a) {
+    if (!zone) return null;
+    const tx = zone.tx !== undefined ? zone.tx : zone.x;
+    const ty = zone.ty !== undefined ? zone.ty : zone.y;
+    const tr = zone.tr !== undefined ? zone.tr : zone.r;
+    const dx = a.x - tx, dy = a.y - ty;
+    const d = Math.hypot(dx, dy) || 1;
+    const want = Math.max(0, tr - 140);
+    return { x: tx + (dx / d) * want, y: ty + (dy / d) * want };
+  }
+  /* What the circle is costing anybody standing outside it. Offline only --
+     online the room bills everyone and sends the result, and running it on
+     both sides would charge the player twice for the same mistake. */
+  function stepZone(dt) {
+    if (!zone || online) return;
+    RoomSim.Zone.step(zone, dt);
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle || a.riding) continue;
+      const dps = RoomSim.Zone.damage(zone, a.x, a.y);
+      /* 'true' damage: a vest is no help against the weather, and letting
+         armour reduce it would make the zone a loot check. */
+      if (dps > 0) applyDamage(a, dps * dt, null, 'true');
+    }
+  }
   let grass = [], trenches = [], decor = [];                       // terrain + dressing
   let terrain = null;                                              // island: ocean/beach/grass/river/roads
   let flashOverlay = 0;                                            // player blind timer (s)
@@ -245,6 +299,20 @@ const Game = (() => {
   /* Objectives live inside the landmark buildings, so capturing one means
      holding a factory floor or a keep rather than standing in a field. If a
      landmark somehow failed to place, we fall back to open ground. */
+  /* Where the three points go, as a fraction of the map.
+
+     An equilateral triangle, which is the arrangement the mode is built on:
+     equal sides mean the walk from A to B is the walk from C to B, so neither
+     home flag is closer to the middle than the other. The old anchors were
+     (0.24,0.70) (0.50,0.44) (0.77,0.30) -- a scalene sprawl where A->B was
+     0.40 of the map and A->C was 0.53, so one side had a shorter rotation
+     than the other all match. A and C sit level, B is the far point. */
+  const OBJ_TRIANGLE = [
+    { u: 0.27, v: 0.69 },    // A -- home flag, west
+    { u: 0.50, v: 0.29 },    // B -- the middle, north
+    { u: 0.73, v: 0.69 },    // C -- home flag, east
+  ];
+
   function objectiveAnchors() {
     const names = ['A', 'B', 'C'];
     if (landmarks.length >= 3) {
@@ -254,11 +322,8 @@ const Game = (() => {
         return { name: names[i], x: p.x, y: p.y, r, building: l.name, inside: true };
       });
     }
-    return [
-      { name: 'A', x: MAP_W * 0.24, y: MAP_H * 0.70, r: 165 },
-      { name: 'B', x: MAP_W * 0.50, y: MAP_H * 0.44, r: 175 },
-      { name: 'C', x: MAP_W * 0.77, y: MAP_H * 0.30, r: 165 },
-    ];
+    return OBJ_TRIANGLE.map((a, i) =>
+      ({ name: names[i], x: MAP_W * a.u, y: MAP_H * a.v, r: i === 1 ? 175 : 165 }));
   }
   let objectiveSpotsCache = [];
   const objectiveSpots = () => objectiveSpotsCache;
@@ -278,11 +343,8 @@ const Game = (() => {
   const LANDMARKS = ['obj-relay', 'obj-refinery', 'obj-citadel'];
 
   function placeLandmarks() {
-    const anchors = [
-      { x: MAP_W * 0.26, y: MAP_H * 0.70 },
-      { x: MAP_W * 0.52, y: MAP_H * 0.40 },
-      { x: MAP_W * 0.76, y: MAP_H * 0.72 },
-    ];
+    // the same triangle the objectives use, so the buildings *are* the points
+    const anchors = OBJ_TRIANGLE.map(a => ({ x: MAP_W * a.u, y: MAP_H * a.v }));
     landmarks = [];
     LANDMARKS.forEach((name, i) => {
       const anchor = anchors[i % anchors.length];
@@ -517,6 +579,7 @@ const Game = (() => {
     };
     for (const k in genProf) delete genProf[k];
     terrain = gp('terrain', () => Terrain.generate(MAP_W, MAP_H, worldSeed));
+    invalidateChart();          // the traced coastline belongs to this island
 
     // playable ground is the grass interior, not the whole rectangle
     const playW = MAP_W - Terrain.BEACH_INSET * 2;
@@ -810,7 +873,20 @@ const Game = (() => {
     diningLobby: { props: ['table', 'chair', 'chair', 'plant'], n: 12, lamps: 3 },
     lounge:      { props: ['chair', 'table', 'plant', 'shelf'], n: 7, lamps: 2 },
     lobby:       { props: ['chair', 'plant', 'desk', 'table'], n: 6, lamps: 2 },
-    hall:        { props: ['plant'], n: 2, lamps: 3, strip: true },
+    /* A corridor, furnished like one.
+
+       It used to be two potted plants, which is what a corridor looks like
+       when nobody has decided what a corridor is for. They are the most
+       walked and most fought-over floor in any building — the thing a player
+       is actually looking down — and there was nothing in them to read, to
+       take cover behind, or to tell one building's corridor from another's.
+
+       Everything here hugs a wall or a corner (see PLACEMENT), because the
+       one thing a corridor must stay is walkable; `narrow` below enforces
+       that with a measurement rather than trusting the table. The building's
+       own signature props are mixed in on top, which is what makes a
+       hospital corridor different from a factory aisle — see GENERIC_ROOMS. */
+    hall:        { props: ['bench', 'locker', 'plant', 'bin', 'crate'], n: 5, lamps: 3, strip: true },
     living:      { props: ['chair', 'chair', 'table', 'shelf', 'plant'], n: 7, lamps: 2 },
     foyer:       { props: ['plant', 'plant', 'chair', 'table'], n: 4, lamps: 2 },
     study:       { props: ['desk', 'chair', 'shelf', 'shelf', 'plant'], n: 6, lamps: 1 },
@@ -848,7 +924,7 @@ const Game = (() => {
     /* Lit end to end, because a passage you cannot see down is a passage
        nobody walks. Sparse otherwise — it is a route, not a room. */
     tunnel:      { props: ['crate', 'barrel', 'ammoBox'], n: 5, lamps: 5, strip: true },
-    passage:     { props: ['crate', 'shelf', 'barrel'], n: 3, lamps: 2, strip: true },
+    passage:     { props: ['crate', 'shelf', 'barrel', 'pipes', 'bin'], n: 5, lamps: 2, strip: true },
     office:      { props: ['desk', 'chair', 'shelf', 'locker', 'plant'], n: 6, lamps: 1 },
     controlRoom: { props: ['desk', 'chair', 'ammoBox', 'locker'], n: 6, lamps: 2 },
     classroom:   { props: ['desk', 'chair', 'chair', 'shelf'], n: 8, lamps: 1 },
@@ -892,6 +968,14 @@ const Game = (() => {
     bed: 'wall', shelf: 'wall', locker: 'wall', desk: 'wall', stove: 'wall',
     toilet: 'corner', plant: 'corner', ammoBox: 'corner', barrel: 'corner',
     tyre: 'corner', cone: 'corner', pallet: 'wall',
+    /* Corridor furniture. All of it against something: a bench and a run of
+       pipes go along a wall, a bin goes in a corner. Left out of this table
+       they fell through to 'free', which drops a prop anywhere in the room —
+       fine in a bedroom, and in a 68px corridor it is an obstacle on the
+       centreline of the only route through the building. */
+    bench: 'wall', pipes: 'wall', sign: 'wall', generator: 'wall',
+    container: 'wall', bin: 'corner', hayBale: 'corner', stump: 'corner',
+    sandpile: 'corner', rubble: 'corner',
     table: 'centre',
     chair: 'byTable',
     /* A light is on a wall or a ceiling. Dropping one in the middle of a
@@ -955,6 +1039,16 @@ const Game = (() => {
        out in the middle, or pulled up to a table, and everything is square to
        the room it is in. */
     const placed = [];
+    /* How much clear floor a room has across its short axis. A corridor is a
+       room whose short axis is barely wider than the people in it, and the
+       rule there is different from the rule in a bedroom: anything put down
+       has to leave a lane a body can still get through, or the furniture has
+       sealed the route.
+
+       LANE is two body widths plus a margin — enough for somebody to come the
+       other way, which is the whole reason a corridor is worth fighting in. */
+    const LANE = BODY_R * 2 + 24;
+    const narrow = Math.min(r.w, r.h) < LANE + 70;
     const put = (kind, m) => {
       const how = PLACEMENT[kind] || 'free';
       const pad = m.r + 5;
@@ -1047,6 +1141,15 @@ const Game = (() => {
       const kind = order[i % order.length];
       const m = Sprites.META[kind];
       if (!m) continue;
+      /* In a corridor, only things that go against a wall, and only if what
+         is left is still wide enough to walk down. A plant in a corner of a
+         bedroom is scenery; the same plant halfway down a 68px passage is a
+         door nobody can open. */
+      if (narrow) {
+        const how = PLACEMENT[kind] || 'free';
+        if (how !== 'wall' && how !== 'corner') continue;
+        if (Math.min(r.w, r.h) - m.r * 2 < LANE) continue;
+      }
       for (let tries = 0; tries < 16; tries++) {
         const p = put(kind, m);
         if (p.x < r.x || p.y < r.y || p.x > r.x + r.w || p.y > r.y + r.h) continue;
@@ -1465,6 +1568,25 @@ const Game = (() => {
      would leave the gaps between them permanently visible. */
   const FOG_CELL = 34;                 // px per cell of building memory
   const FOG_REACH = 78;                // how far around you counts as seen
+  /* How far you can see down a corridor. Generous -- the longest building on
+     the map is about 1700px -- because the point is that a hallway reads as a
+     hallway the moment you are standing in it, end to end. */
+  /* 1500, not 900. The resort's spine is 1399px end to end and the harbor's
+     is longer still; at 900 the raycast stopped two thirds of the way down
+     the longest corridors in the game and the far end was only filled in by
+     the "room you are standing in" rule, which is not the same thing — it
+     covers the corridor you are in and nothing you are looking at from it. */
+  const FOG_SIGHT = 1500;
+  /* Bumped whenever a wall opens, closes or comes down. The per-building
+     sight grid below is baked from the walls, so it has to be rebuilt when
+     they change -- and `invalidateRects()` cannot be the trigger because the
+     update loop calls that every single frame. */
+  let wallGen = 1;
+  /* The line-of-sight pass, switchable. Off, the fog falls back to what it
+     used to be — the room you are standing in, plus a bubble — which is the
+     only way to measure what the raycast is actually contributing rather than
+     assuming it. Tests flip it; nothing in the game does. */
+  let fogRays = true;
 
   function fogFor(b) {
     if (!b.fog) {
@@ -1479,6 +1601,39 @@ const Game = (() => {
       b.fog = { x0, y0, cols, rows, seen: new Uint8Array(cols * rows), any: false, dirty: true, tile: null };
     }
     return b.fog;
+  }
+
+  /* ---------------- seeing down a hallway ----------------
+     The fog used to clear in a 78px bubble around you plus whichever room
+     rectangle you were standing inside. That is a torch, not eyesight: you
+     could stand at the mouth of a sixty-metre corridor, look straight down
+     it, and the far half of it stayed hazy until you had physically walked
+     there. Every game with an interior does the opposite -- what you can see
+     is what is in line of sight, and a corridor is exactly the shape that
+     rewards looking.
+
+     Done by marching rays over a bitmap rather than by testing rectangles.
+     A building has 30-60 wall segments and a fan of rays takes a few thousand
+     steps, so segment tests would be six figures of work a frame; a bitmap
+     baked at the fog's own resolution turns each step into one array read.
+     The grid is shared with the fog it writes into, so a cell is either
+     blocked or it is somewhere you can be told about. */
+  function sightGridFor(b, f) {
+    if (f.blocked && f.blockedGen === wallGen) return f.blocked;
+    const g = f.blocked && f.blocked.length === f.cols * f.rows
+      ? f.blocked.fill(0) : new Uint8Array(f.cols * f.rows);
+    const x1 = f.x0 + f.cols * FOG_CELL, y1 = f.y0 + f.rows * FOG_CELL;
+    for (const o of sightRects()) {
+      if (o.open) continue;                       // an open door is a view
+      if (o.x > x1 || o.y > y1 || o.x + o.w < f.x0 || o.y + o.h < f.y0) continue;
+      const c0 = Math.max(0, Math.floor((o.x - f.x0) / FOG_CELL));
+      const r0 = Math.max(0, Math.floor((o.y - f.y0) / FOG_CELL));
+      const c1 = Math.min(f.cols - 1, Math.floor((o.x + o.w - f.x0) / FOG_CELL));
+      const r1 = Math.min(f.rows - 1, Math.floor((o.y + o.h - f.y0) / FOG_CELL));
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) g[r * f.cols + c] = 1;
+    }
+    f.blocked = g; f.blockedGen = wallGen;
+    return g;
   }
 
   /* Mark what an occupant can see of the building they are standing in. */
@@ -1499,10 +1654,42 @@ const Game = (() => {
         for (let x = r.x - FOG_CELL; x <= r.x + r.w + FOG_CELL; x += FOG_CELL / 2) mark(x, y);
       }
     }
-    // ...and a little around you, so corridors and the gaps between rooms clear
+    // ...and a little around you, so you are never standing in your own fog
     for (let y = a.y - FOG_REACH; y <= a.y + FOG_REACH; y += FOG_CELL / 2) {
       for (let x = a.x - FOG_REACH; x <= a.x + FOG_REACH; x += FOG_CELL / 2) {
         if (Math.hypot(x - a.x, y - a.y) <= FOG_REACH) mark(x, y);
+      }
+    }
+
+    /* ...and then everything in line of sight, which is what actually makes a
+       corridor worth standing in.
+
+       A full circle rather than a cone in front of you. A cone is the
+       realistic answer and the wrong one here: this is a top-down game, the
+       camera shows you the room regardless of which way your body points, and
+       fogging what the camera is plainly displaying because your shoulders
+       are turned reads as a bug rather than as peripheral vision.
+
+       The ray step is half a cell so nothing is skipped over diagonally, and
+       the blocked cell itself is marked before stopping -- you can see the
+       wall that is stopping you, you just cannot see past it. */
+    if (!fogRays) { f.any = true; return; }
+    const grid = sightGridFor(b, f);
+    const RAYS = 180;
+    const step = FOG_CELL * 0.5;
+    const steps = Math.ceil(FOG_SIGHT / step);
+    for (let i = 0; i < RAYS; i++) {
+      const ang = (i / RAYS) * Math.PI * 2;
+      const dx = Math.cos(ang) * step, dy = Math.sin(ang) * step;
+      let x = a.x, y = a.y;
+      for (let k = 0; k < steps; k++) {
+        x += dx; y += dy;
+        const cx = Math.floor((x - f.x0) / FOG_CELL);
+        const cy = Math.floor((y - f.y0) / FOG_CELL);
+        if (cx < 0 || cy < 0 || cx >= f.cols || cy >= f.rows) break;
+        const idx = cy * f.cols + cx;
+        if (!f.seen[idx]) { f.seen[idx] = 1; f.dirty = true; }
+        if (grid[idx]) break;              // a wall: you see it, not past it
       }
     }
     f.any = true;
@@ -2375,8 +2562,39 @@ const Game = (() => {
      squad along. Used by the respawn search below — the jitter alone was far
      too small a search space for "somewhere else on our side" to mean
      anything. */
+  /* Which capture point is a side's home flag, in two-sided Domination.
+     Team 0 owns A, team 1 owns C, and B belongs to nobody -- that is the
+     arrangement the whole mode rests on. Returns null in any other shape,
+     where there is no such thing as a home flag. */
+  function homeFlag(team) {
+    if (mode !== 'domination' || nTeams !== 2) return null;
+    const spots = objectiveSpots();
+    if (spots.length < 3) return null;
+    return spots[team === 0 ? 0 : 2] || null;
+  }
+
   function spawnPoint(team, arc) {
     const cx = MAP_W / 2, cy = MAP_H / 2;
+    /* Two-sided Domination deploys *behind its own flag*, not on a bearing
+       round the island. Spawning by bearing put both sides north and south
+       while A and C sat west and east, so neither side ever had ground it
+       started on -- and "hold your home flag, fight for B" is the mode. The
+       point is pushed outward from the middle so you land behind A looking
+       in, with B on the horizon. */
+    const home = homeFlag(team);
+    if (home) {
+      const dx = home.x - cx, dy = home.y - cy;
+      const d = Math.hypot(dx, dy) || 1;
+      const back = 760 + (arc || 0) * 90;
+      // a little across the approach as well as behind it, so eight people do
+      // not arrive in a single file
+      const px = -dy / d, py = dx / d;
+      const side = rand(-430, 430);
+      return {
+        x: clamp(home.x + (dx / d) * back + px * side + rand(-60, 60), SPAWN_INSET, MAP_W - SPAWN_INSET),
+        y: clamp(home.y + (dy / d) * back + py * side + rand(-60, 60), SPAWN_INSET, MAP_H - SPAWN_INSET),
+      };
+    }
     const sector = Math.PI / Math.max(1, nTeams);        // half the gap to a neighbour
     const swing = (arc || 0) * sector * 0.55;
     const ang = -Math.PI / 2 + swing + (team / Math.max(1, nTeams)) * Math.PI * 2;
@@ -3197,7 +3415,24 @@ const Game = (() => {
       addItem('heal', 'bandage', 3);
     }
     player.baseWeapon = player.weapon;   // remember base so a looted legendary can revert
-    timeLeft = coached ? COACH_SECONDS : MATCH_SECONDS;
+    /* The circle, on the world's own seed, so a shared seed closes on the same
+       places -- an island two players can argue about beforehand. */
+    /* Mission state, cleared for every mode including Mission itself -- it is
+       set up again below. Without this a Firing Range entered straight after
+       an infiltration still reported `missionPhase: 'infiltrate'`, which is
+       harmless only for as long as nothing reads it without also checking the
+       mode, and something eventually will. */
+    if (!inMission()) {
+      mission = null; missionPhase = null; missionAsset = null; missionTarget = null;
+      missionHeld = false; exfil = null; missionBodies = []; missionHost = null;
+    }
+    zone = RoomSim.Zone.has(mode)
+      ? withSeed(worldSeed ^ 0x2b1e, () => RoomSim.Zone.create(MAP_W, MAP_H, Math.random))
+      : null;
+    /* Elimination runs on the clock its zone implies rather than Domination's
+       eight minutes: the match should end when the board has finished
+       shrinking, not three minutes after. */
+    timeLeft = coached ? COACH_SECONDS : RoomSim.matchSecondsFor(mode);
     camTarget = player; camWasDead = false; camSnap = true;
     matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0, shots: 0, hits: 0, heads: 0, assists: 0 };
     botLootCount = 0;
@@ -4178,6 +4413,12 @@ const Game = (() => {
 
     // enemies in a ~100° arc in front
     let hitSomething = false;
+    /* A swing is the only way to kill somebody with the blade, and Arms Race
+       needs to know which kills came off one. applyDamage runs synchronously
+       inside this loop, so a flag set around it is read by the death handler
+       before anything else can touch it -- cheaper and less invasive than
+       threading a damage type through Combat.resolve for one game mode. */
+    a.meleeNow = true;
     for (const o of agents) {
       if (!o.alive || o.team === a.team) continue;
       const d = Math.hypot(o.x - a.x, o.y - a.y);
@@ -4189,6 +4430,7 @@ const Game = (() => {
       spawnFx(o.x, o.y, '#ffffff', 6);
       hitSomething = true;
     }
+    a.meleeNow = false;
     // walls straight ahead (pierce = the toughest wall this tool can work)
     if (t.structure > 0) {
       const r = hitStructures(a, t, reach);
@@ -4465,6 +4707,7 @@ const Game = (() => {
      time on our own screen and destroy a neighbouring barrel the room still
      believes in. */
   function destroyStructure(s, echo) {
+    wallGen++;                      // a hole in a wall is a new sightline
     navDirty = true;                 // a hole in a wall is a new route
     const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
     const k = kindOf(s);
@@ -5278,6 +5521,7 @@ const Game = (() => {
   }
   function toggleDoor(d, who) {
     d.open = !d.open;
+    wallGen++;                      // the inside of this building just changed shape
     /* Online the room owns the door too, or we'd be the only ones who can walk
        through it. We still swing it open here and now — waiting a round trip
        to touch a door feels broken — and the room's event confirms the same
@@ -6524,7 +6768,37 @@ const Game = (() => {
     if (a.healCd > 0) a.healCd -= dt;
     const retreating = hpFrac < SURV.retreatAt;
 
-    if (target && td < range * AIM.rangeDiscipline && canSee) {
+    /* Caught outside the circle: that outranks the fight in front of you.
+
+       Routed rather than run at in a straight line, because "outside the
+       circle" is usually also "the wrong side of a building", and a bot
+       shoving at a wall while the zone eats it is the single most obviously
+       broken thing a closing board can produce. Suppressing the combat branch
+       as well is deliberate -- a squad that stops to trade shots on the wrong
+       side of the edge simply dies there, and watching that happen reads as
+       the AI being stupid rather than as the zone being dangerous. */
+    const fleeing = !!zone && !a.isVehicle && zoneOutside(a);
+    if (fleeing) {
+      const run = zoneRunPoint(a);
+      if (run) {
+        let dir = null;
+        if (navGrid && Nav.clearLine(navGrid, a, run)) {
+          const ang = Math.atan2(run.y - a.y, run.x - a.x);
+          dir = { x: Math.cos(ang), y: Math.sin(ang) };
+          a.path = null;
+        } else if (ensurePath(a, run.x, run.y)) {
+          dir = followPath(a);
+        }
+        if (dir) {
+          a.angle = Math.atan2(dir.y, dir.x);
+          moveX += dir.x; moveY += dir.y;
+          a.throttle = dir.throttle === undefined ? 1 : dir.throttle;
+        } else {
+          const ang = slideToward(a, run.x, run.y);
+          a.angle = ang; moveX += Math.cos(ang); moveY += Math.sin(ang);
+        }
+      }
+    } else if (target && td < range * AIM.rangeDiscipline && canSee) {
       const baseAng = Math.atan2(target.y - a.y, target.x - a.x);
       // SURVIVAL — hold your weapon's preferred distance; back off entirely if hurt
       const ideal = range * SURV.standoff;
@@ -7169,20 +7443,66 @@ const Game = (() => {
     if (isYours(a)) updateWeaponHud();
   }
 
-  /* A kill is a rung. Returns true if that kill won the match. */
-  function raceAdvance(killer) {
+  /* Whoever is furthest up the ladder, or null if nobody has scored yet.
+     One definition, read by the HUD, by the leader marker over their head and
+     by the bonus rung for killing them -- three places that must agree about
+     who the leader is or the mode lies to you. Ties go to the lowest index,
+     which is stable frame to frame. */
+  function raceLeader() {
+    let lead = null;
+    for (const a of agents) {
+      if (a.isVehicle || typeof a.rung !== 'number') continue;
+      if (!lead || a.rung > lead.rung) lead = a;
+    }
+    return lead && lead.rung > 0 ? lead : null;
+  }
+
+  /* A kill is a rung. Returns true if that kill won the match.
+
+     Two catch-up rules on top of that, both of them standard in the mode and
+     both there for the same reason: a ladder race with no way back is decided
+     in its first two minutes.
+
+       THE LEADER IS WORTH TWO. Whoever is furthest up is marked for everybody
+       -- there is no hiding at the front -- and taking them down pays a bonus
+       rung. It turns a runaway lead into a target, which is the only pressure
+       that works on somebody who is already winning.
+
+       THE BLADE STEALS. A melee kill knocks the victim back down a rung as
+       well as moving the killer up. It is a two-rung swing for the riskiest
+       attack in the game, and it is why anybody at the back of the pack still
+       has a reason to close. */
+  function raceAdvance(killer, victim) {
     if (mode !== 'armsrace' || !killer || killer.isVehicle) return false;
-    const was = killer.rung || 0;
+
+    const lead = raceLeader();
+    const tookLeader = !!(victim && lead && victim === lead && victim !== killer);
+    const stabbed = !!(killer.meleeNow && victim && !victim.isVehicle);
+
+    /* The blade takes one off the victim first, so the demotion lands even on
+       the kill that wins the match -- and before the killer moves, so being
+       stabbed by the man behind you cannot promote you. */
+    if (stabbed && (victim.rung || 0) > 0) {
+      setRung(victim, victim.rung - 1);
+      if (victim.isPlayer) hudMsg('Knifed - knocked back to rung ' + (victim.rung + 1));
+      else if (killer.isPlayer) hudMsg('Knife kill - ' + nameOf(victim, 'they') + ' lost a rung');
+    }
+
     if (killer.raceKnife) {
       // already at the top: this kill is the one that ends it
       return true;
     }
-    setRung(killer, was + 1);
+    const step = 1 + (tookLeader ? 1 : 0);
+    setRung(killer, (killer.rung || 0) + step);
     if (killer.isPlayer) {
       SFX.reward();
       hudMsg(killer.rung >= raceTop()
         ? 'FINAL RUNG - one melee kill to win'
-        : 'Rung ' + (killer.rung + 1) + '/' + RACE_RUNGS + ' - ' + killer.weapon.name);
+        : tookLeader
+          ? 'LEADER DOWN - two rungs to ' + (killer.rung + 1) + '/' + RACE_RUNGS
+          : 'Rung ' + (killer.rung + 1) + '/' + RACE_RUNGS + ' - ' + killer.weapon.name);
+    } else if (tookLeader && lead && lead.isPlayer) {
+      hudMsg(nameOf(killer, 'Someone') + ' took your lead');
     }
     return false;
   }
@@ -7200,6 +7520,9 @@ const Game = (() => {
   let garrisonCore = { x: 0, y: 0, r: 1 };
   let missionStat = { spotted: 0, bodiesFound: 0, shotsHeard: 0, peakAlert: 0 };
   let missionSide = null;        // which side of the island you came in on
+  /* The building the objective is actually in, which is not necessarily the
+     one the compound is centred on -- there can be two. */
+  let missionHost = null;
   /* Corpses the garrison has not walked past yet. Kept as its own short list
      rather than scanned out of `agents`, because a dead body stops being an
      agent the moment it respawns in every other mode and here it must not. */
@@ -7212,6 +7535,19 @@ const Game = (() => {
      run at the end -- is measured from this one point. */
   function missionDepth(x, y) {
     return Math.hypot(x - garrisonCore.x, y - garrisonCore.y);
+  }
+
+  /* Where the pin goes. The asset or the man if we have placed one, the
+     building they are in otherwise, and the compound centre as a last resort.
+
+     This used to be `garrisonCore` outright, which was correct only while the
+     compound had exactly one building in it. With two, the marker sat on the
+     yard between them and the player walked to a pin with nothing under it. */
+  function objectivePoint() {
+    if (missionAsset) return { x: missionAsset.x, y: missionAsset.y };
+    if (missionTarget && missionTarget.alive) return { x: missionTarget.x, y: missionTarget.y };
+    if (missionHost) return { x: missionHost.x + missionHost.w / 2, y: missionHost.y + missionHost.h / 2 };
+    return { x: garrisonCore.x, y: garrisonCore.y };
   }
 
   /* ---------- laying out the site ----------
@@ -7241,7 +7577,62 @@ const Game = (() => {
      medium buildings and the shacks read as one spread of buildings; the gaps
      between them are what make the progression something you can see rather
      than something the code knows. */
-  const MISSION_BANDS = { core: 560, middle: 1500, shacks: 2500 };
+  /* ---------- the four bands, measured ----------
+     The classification boundaries, and below them the radii things are
+     actually placed at. The two were drifting apart: buildings were dropped at
+     720-1140 and then classified against a "middle" boundary of 1500, which is
+     why the debug read sensibly while the map did not look like anything.
+
+     The radii leave a real gap between each ring and the next, because the
+     gap is what makes a ring a ring. A player walking in should cross four
+     distinct kinds of ground, and on a 7400px board centred on the compound
+     that is:
+
+       trees    2500 -> the shore      you land here (the spawn ring is 2760)
+       shacks   1850 - 2250           ~500px of open ground before them
+       middle   1050 - 1380           ~470px gap after the shacks
+       core     0 -  620              ~430px of yard around it
+
+     Those gaps are measured against the buildings' own sizes, which is the
+     part the first attempt got wrong: a core building is up to 1300px across,
+     so its *walls* already reach 650 from the centre, and a middle ring at
+     720 was placed inside the building it was supposed to be ringing. */
+  const MISSION_BANDS = { core: 700, middle: 1600, shacks: 2400 };
+  const MISSION_RINGS = {
+    /* No entry for the second core building: it is placed against the first
+       one, at a distance derived from how big the two of them actually are.
+       See buildMissionSite. */
+    middle: [1150, 1450],
+    shacks: [1980, 2320],
+    trees: [2560, 3150],
+  };
+
+  /* ---------- who goes in which band ----------
+     Graded by measured footprint, not by what the name sounds like. Every
+     blueprint in structures.js was placed and its bounding box measured, and
+     the three lists below are that measurement cut into three:
+
+       core     730k - 1490k px^2   obj-citadel through obj-relay
+       middle   420k -  710k        school through library
+       shacks    56k -  360k        garage through tower
+
+     The old lists crossed those lines in both directions and that is why the
+     gradient was invisible: `midKinds` contained clinic (204k) and depot
+     (178k), which are shacks, and `shackKinds` contained house (519k), which
+     is bigger than six of the eight middle buildings. On a map where the whole
+     point is that the buildings get bigger as you close, three of the bands
+     were drawing from overlapping size ranges.
+
+     Core candidates also have to have rooms, because the objective is hidden
+     in one -- which is why `keep` is not here despite being 842k. It has
+     none. */
+  const MISSION_KINDS = {
+    core: ['obj-citadel', 'base', 'obj-refinery', 'mansion', 'factory', 'barracks', 'obj-relay'],
+    middle: ['school', 'market', 'hospital', 'apartments', 'warehouse', 'hangar',
+      'workshop', 'command-center', 'house', 'church', 'library'],
+    shacks: ['garage', 'bunker', 'watermill', 'camp', 'armory', 'shanty',
+      'clinic', 'depot', 'checkpoint', 'radio-tower', 'tower'],
+  };
 
   function buildMissionSite() {
     const cx = MAP_W / 2, cy = MAP_H / 2;
@@ -7263,8 +7654,10 @@ const Game = (() => {
       return b;
     };
 
-    // CORE — has to have real rooms, because the objective is hidden in one
-    const coreKinds = ['base', 'factory', 'keep', 'hospital', 'mansion'];
+    // CORE — has to have real rooms, because the objective is hidden in one,
+    // and has to be the biggest thing on the island, because that is the
+    // difficulty curve made out of architecture
+    const coreKinds = MISSION_KINDS.core;
     const cores = [];
     /* Spiralled outward, not jittered in place.
 
@@ -7300,63 +7693,110 @@ const Game = (() => {
        the mode was asked for -- "one or two big buildings for where the
        important parts are". */
     if (Math.random() < 0.55) {
-      const name = coreKinds[Math.floor(Math.random() * coreKinds.length)];
+      /* Placed against the first one rather than at a fixed radius.
+
+         A fixed 700-900 was measured and it never landed: a core building is
+         up to 1300px across, so its own walls already reach 650 from the
+         compound centre, and every one of the forty attempts was asking to
+         build a second one inside the first. Across five seeds this produced
+         exactly one core building every time, on a mode that is supposed to
+         offer "one or two".
+
+         So the distance is derived from the two buildings' actual half-widths
+         plus a yard between them, which is what "next door" means. */
       const base2 = Math.random() * Math.PI * 2;
-      for (let t = 0; t < 40; t++) {
-        const ang = base2 + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.16;
-        const r = 560 + Math.random() * 180;
-        const b = drop(name, garrisonCore.x + Math.cos(ang) * r - 280,
-          garrisonCore.y + Math.sin(ang) * r - 240, t < 20 ? 90 : 50, 'missionCore');
+      const a0 = cores[0];
+      const halfA = Math.max(a0.w, a0.h) / 2;
+      for (let t = 0; t < 56; t++) {
+        const name = coreKinds[Math.floor(Math.random() * coreKinds.length)];
+        const sz2 = placedSize(name);
+        const halfB = sz2.w ? Math.max(sz2.w, sz2.h) / 2 : 400;
+        const ang = base2 + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.13;
+        const gap = t < 28 ? 220 : 120;
+        const r = halfA + halfB + gap;
+        const b = drop(name,
+          garrisonCore.x + Math.cos(ang) * r - (sz2.w ? sz2.x + sz2.w / 2 : 280),
+          garrisonCore.y + Math.sin(ang) * r - (sz2.h ? sz2.y + sz2.h / 2 : 240),
+          t < 28 ? 90 : 45, 'missionCore');
         if (b) { cores.push(b); break; }
       }
     }
 
-    // MIDDLE — ringed round the core so they cover each other
-    const midKinds = ['warehouse', 'clinic', 'library', 'workshop', 'depot',
-      'garage', 'apartments', 'hangar'];
-    const midN = 4 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < midN; i++) {
-      const name = midKinds[Math.floor(Math.random() * midKinds.length)];
-      /* The angle moves as well as the radius. Holding the bearing fixed and
-         only varying the distance meant that when a bearing was blocked all
-         forty attempts failed together, and the band came out with one
-         building in it instead of five. */
-      const base = (i / midN) * Math.PI * 2;
-      for (let t = 0; t < 48; t++) {
-        const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.09;
-        // tight against the core band, leaving a clear gap before the shacks
-        const r = MISSION_BANDS.core + 160 + Math.random() * 420;
-        if (drop(name, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r,
-          t < 24 ? 110 : 60, 'missionMid')) break;
-      }
-    }
+    /* The rings are laid out around the compound, not around the middle of
+       the map.
 
-    // SHACKS — out where a man can be on his own
-    const shackKinds = ['shanty', 'checkpoint', 'camp', 'house', 'tower', 'watermill'];
-    const shackN = 7 + Math.floor(Math.random() * 4);
-    for (let i = 0; i < shackN; i++) {
-      const name = shackKinds[Math.floor(Math.random() * shackKinds.length)];
-      const base = (i / shackN) * Math.PI * 2;
-      for (let t = 0; t < 48; t++) {
-        const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.09;
-        // a ring of their own, well clear of the medium buildings
-        const r = MISSION_BANDS.middle + 260 + Math.random() * 520;
-        if (drop(name, cx + Math.cos(ang) * r, cy + Math.sin(ang) * r,
-          t < 24 ? 150 : 80, 'missionShack')) break;
+       They were centred on (cx, cy) while the core spirals outward from it to
+       find clear ground and the second core is placed relative to wherever the
+       first landed. So on any seed where the core moved -- which is most of
+       them, because the middle of the island is exactly where a river runs --
+       the core sat at one centre and both rings at another, and the rings came
+       out as an off-centre smear rather than as rings. One centre now, and it
+       is the compound's. */
+    const gx = garrisonCore.x, gy = garrisonCore.y;
+
+    /* A ring of buildings: `n` of them spaced evenly by bearing, each
+       searching outward in angle from its own slot. The angle moves as well as
+       the radius, because holding the bearing fixed meant a blocked bearing
+       failed all forty attempts together and the band came out with one
+       building in it instead of five. */
+    const ring = (kinds, n, [lo, hi], pad, tag) => {
+      let placed = 0;
+      for (let i = 0; i < n; i++) {
+        const base = (i / n) * Math.PI * 2 + Math.random() * 0.2;
+        for (let t = 0; t < 72; t++) {
+          /* A different blueprint each attempt, not one chosen up front. A
+             fixed kind meant a slot that could not fit a school tried the
+             school seventy times and left a gap, when a church would have
+             gone in on the second. */
+          const name = kinds[Math.floor(Math.random() * kinds.length)];
+          const ang = base + (t % 2 ? 1 : -1) * Math.floor(t / 2) * 0.07;
+          const r = lo + Math.random() * (hi - lo);
+          /* Placed by its CENTRE.
+
+             `drop` takes the blueprint origin, which is effectively its
+             top-left, so a 900x780 school asked for radius 1380 put its middle
+             at radius 1980 -- and the measurements said so: the middle ring
+             was asked for 1050-1380 and came out occupying 1009-1732, running
+             straight through the shack ring behind it. `placedSize` already
+             knows the footprint from the origin alone, which is what the
+             clearance pre-check uses, so the offset costs nothing. */
+          const sz = placedSize(name);
+          const ox2 = sz.w ? -(sz.x + sz.w / 2) : 0;
+          const oy2 = sz.h ? -(sz.y + sz.h / 2) : 0;
+          /* And the clearance relaxes as the attempts run out. A ring that is
+             four buildings instead of seven does not read as a ring, and a
+             shack slightly tight against a tree is a much smaller problem. */
+          const give = t < 30 ? pad : t < 54 ? Math.round(pad * 0.6) : Math.round(pad * 0.3);
+          if (drop(name, gx + Math.cos(ang) * r + ox2, gy + Math.sin(ang) * r + oy2,
+            give, tag)) { placed++; break; }
+        }
       }
-    }
+      return placed;
+    };
+
+    // MIDDLE — real buildings, ringed round the core so they cover each other
+    ring(MISSION_KINDS.middle, 6 + Math.floor(Math.random() * 3),
+      MISSION_RINGS.middle, 110, 'missionMid');
+
+    /* SHACKS — out where a man can be on his own, and there have to be enough
+       of them to read as a ring. Seven was a scatter; eleven is a perimeter,
+       and a perimeter is the thing you are supposed to work your way through
+       one isolated sentry at a time. */
+    ring(MISSION_KINDS.shacks, 10 + Math.floor(Math.random() * 4),
+      MISSION_RINGS.shacks, 150, 'missionShack');
 
     // OUTER — trees and rock, and nothing worth stopping for
     /* The reach is bounded by the island, not by an arbitrary span. At
        shacks+1400 most of the candidates were past the shore and rejected, so
        the "empty land with trees" band came out with a scatter of about 180
        trees in it rather than woodland. */
-    const treeReach = Math.min(1000, Math.min(MAP_W, MAP_H) * 0.46 - MISSION_BANDS.shacks);
+    const [tLo, tHi] = MISSION_RINGS.trees;
+    const treeFar = Math.min(tHi, Math.min(MAP_W, MAP_H) * 0.46);
     for (let i = 0; i < 900; i++) {
       const ang = Math.random() * Math.PI * 2;
-      const r = MISSION_BANDS.shacks + 150 + Math.random() * Math.max(200, treeReach);
-      const x = clamp(cx + Math.cos(ang) * r, 240, MAP_W - 240);
-      const y = clamp(cy + Math.sin(ang) * r, 240, MAP_H - 240);
+      const r = tLo + Math.random() * Math.max(200, treeFar - tLo);
+      const x = clamp(gx + Math.cos(ang) * r, 240, MAP_W - 240);
+      const y = clamp(gy + Math.sin(ang) * r, 240, MAP_H - 240);
       if (terrain && !Terrain.isSpawnable(terrain, x, y)) continue;
       if (insideAnyBuilding(x, y, 30)) continue;
       const kind = Math.random() < 0.82 ? 'tree' : 'rock';
@@ -7559,7 +7999,22 @@ const Game = (() => {
     const cores = buildings.filter(b => b.missionCore);
     const host = cores.length ? cores[Math.floor(Math.random() * cores.length)] : buildings[0];
     if (!host) return;
-    garrisonCore = { x: host.x + host.w / 2, y: host.y + host.h / 2, r: 2600 };
+    missionHost = host;
+    /* `garrisonCore` is deliberately NOT moved here.
+
+       It used to be, to whichever core building the objective landed in --
+       and when there are two of them that is a point up to 1200px from the
+       one the entire island was laid out around. Every band is measured from
+       this point, so re-centring it after the fact moved the rings out from
+       under themselves: on a two-core seed the shack ring measured as
+       occupying radius 866 to 3454 instead of 1980 to 2320, and the guards'
+       difficulty gradient was being computed from the wrong middle.
+
+       The compound centre is where the compound is. Which building the
+       objective is in is a separate question, and `missionHost` answers it. */
+    if (!buildings.some(b => b.missionCore)) {
+      garrisonCore = { x: host.x + host.w / 2, y: host.y + host.h / 2, r: 2600 };
+    }
 
     /* The objective goes in a room, not in the middle of a floor. A room the
        generator has already furnished is a place; a coordinate is not. */
@@ -7835,6 +8290,7 @@ const Game = (() => {
     if (rangeShot && (rangeShot.life -= dt) <= 0) rangeShot = null;
     if (mode === 'tutorial') Tutorial.update(dt);   // one lesson at a time
     if (coached) Coach.update(dt);                  // ...and one piece of advice at a time
+    stepZone(dt);
     updateSoundPings(dt);
     updateBuildingEffect(dt);
     updateBuildingFog();
@@ -8587,7 +9043,7 @@ const Game = (() => {
     if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
     /* Arms Race: the kill is the promotion, and the promotion off the last
        rung is the match. Checked before the feed so the banner reads right. */
-    const wonRace = mode === 'armsrace' && raceAdvance(owner);
+    const wonRace = mode === 'armsrace' && raceAdvance(owner, a);
     /* On a mission a dead guard is evidence lying on the floor until somebody
        walks past it. This is the list `missionSenses` reads. */
     if (inMission() && !a.isPlayer && !a.isVehicle && a.team !== player.team) {
@@ -9004,9 +9460,23 @@ const Game = (() => {
        away by the next one. Empty and hidden in an ordinary match. */
     const debriefBox = document.getElementById('res-debrief');
     if (debriefBox) {
-      if (coached) Coach.renderDebrief(debriefBox);
+      /* Mission gets a debrief and nothing else does.
+
+         It is the one mode where the interesting question is not "how many did
+         you kill" -- it is how quietly you did the job, and none of the four
+         result tiles can answer that. An infiltration that ended with the
+         whole island hunting you and an infiltration nobody ever noticed
+         produce the same kill count and are not remotely the same run.
+
+         Domination, Elimination and Arms Race deliberately do not get one. A
+         debrief after every match is a wall of text between a player and the
+         next match, and in a mode whose entire story is already on the
+         scoreboard it would have nothing to say. (The coach's version is a
+         separate thing and still owns the box in a guided match.) */
+      if (inMission()) renderMissionDebrief(debriefBox, won);
+      else if (coached) Coach.renderDebrief(debriefBox);
       else debriefBox.innerHTML = '';
-      debriefBox.hidden = !coached;
+      debriefBox.hidden = !(coached || inMission());
     }
     input.shooting = false;
     showLobby(false);
@@ -9067,6 +9537,62 @@ const Game = (() => {
        host in it. The delay lets the final `end` message reach everyone before
        the connection they'd receive it on goes away. */
     if (typeof P2P !== 'undefined' && P2P.isActive()) setTimeout(() => P2P.stop(), 2000);
+  }
+
+  /* The after-action report for an infiltration: what the garrison knew, and
+     when. Reads off `missionStat`, which has been counting all match.
+
+     Written as findings rather than as a stat block. "Peak alert: 2" is a
+     number out of the engine; "the compound went to full alert" is what
+     happened, and the point of a debrief is to tell you what happened. */
+  function renderMissionDebrief(box, won) {
+    const m = mission || {};
+    const st = missionStat || {};
+    const peak = st.peakAlert || 0;
+    const rows = [];
+
+    /* Grading on the one axis the mode is actually about. Undetected is the
+       thing to chase; it is reachable and it is hard, which is what a top
+       grade should be. */
+    const grade = peak >= Mission.ALERT.HUNTING ? 'Compromised'
+      : peak >= Mission.ALERT.SUSPICIOUS ? 'Detected' : 'Undetected';
+    const tone = grade === 'Undetected' ? 'good' : grade === 'Detected' ? 'warn' : 'bad';
+    rows.push({ tone, head: grade, body:
+      grade === 'Undetected'
+        ? 'Nobody on the island ever knew you were there. That is the run.'
+        : grade === 'Detected'
+          ? 'Somebody got suspicious and went looking, but the compound never confirmed you.'
+          : 'The garrison confirmed you and called it in. Everything after that was a fight.' });
+
+    rows.push({ tone: 'info',
+      head: m.type === 'retrieve' ? 'Asset' : 'Target',
+      body: m.type === 'retrieve'
+        ? (won ? 'Recovered ' + (m.asset || 'the asset') + ' and carried it off the island.'
+          : 'Left ' + (m.asset || 'the asset') + ' behind.')
+        : (won ? (m.target || 'The target') + ' is dead and you are not on the island.'
+          : (m.target || 'The target') + ' is still breathing.') });
+
+    /* The three things that give an infiltrator away, each with the lesson
+       attached -- a count on its own does not teach anybody anything. */
+    if (st.bodiesFound) {
+      rows.push({ tone: 'warn', head: st.bodiesFound + (st.bodiesFound === 1 ? ' body found' : ' bodies found'),
+        body: 'A corpse in the open is the most reliable way to lose a run. Take the man who is alone.' });
+    } else if (matchStats.kills) {
+      rows.push({ tone: 'good', head: 'No bodies found',
+        body: 'You killed ' + matchStats.kills + ' and the patrols walked past every one of them.' });
+    }
+    if (st.shotsHeard) {
+      rows.push({ tone: 'warn', head: st.shotsHeard + ' shots heard',
+        body: 'Gunfire pulls the nearest patrol to where it came from. Suppressors and knives do not.' });
+    }
+    if (st.spotted) {
+      rows.push({ tone: 'bad', head: 'Spotted ' + st.spotted + (st.spotted === 1 ? ' time' : ' times'),
+        body: 'Guards look along their patrol, not behind it. Cross a route after it has passed, not in front of it.' });
+    }
+
+    box.innerHTML = '<h4 class="debrief__title">Mission debrief</h4>'
+      + rows.map(l => '<div class="debrief__row debrief__row--' + l.tone + '">'
+        + '<b>' + l.head + '</b><span>' + l.body + '</span></div>').join('');
   }
 
   /* ---------------- fx ---------------- */
@@ -9555,6 +10081,23 @@ const Game = (() => {
       ctx.globalAlpha = 1;
     }
 
+    /* The Arms Race leader, marked for everybody including themselves. The
+       mode pays a bonus rung for killing them, and a bounty you cannot see is
+       not a bounty -- so this is drawn on friend and enemy alike, which is
+       also the honest version of "you are winning, they are coming". */
+    if (mode === 'armsrace') {
+      const lead = raceLeader();
+      if (lead && lead.alive && !lead.riding) {
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 260);
+        ctx.strokeStyle = 'rgba(255,207,74,' + (0.45 + pulse * 0.4).toFixed(2) + ')';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(lead.x, lead.y, lead.r + 9 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,207,74,' + (0.7 + pulse * 0.3).toFixed(2) + ')';
+        ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('★', lead.x, lead.y - lead.r - 22);
+      }
+    }
+
     // contacts a squadmate's gadget has marked — visible to the whole team
     for (const a of agents) {
       if (!a.alive || a.team === player.team || !(a.markedUntil > 0)) continue;
@@ -9597,6 +10140,7 @@ const Game = (() => {
        adrenaline bar, the item slots and the class line along with the ground.
        The interface is not part of the world and nothing in the world should
        be able to shade it. */
+    drawZoneEdge();          // the closing circle, over the ground and under the HUD
     perfMark('sight', drawSightShadows);
 
     ctx.restore();
@@ -9623,6 +10167,7 @@ const Game = (() => {
     drawSoundPings();
     drawCaptureBar();       // standing on a point: how it is going, and who with
     drawRaceLadder();       // arms race: your rung, and whoever is closest to the top
+    drawZoneHud();          // elimination: what the circle is about to do
     drawMissionHud();       // mission: your orders, and whether they know you are here
     perfMark('minimap', drawMinimap);
     drawCompass();          // which way to turn, as opposed to where things are
@@ -12807,11 +13352,7 @@ const Game = (() => {
     if (mode !== 'armsrace' || !player) return;
     const top = raceTop();
     // whoever is furthest up, so you know how much time you have
-    let lead = null;
-    for (const a of agents) {
-      if (a.isVehicle || !a.rung && a.rung !== 0) continue;
-      if (!lead || a.rung > lead.rung) lead = a;
-    }
+    const lead = raceLeader();
 
     const w = 250, h = 6, x = (W - w) / 2, y = 148;
     ctx.save();
@@ -12834,11 +13375,18 @@ const Game = (() => {
       : 'RUNG ' + ((player.rung || 0) + 1) + '/' + RACE_RUNGS + '  ·  ' + player.weapon.name,
       W / 2, y - 12);
 
-    // and the leader, but only once somebody is actually threatening to finish
-    if (lead && lead !== player && lead.rung >= top - 3) {
-      ctx.font = '10px Azeret Mono, ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(255,159,67,0.9)';
-      ctx.fillText(nameOf(lead, 'Someone') + ' is on ' + (lead.rung + 1) + '/' + RACE_RUNGS,
+    /* And who is in front, from the first kill rather than only once they are
+       three rungs from the end. The leader being public is half of what makes
+       the bonus rung work -- a bounty nobody can see is not a bounty -- and
+       waiting until they are nearly finished tells you far too late. */
+    ctx.font = '10px Azeret Mono, ui-monospace, monospace';
+    if (lead && lead !== player) {
+      ctx.fillStyle = lead.rung >= top - 3 ? 'rgba(255,107,107,0.95)' : 'rgba(255,159,67,0.9)';
+      ctx.fillText('LEADER  ' + nameOf(lead, 'Someone') + '  ' + (lead.rung + 1) + '/' + RACE_RUNGS
+        + '  \u00b7  worth two rungs', W / 2, y + h + 14);
+    } else if (lead === player) {
+      ctx.fillStyle = 'rgba(255,207,74,0.9)';
+      ctx.fillText('YOU ARE THE LEADER  \u00b7  you are worth two rungs to them',
         W / 2, y + h + 14);
     }
     ctx.restore();
@@ -12907,20 +13455,16 @@ const Game = (() => {
     ctx.fillStyle = 'rgba(6,10,20,0.72)';
     ctx.fillRect(0, 0, W, H);
 
-    ctx.fillStyle = 'rgba(18,30,52,0.9)';
-    roundRect(ox, oy, size, size, 12); ctx.fill();
-    ctx.strokeStyle = 'rgba(175,210,255,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
-
     ctx.save();
     roundRect(ox, oy, size, size, 12); ctx.clip();
 
-    // every building, so the chart is the island rather than the bit you know
-    ctx.fillStyle = 'rgba(205,225,255,0.40)';
-    for (const s2 of structureRects()) {
-      if (kindOf(s2).height !== 'high') continue;
-      ctx.fillRect(ox + s2.x * sx, oy + s2.y * sy,
-        Math.max(1.5, s2.w * sx), Math.max(1.5, s2.h * sy));
-    }
+    /* The island itself: water, coast, rivers, roads, footprints. This panel
+       used to be building rectangles on a flat blue field, which told you
+       where walls were and nothing whatever about where *you* were. */
+    drawChartBase(ox, oy, size, size, true);
+    drawChartGrid(ox, oy, size, size);
+    drawZoneOnChart(ox, oy, sx, sy);
+    drawChartLandmarks(ox, oy, sx, sy);
 
     // objectives, in the modes that have them
     for (const o of objectives) {
@@ -12937,8 +13481,10 @@ const Game = (() => {
        the mode has already given you. Finding the room is the puzzle; finding
        the building is not. */
     if (inMission()) {
-      if (garrisonCore) {
-        const gx = ox + garrisonCore.x * sx, gy = oy + garrisonCore.y * sy;
+      drawMissionBands(ox, oy, sx, sy);
+      {
+        const op = objectivePoint();
+        const gx = ox + op.x * sx, gy = oy + op.y * sy;
         const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 420);
         ctx.strokeStyle = `rgba(232,118,63,${(0.55 + pulse * 0.4).toFixed(2)})`;
         ctx.lineWidth = 2;
@@ -12949,7 +13495,8 @@ const Game = (() => {
         ctx.fillStyle = '#e8763f';
         ctx.font = 'bold 10px Azeret Mono, ui-monospace, monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('OBJECTIVE', gx, gy - 22);
+        // clear of the outer pulse ring, which reaches 22px at its widest
+        ctx.fillText('OBJECTIVE', gx, gy - 30);
       }
       if (exfil) {
         const ex = ox + exfil.x * sx, ey = oy + exfil.y * sy;
@@ -12985,11 +13532,385 @@ const Game = (() => {
     ctx.stroke();
     ctx.restore();
 
+    roundRect(ox, oy, size, size, 12);
+    ctx.strokeStyle = 'rgba(175,210,255,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    /* North, and the scale. Both are the difference between a picture of an
+       island and a map of one: without a bearing you cannot relate the chart
+       to the world you are standing in, and without a scale "it is over
+       there" has no distance attached to it. */
+    ctx.fillStyle = 'rgba(200,212,232,0.8)';
+    ctx.font = 'bold 11px Azeret Mono, ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('N', ox + size / 2, oy - 12);
+    /* A round number of metres that is a sensible fraction of the chart, not a
+       fixed one. The first attempt hardcoded 500 m, which on an 8600px island
+       -- 215 m across at 40 px to the metre -- drew a scale bar more than
+       twice as wide as the map it was measuring. */
+    const acrossM = MAP_W / PX_PER_M;
+    const barM = [200, 100, 50, 25, 10].find(v => v <= acrossM / 3) || 10;
+    const barPx = (barM * PX_PER_M) * sx;
+    const bx = ox + 18, by = oy + size - 20;
+    // on its own dark strip, because the bottom of the chart sits over the
+    // weapon panel and a bare pale line disappears into it
+    ctx.fillStyle = 'rgba(8,14,26,0.62)';
+    roundRect(bx - 8, by - 16, barPx + 58, 24, 4); ctx.fill();
+    ctx.strokeStyle = 'rgba(214,226,246,0.9)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(bx, by - 5); ctx.lineTo(bx, by); ctx.lineTo(bx + barPx, by);
+    ctx.lineTo(bx + barPx, by - 5);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(214,226,246,0.9)';
+    ctx.textAlign = 'left'; ctx.font = '10px Azeret Mono, ui-monospace, monospace';
+    ctx.fillText(barM + ' m', bx + barPx + 6, by - 3);
+
     ctx.fillStyle = 'rgba(200,212,232,0.75)';
     ctx.font = '12px Outfit, Segoe UI, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(Controls.labelFor('map') + ' to close   ·   the match is still running',
       W / 2, oy + size + 22);
+    ctx.restore();
+  }
+
+  /* The compound's rings, named, on the mission chart.
+
+     The island is built in four bands and the difficulty is graded by which
+     one you are standing in -- conscripts on the perimeter, the good ones in
+     the middle -- and until now the only way to know which band you were in
+     was to notice that the buildings had got bigger. That is the right cue in
+     the world and a hopeless one on a map.
+
+     Drawn faintly and under everything else. They are orientation, not
+     information you are meant to read numbers off: the question they answer is
+     "how far in am I", and three dashed circles answer it at a glance. */
+  const MISSION_BAND_LABELS = [
+    { key: 'core', label: 'CORE' },
+    { key: 'middle', label: 'COMPOUND' },
+    { key: 'shacks', label: 'PERIMETER' },
+  ];
+  function drawMissionBands(ox, oy, sx, sy) {
+    if (!garrisonCore) return;
+    const cx = ox + garrisonCore.x * sx, cy = oy + garrisonCore.y * sy;
+    ctx.save();
+    ctx.setLineDash([4, 6]);
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '8px Azeret Mono, ui-monospace, monospace';
+    for (const b of MISSION_BAND_LABELS) {
+      const r = MISSION_BANDS[b.key];
+      const rx = r * sx, ry = r * sy;
+      ctx.strokeStyle = 'rgba(232,118,63,0.30)';
+      ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+      // the name sits on the ring's north edge, where nothing else goes
+      ctx.fillStyle = 'rgba(232,118,63,0.55)';
+      ctx.fillText(b.label, cx, cy - ry - 7);
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /* What a building is called on a chart.
+
+     A landmark is only a landmark if it is distinctive from the things near
+     it, and on a chart that means a name: four grey blocks are four grey
+     blocks until one of them says REFINERY, at which point the other three
+     have something to be relative to. Derived from the structure id rather
+     than kept in a second table that could fall out of step with it -- the
+     `obj-` prefix is an internal marker, and the rest is already the word. */
+  function chartLabel(name) {
+    if (!name) return '';
+    return String(name).replace(/^obj-/, '').replace(/-/g, ' ').toUpperCase();
+  }
+
+  function drawChartLandmarks(ox, oy, sx, sy) {
+    if (!landmarks.length) return;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '9px Azeret Mono, ui-monospace, monospace';
+    for (const l of landmarks) {
+      const label = chartLabel(l.name);
+      if (!label) continue;
+      const cx = ox + (l.x + l.w / 2) * sx;
+      const by2 = oy + (l.y + l.h) * sy;
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(8,14,26,0.62)';
+      roundRect(cx - tw / 2 - 4, by2 + 3, tw + 8, 13, 3); ctx.fill();
+      ctx.fillStyle = 'rgba(228,238,255,0.92)';
+      ctx.fillText(label, cx, by2 + 10);
+    }
+    ctx.restore();
+  }
+
+  /* ================= THE CHART =================
+     What the minimap and the full map are drawn from, and the one place the
+     island's shape is turned into a picture.
+
+     Both of them used to be a field of grey rectangles on a blue panel. That
+     is a *floor plan*, not a map: it told you where walls were and nothing
+     about where you were, so orienting meant recognising a cluster of
+     rectangles you had happened to walk past. There was no coast, no water, no
+     road -- nothing with a shape you could name.
+
+     What goes on it is deliberately short, and the cut is the point. Research
+     on navigation aids is consistent that more detail makes a map *worse* to
+     navigate by: readers of a photographic map scan the terrain less, read
+     global landmarks less and end up consulting the map more often than
+     readers of one showing only buildings and roads. So this draws the things
+     you can orient from and nothing else --
+
+       WATER and the COASTLINE, which is the outline of the whole place and the
+         only thing that makes "north-west corner" mean anything.
+       RIVERS, because they are barriers, and a barrier you did not know about
+         is the most expensive thing a map can leave out.
+       ROADS, which are how you actually move and the frame everything else
+         hangs off.
+       BUILDING FOOTPRINTS, flat, with no interior detail at all -- at chart
+         scale an interior wall is a grey smudge that makes the building
+         harder to pick out, not easier.
+       LANDMARKS, named, on the full map only.
+
+     What is deliberately *not* on it: trees, decor, grass, props, crates,
+     interior walls, fences. All of it is in the world and none of it helps you
+     find anything. */
+
+  /* The coastline is solved by bisection -- twenty-four steps per bearing --
+     so it is traced once per world and kept, not recomputed sixty times a
+     second for a 180px thumbnail. Cleared whenever the terrain is rebuilt. */
+  let chartGeom = null;
+  const invalidateChart = () => { chartGeom = null; };
+  function chart() {
+    if (chartGeom || !terrain) return chartGeom;
+    const n = 96;    // enough for a smooth coast at full-screen size
+    chartGeom = {
+      shore: Terrain.boundaryPolygon(terrain, Terrain.oceanAt, n),
+      grass: Terrain.boundaryPolygon(terrain, Terrain.beachAt, n),
+    };
+    return chartGeom;
+  }
+
+  /* Trace a world-space polygon into chart space. */
+  function chartPoly(pts, ox, oy, sx, sy) {
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const x = ox + pts[i].x * sx, y = oy + pts[i].y * sy;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
+
+  /* ...and a polyline, for rivers and roads. */
+  function chartPath(pts, ox, oy, sx, sy) {
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const x = ox + pts[i].x * sx, y = oy + pts[i].y * sy;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+  }
+
+  /* The base layer. `big` turns on the things that are only readable at
+     full-screen size -- road casings, landmark labels -- and leaves the
+     thumbnail clean. Everything is clipped by the caller. */
+  function drawChartBase(ox, oy, w, h, big) {
+    const sx = w / MAP_W, sy = h / MAP_H;
+    const g = chart();
+
+    // the sea
+    ctx.fillStyle = '#132b45';
+    ctx.fillRect(ox, oy, w, h);
+
+    if (g) {
+      // the beach, then the land inside it: two fills, so the shore is a band
+      // with a width rather than a line, which is how a coast reads on a chart
+      chartPoly(g.shore, ox, oy, sx, sy);
+      ctx.fillStyle = '#5c6a52';
+      ctx.fill();
+      chartPoly(g.grass, ox, oy, sx, sy);
+      ctx.fillStyle = '#39492f';
+      ctx.fill();
+      // and the waterline itself, pale, because it is the strongest single
+      // orientation cue on the whole picture
+      chartPoly(g.shore, ox, oy, sx, sy);
+      ctx.strokeStyle = 'rgba(150,200,240,0.55)';
+      ctx.lineWidth = big ? 1.5 : 1;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#39492f';
+      ctx.fillRect(ox, oy, w, h);
+    }
+
+    if (terrain) {
+      // rivers: barriers, so they are drawn at something like their real width
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#1d4a6b';
+      for (const r of terrain.rivers) {
+        ctx.lineWidth = Math.max(big ? 2 : 1, r.width * sx);
+        chartPath(r.pts, ox, oy, sx, sy); ctx.stroke();
+      }
+      /* Roads, with a casing at full size. The casing is not decoration: a
+         pale line on dark ground reads as a road, a pale line with a dark
+         edge reads as a road you could drive, and at chart scale that is the
+         difference between the trunk roads being the frame of the map and
+         being three more scratches on it. */
+      if (big) {
+        ctx.strokeStyle = 'rgba(12,18,28,0.6)';
+        for (const r of terrain.roads) {
+          ctx.lineWidth = Math.max(2.5, r.width * sx) + 2;
+          chartPath(r.pts, ox, oy, sx, sy); ctx.stroke();
+        }
+      }
+      for (const r of terrain.roads) {
+        ctx.strokeStyle = r.kind === 'spur' ? 'rgba(170,160,140,0.45)' : 'rgba(196,186,163,0.62)';
+        ctx.lineWidth = Math.max(big ? 1.6 : 0.8, r.width * sx);
+        chartPath(r.pts, ox, oy, sx, sy); ctx.stroke();
+      }
+      ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    }
+
+    /* Footprints: one solid block per building, from its bounding box.
+
+       The obvious implementation -- walk `structureRects()` and fill every
+       `high` piece -- is what was here, and it is wrong in a way that is only
+       obvious once you look at the result. A building is not stored as a
+       building; it is stored as the wall segments that make it up. Filling
+       those draws the *perimeter*, so every structure came out as a thin
+       white outline with its interior partitions showing through, and a
+       hundred of them turned the chart into a tangle of rectangles with no
+       solid shape anywhere. A floor plan of the whole island.
+
+       `buildings` holds one record per placement with the bounds already
+       computed, which is the thing a chart wants: a block you can recognise
+       by its outline and its position, with nothing inside it. */
+    ctx.fillStyle = big ? 'rgba(226,236,250,0.88)' : 'rgba(218,230,250,0.72)';
+    for (const b of buildings) {
+      ctx.fillRect(ox + b.x * sx, oy + b.y * sy,
+        Math.max(big ? 2 : 1.5, b.w * sx), Math.max(big ? 2 : 1.5, b.h * sy));
+    }
+  }
+
+  /* The grid, and the letters down the side. Lifted straight off a military
+     chart, and there for the reason military charts have one: it turns "near
+     the big building" into "D4", which is the only way two people looking at
+     the same map can mean the same place. Full map only -- a 180px thumbnail
+     has no room for a label. */
+  const CHART_CELLS = 8;
+  function drawChartGrid(ox, oy, w, h) {
+    const cw = w / CHART_CELLS, ch = h / CHART_CELLS;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(190,215,255,0.13)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 1; i < CHART_CELLS; i++) {
+      ctx.moveTo(ox + i * cw, oy); ctx.lineTo(ox + i * cw, oy + h);
+      ctx.moveTo(ox, oy + i * ch); ctx.lineTo(ox + w, oy + i * ch);
+    }
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(190,215,255,0.38)';
+    ctx.font = '9px Azeret Mono, ui-monospace, monospace';
+    ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    for (let i = 0; i < CHART_CELLS; i++) {
+      ctx.fillText(String.fromCharCode(65 + i), ox + i * cw + 3, oy + 3);
+      ctx.fillText(String(i + 1), ox + 3, oy + i * ch + 3);
+    }
+    ctx.restore();
+  }
+
+  /* ---------------- the closing zone, drawn ----------------
+     Three things have to be legible at a glance and none of them is the
+     circle's radius: am I inside it, which way is in, and is it about to move.
+
+     Drawn as an edge rather than as a filled dome. Darkening everything
+     outside sounds right and is wrong here -- this is a top-down game where
+     half the screen is routinely outside the circle, and shading that half
+     makes the ground, the buildings and the bodies on it unreadable for the
+     entire approach. A bright boundary with a short gradient inside it says
+     the same thing and costs you no information. */
+  function drawZoneEdge() {
+    if (!zone || !player) return;
+    const closing = zone.state === 'close';
+    /* The ring. Brighter and thicker while it is actually moving, which is
+       the one time its exact position matters. */
+    const glow = closing ? 0.85 : 0.45;
+    ctx.save();
+    ctx.lineWidth = closing ? 7 : 4;
+    ctx.strokeStyle = 'rgba(255,120,80,' + glow.toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, Math.max(1, zone.r), 0, Math.PI * 2); ctx.stroke();
+    // a soft inner falloff, so the edge reads as a wall of weather and not a
+    // line somebody drew on the floor
+    const inner = Math.max(1, zone.r - 170);
+    if (zone.r > 200) {
+      const g = ctx.createRadialGradient(zone.x, zone.y, inner, zone.x, zone.y, zone.r);
+      g.addColorStop(0, 'rgba(255,110,70,0)');
+      g.addColorStop(1, 'rgba(255,110,70,' + (closing ? 0.22 : 0.12).toFixed(2) + ')');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.r, 0, Math.PI * 2); ctx.fill();
+    }
+    /* Where it is going, dashed, from the moment the phase is rolled. This is
+       the whole reason the mode is playable: you can see the next circle while
+       you still have time to walk to it, which turns the zone from a
+       punishment into a decision. */
+    if (zone.tr !== undefined && zone.tr < zone.r - 2) {
+      ctx.setLineDash([26, 20]);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(127,242,193,0.75)';
+      ctx.beginPath(); ctx.arc(zone.tx, zone.ty, Math.max(1, zone.tr), 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  /* The same circle on a chart, at whatever scale the chart is drawn at. One
+     function for the minimap and the full map so the two cannot disagree. */
+  function drawZoneOnChart(ox, oy, sx, sy) {
+    if (!zone) return;
+    ctx.save();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = zone.state === 'close' ? 'rgba(255,120,80,0.95)' : 'rgba(255,120,80,0.6)';
+    ctx.beginPath();
+    ctx.ellipse(ox + zone.x * sx, oy + zone.y * sy,
+      Math.max(1, zone.r * sx), Math.max(1, zone.r * sy), 0, 0, Math.PI * 2);
+    ctx.stroke();
+    if (zone.tr !== undefined && zone.tr < zone.r - 2) {
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(127,242,193,0.85)';
+      ctx.beginPath();
+      ctx.ellipse(ox + zone.tx * sx, oy + zone.ty * sy,
+        Math.max(1, zone.tr * sx), Math.max(1, zone.tr * sy), 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  /* One line of HUD: what the circle is doing and how long you have. Placed
+     under the match clock, because it is the same kind of fact. */
+  function drawZoneHud() {
+    if (!zone || !player) return;
+    const out = RoomSim.Zone.outside(zone, player.x, player.y);
+    const done = zone.state === 'done';
+    const secs = Math.ceil(Math.max(0, zone.t || 0));
+    const mm = Math.floor(secs / 60), ss = secs % 60;
+    const clock = mm + ':' + String(ss).padStart(2, '0');
+    const line = done ? 'FINAL CIRCLE'
+      : zone.state === 'close' ? 'CIRCLE CLOSING  ' + clock
+        : 'CIRCLE MOVES IN  ' + clock;
+
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 12px Azeret Mono, ui-monospace, monospace';
+    /* Below the compass strip, which sits at y=96 and is 26 tall. Both of
+       these lines were at 74 and 94 -- on top of each other and across the
+       compass, so in the one situation they exist for, being outside the
+       circle, all three were unreadable at once. */
+    ctx.fillStyle = zone.state === 'close' ? 'rgba(255,140,100,0.95)' : 'rgba(200,215,240,0.8)';
+    ctx.fillText(line, W / 2, 136);
+    /* And the only instruction that matters when you are on the wrong side of
+       it, with the damage so the decision is informed rather than panicked. */
+    if (out) {
+      const pulse = 0.65 + 0.35 * Math.sin(performance.now() / 180);
+      ctx.font = 'bold 15px Outfit, Segoe UI, sans-serif';
+      ctx.fillStyle = 'rgba(255,90,70,' + pulse.toFixed(2) + ')';
+      ctx.fillText('OUTSIDE THE CIRCLE  \u00b7  \u2212' + zone.dps + ' HP/s', W / 2, 157);
+    }
     ctx.restore();
   }
 
@@ -13002,23 +13923,24 @@ const Game = (() => {
     const ox = W - mw - pad, oy = pad + 40;
     miniBox = { x: ox, y: oy, w: mw, h: mh };
     ctx.save();
-    ctx.fillStyle = 'rgba(26,38,66,0.78)'; roundRect(ox, oy, mw, mh, 8); ctx.fill();
-    ctx.strokeStyle = 'rgba(175,210,255,0.55)'; ctx.lineWidth = 1; ctx.stroke();
     const sx = mw / MAP_W, sy = mh / MAP_H;
-    /* Drawn straight, not cached.
+    /* The island, not a field of rectangles. Clipped to the rounded panel so
+       the coast stops at the frame.
 
-       This looked like an obvious win -- thousands of fillRects every frame to
-       produce the same 180px image -- so it was baked into an offscreen canvas
-       and blitted. A/B'd in one session with a switch, it measured 0.49ms
-       either way: the loop is dominated by the `height !== 'high'` rejection,
-       which is a property read, and the handful of rects that survive are
-       tiny. The cache was a second canvas, an invalidation path and a stale
-       tile to get wrong, in exchange for nothing measurable, so it is gone. */
-    ctx.fillStyle = 'rgba(205,225,255,0.38)';
-    for (const s of structureRects()) {
-      if (kindOf(s).height !== 'high') continue;
-      ctx.fillRect(ox + s.x * sx, oy + s.y * sy, Math.max(1, s.w * sx), Math.max(1, s.h * sy));
-    }
+       Drawn straight, not cached. This looked like an obvious win -- thousands
+       of fillRects every frame to produce the same 180px image -- so it was
+       baked into an offscreen canvas and blitted. A/B'd in one session with a
+       switch, it measured 0.49ms either way: the loop is dominated by the
+       `height !== 'high'` rejection, which is a property read, and the handful
+       of rects that survive are tiny. The coastline is the one genuinely
+       expensive part of the picture and that is traced once per world. */
+    ctx.save();
+    roundRect(ox, oy, mw, mh, 8); ctx.clip();
+    drawChartBase(ox, oy, mw, mh, false);
+    ctx.restore();
+    roundRect(ox, oy, mw, mh, 8);
+    ctx.strokeStyle = 'rgba(175,210,255,0.55)'; ctx.lineWidth = 1; ctx.stroke();
+    drawZoneOnChart(ox, oy, sx, sy);    // the closing circle, where there is one
     /* Objectives get their letter, not just a dot. "Push B" means nothing if
        the minimap will not tell you which of the three dots B is, and the
        world markers carry the letter already — the minimap was the one place
@@ -13434,6 +14356,17 @@ const Game = (() => {
       /* Start this match's clock where the host's already is, rather than at a
          full 8:00 until the first snapshot arrives. */
       setOnlineClock(msg.timeLeft);
+      /* The circle comes down the wire rather than being stepped locally. Two
+         machines running the same schedule still drift -- different frame
+         times, a dropped tick -- and a client that drew the edge fifty pixels
+         off would be showing you a safe spot that is killing you. */
+      if (msg.zone) {
+        if (!zone) zone = {};
+        const z = msg.zone;
+        zone.x = z.x; zone.y = z.y; zone.r = z.r;
+        zone.tx = z.tx; zone.ty = z.ty; zone.tr = z.tr;
+        zone.phase = z.p; zone.state = z.s; zone.dps = z.d; zone.t = z.t;
+      }
       /* We built a world the moment we joined, before the host had told us
          which one. Rebuild it from the host's seed so everybody is standing
          on the same map — without this each client generated its own and
@@ -15322,13 +16255,27 @@ const Game = (() => {
       let postsInCentre = 0;
       for (const b of buildings) {
         for (const r of b.rooms || []) {
-          if (r.kind !== 'hall') continue;
+          /* Passages are corridors too. This only looked at `hall`, so the
+             service passage behind a hospital's wards — a route the whole
+             floor plan is built around — was never measured. */
+          if (r.kind !== 'hall' && r.kind !== 'passage') continue;
           // walk the corridor and find the narrowest gap a body could pass
           let clear = Math.min(r.w, r.h);
           const along = r.w >= r.h;
           const steps = 24;
+          /* Sampled from a body's width inside each end, not from the ends
+             themselves.
+
+             A corridor's ends are walls — the shell at one end, the corridor
+             it joins at the other — so sampling t=0 and t=1 measured the wall
+             and reported a clear span of zero for every corridor on the map
+             whose ends abut something. Every vertical cross corridor read as
+             blocked while the flood fill walked straight down it. The ends
+             are not the part anyone has to squeeze through. */
+          const runLen = along ? r.w : r.h;
+          const cap = Math.min(BODY_R, runLen / 4);
           for (let i = 0; i <= steps; i++) {
-            const t = i / steps;
+            const t = (cap + (runLen - cap * 2) * (i / steps)) / runLen;
             const cx = along ? r.x + r.w * t : r.x + r.w / 2;
             const cy = along ? r.y + r.h / 2 : r.y + r.h * t;
             // widest free span across the corridor at this point
@@ -15431,6 +16378,97 @@ const Game = (() => {
           mid: buildings.filter(b2 => b2.missionMid).length,
           shack: buildings.filter(b2 => b2.missionShack).length } };
     },
+    /* The zoning as numbers: how many buildings in each ring, how big the
+       biggest one in each ring is, and what radii they actually occupy.
+
+       `zones()` above counts them; this measures them, which is the part that
+       was missing. The bands can be the right *count* and still not read as
+       bands if a shack is bigger than a middle building, and that is exactly
+       what was happening -- so the sizes are asserted, not eyeballed. */
+    /* Where each side actually deployed, relative to the three points. The
+       mode's whole structure is "your flag, their flag, the middle", and that
+       is only true if the two sides start behind different flags -- so it is
+       measured rather than assumed. Averaged over the squad, because one man
+       can legitimately be anywhere. */
+    /* The Arms Race catch-up rules, exercised through raceAdvance itself
+       rather than by setting `rung` and hoping. Each case picks two live
+       bots, puts them on known rungs, and runs the real promotion path.
+
+       `meleeNow` is set directly here, which is what swingTool does around
+       its damage call -- the alternative would be staging an actual swing
+       inside reach of an actual enemy, which tests the melee arc rather than
+       the ladder. */
+    raceProbe() {
+      const bots = agents.filter(a => !a.isVehicle && a.alive && !a.isPlayer);
+      if (bots.length < 3) return null;
+      const [k, v, w2] = bots;
+      const out = {};
+
+      // a plain kill, with somebody else holding the lead so this is not it
+      setRung(w2, 6); setRung(k, 2); setRung(v, 1);
+      k.meleeNow = false;
+      out.plain = { before: k.rung };
+      raceAdvance(k, v);
+      out.plain.after = k.rung;
+
+      // killing whoever is in front
+      setRung(w2, 1); setRung(k, 2); setRung(v, 7);
+      k.meleeNow = false;
+      out.leader = { before: k.rung, wasLeader: raceLeader() === v };
+      raceAdvance(k, v);
+      out.leader.after = k.rung;
+
+      // the blade
+      setRung(w2, 9); setRung(k, 3); setRung(v, 5);
+      k.meleeNow = true;
+      out.knife = { killerBefore: k.rung, victimBefore: v.rung };
+      raceAdvance(k, v);
+      out.knife.killerAfter = k.rung; out.knife.victimAfter = v.rung;
+      k.meleeNow = false;
+
+      // ...and it cannot push anybody below the bottom rung
+      setRung(w2, 9); setRung(k, 3); setRung(v, 0);
+      k.meleeNow = true;
+      out.floor = { victimBefore: v.rung };
+      raceAdvance(k, v);
+      out.floor.victimAfter = v.rung;
+      k.meleeNow = false;
+
+      return out;
+    },
+    spawnHome() {
+      const o = objectives;
+      if (o.length < 3) return null;
+      const mean = (team, obj) => {
+        const squad = agents.filter(a => !a.isVehicle && a.team === team);
+        if (!squad.length) return 0;
+        return Math.round(squad.reduce((n, a) =>
+          n + Math.hypot(a.x - obj.x, a.y - obj.y), 0) / squad.length);
+      };
+      return {
+        t0ToA: mean(0, o[0]), t0ToB: mean(0, o[1]), t0ToC: mean(0, o[2]),
+        t1ToA: mean(1, o[0]), t1ToB: mean(1, o[1]), t1ToC: mean(1, o[2]),
+      };
+    },
+    missionSite() {
+      const band = (tag) => buildings.filter(b => b[tag]);
+      const area = (bs) => bs.reduce((m, b) => Math.max(m, b.w * b.h), 0);
+      const rad = (bs) => {
+        if (!bs.length) return [0, 0];
+        const ds = bs.map(b => Math.round(missionDepth(b.x + b.w / 2, b.y + b.h / 2)));
+        return [Math.min(...ds), Math.max(...ds)];
+      };
+      const core = band('missionCore'), mid = band('missionMid'), sh = band('missionShack');
+      return {
+        n: { core: core.length, middle: mid.length, shacks: sh.length },
+        area: { core: area(core), middle: area(mid), shacks: area(sh) },
+        rad: { core: rad(core), middle: rad(mid), shacks: rad(sh) },
+        kinds: { core: core.map(b => b.name), middle: mid.map(b => b.name) },
+        // anything the bands did not account for
+        strays: buildings.length - core.length - mid.length - sh.length,
+        bands: MISSION_BANDS, rings: MISSION_RINGS,
+      };
+    },
     briefWorld: () => ({
       w: MAP_W, h: MAP_H,
       buildings: buildings.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),
@@ -15482,6 +16520,140 @@ const Game = (() => {
     missionKillTarget() {
       if (!missionTarget) return false;
       killAgent(missionTarget, player, 'body'); return !missionTarget.alive;
+    },
+    /* Stand the player in a named building, in a room of a given kind if one
+       is asked for. The interior work is impossible to check from outside --
+       every question about a floor plan is "what can you see from in here" --
+       and walking there by hand in a harness is a minute of keypresses per
+       building. */
+    enterBuilding(name, kind) {
+      const b = buildings.find(q => q.name === name && (q.rooms || []).length);
+      if (!b) return null;
+      const rooms = (b.rooms || []).filter(r => !r.basement);
+      const want = kind ? rooms.filter(r => r.kind === kind) : rooms;
+      const pool = want.length ? want : rooms;
+      if (!pool.length) return null;
+      // the longest one, which for a corridor is the one worth looking down
+      const r = pool.slice().sort((p1, p2) =>
+        Math.max(p2.w, p2.h) - Math.max(p1.w, p1.h))[0];
+      player.x = r.x + r.w / 2; player.y = r.y + r.h / 2;
+      player.angle = r.w >= r.h ? 0 : Math.PI / 2;
+      resolveObstacles(player);
+      camX = player.x; camY = player.y; camSnap = true;
+      return { name: b.name, kind: r.kind, x: Math.round(player.x), y: Math.round(player.y),
+        room: { w: Math.round(r.w), h: Math.round(r.h) } };
+    },
+    /* How much of the building the fog currently considers seen, and how big
+       its sight grid is. The hallway question in numbers: stand still at one
+       end of a corridor and this should already be counting the far end. */
+    fogOf(name) {
+      const b = buildings.find(q => q.name === name && q.fog);
+      if (!b || !b.fog) return null;
+      const f = b.fog;
+      let seen = 0, blocked = 0;
+      const g = sightGridFor(b, f);
+      for (let i = 0; i < f.seen.length; i++) { if (f.seen[i]) seen++; if (g[i]) blocked++; }
+      return { cols: f.cols, rows: f.rows, cells: f.seen.length, seen, blocked,
+        openCells: f.seen.length - blocked,
+        seenPctOfOpen: Math.round(100 * seen / Math.max(1, f.seen.length - blocked)) };
+    },
+    // one fog pass, and a way to throw the memory away, so the raycast can be
+    // timed cold as well as warm
+    fogTick() { updateBuildingFog(); },
+    fogReset() { for (const b of buildings) b.fog = null; },
+    /* The narrowest point of every corridor on the map, measured against the
+       real obstacle list rather than against the blueprint.
+
+       Furniture is decor and blocks nothing, but lamps are obstacles and a
+       searchable locker becomes a crate, so a corridor can be furnished shut
+       by things the floor plan never knew about. This walks each hall and
+       passage along its length and reports the widest clear lane across it at
+       the worst point — anything under a body width is a blocked route. */
+    corridors() {
+      const KINDS = ['hall', 'passage', 'corridor', 'tunnel'];
+      const out = [];
+      for (const b of buildings) {
+        for (const r of (b.rooms || [])) {
+          if (!KINDS.includes(r.kind)) continue;
+          const horiz = r.w >= r.h;
+          const runLen = horiz ? r.w : r.h, across = horiz ? r.h : r.w;
+          if (runLen < 60) continue;
+          let worst = across, worstAt = 0;
+          for (let t = 6; t <= runLen - 6; t += 6) {
+            let best = 0, run = 0;
+            for (let u = 2; u <= across - 2; u += 3) {
+              const x = horiz ? r.x + t : r.x + u;
+              const y = horiz ? r.y + u : r.y + t;
+              if (pointInObstacle(x, y)) run = 0;
+              else { run += 3; if (run > best) best = run; }
+            }
+            if (best < worst) { worst = best; worstAt = Math.round(t); }
+          }
+          out.push({ building: b.name, kind: r.kind,
+            len: Math.round(runLen), across: Math.round(across),
+            lane: Math.round(worst), at: worstAt });
+        }
+      }
+      return out;
+    },
+    /* Stand the player at one end of the longest corridor on the map, let one
+       fog pass run, and report what is and is not revealed.
+
+       The question the hallway-vision work exists to answer, asked as a
+       measurement: the far end of a corridor should be visible from a
+       standstill at the near end, and a room on the other side of a wall
+       should not be. Both halves matter — reveal everything and the fog is
+       decoration; reveal only what you have walked past and it is a torch. */
+    // turn the line-of-sight pass off, to measure what it contributes
+    setFogRays(on) { fogRays = !!on; },
+    // which buildings this seed actually placed, for the harnesses to walk
+    buildingNames: () => [...new Set(buildings.filter(b => (b.rooms || []).length).map(b => b.name))],
+    corridorSight() {
+      let best = null;
+      for (const b of buildings) {
+        for (const r of (b.rooms || [])) {
+          if (r.kind !== 'hall' && r.kind !== 'passage') continue;
+          const len = Math.max(r.w, r.h);
+          if (!best || len > best.len) best = { b, r, len, horiz: r.w >= r.h };
+        }
+      }
+      if (!best || best.len < 300) return null;
+      const { b, r, horiz } = best;
+      // stand just inside the near end, looking down it
+      player.x = horiz ? r.x + 30 : r.x + r.w / 2;
+      player.y = horiz ? r.y + r.h / 2 : r.y + 30;
+      player.angle = horiz ? 0 : Math.PI / 2;
+      resolveObstacles(player);
+      b.fog = null;                      // forget anything already explored
+      updateBuildingFog();
+
+      const f = b.fog;
+      const at = (x, y) => {
+        const cx = Math.floor((x - f.x0) / FOG_CELL), cy = Math.floor((y - f.y0) / FOG_CELL);
+        if (cx < 0 || cy < 0 || cx >= f.cols || cy >= f.rows) return null;
+        return !!f.seen[cy * f.cols + cx];
+      };
+      const farX = horiz ? r.x + r.w - 24 : r.x + r.w / 2;
+      const farY = horiz ? r.y + r.h / 2 : r.y + r.h - 24;
+
+      /* Somewhere on the far side of a wall from the corridor: the middle of
+         whichever room is furthest from where the player is standing and not
+         a corridor itself. */
+      let hid = null, hidD = 0;
+      for (const q of (b.rooms || [])) {
+        if (q === r || q.kind === 'hall' || q.kind === 'passage' || q.basement) continue;
+        const qx = q.x + q.w / 2, qy = q.y + q.h / 2;
+        const d = Math.hypot(qx - player.x, qy - player.y);
+        if (d > hidD) { hidD = d; hid = { x: qx, y: qy, kind: q.kind }; }
+      }
+      return {
+        building: b.name, len: Math.round(best.len),
+        nearSeen: at(player.x + (horiz ? 40 : 0), player.y + (horiz ? 0 : 40)),
+        farSeen: at(farX, farY),
+        behindWall: hid ? at(hid.x, hid.y) : null,
+        hiddenRoom: hid ? hid.kind : null,
+        hiddenDist: Math.round(hidD),
+      };
     },
     missionWarp(where) {
       if (where === 'exfil' && exfil) { player.x = exfil.x; player.y = exfil.y; return true; }
@@ -16311,6 +17483,49 @@ const Game = (() => {
       return { name: o.name, owner: o.owner };
     },
     mode: () => mode,
+    /* A compact read of the whole match, for the test harnesses: enough to
+       assert on what a mode actually staged without exposing the live arrays
+       and letting a test reach in and change them. */
+    world() {
+      return {
+        mode, running, teams: nTeams,
+        agents: agents.filter(a => !a.isVehicle).length,
+        alive: agents.filter(a => a.alive && !a.isVehicle).length,
+        timeLeft: Math.round(timeLeft),
+        objectives: objectives.map(o => ({ name: o.name, x: Math.round(o.x), y: Math.round(o.y), owner: o.owner })),
+        landmarks: landmarks.map(l => l.name),
+        zone: zone ? {
+          x: Math.round(zone.x), y: Math.round(zone.y), r: Math.round(zone.r),
+          tr: Math.round(zone.tr), phase: zone.phase, state: zone.state, dps: zone.dps,
+          outside: agents.filter(a => a.alive && !a.isVehicle && zoneOutside(a)).length,
+        } : null,
+        rungs: mode === 'armsrace'
+          ? agents.filter(a => !a.isVehicle).map(a => a.rung || 0) : null,
+        missionPhase: missionPhase || null,
+        map: { w: MAP_W, h: MAP_H },
+        chart: chartGeom ? { shore: chartGeom.shore.length, grass: chartGeom.grass.length } : null,
+        roads: terrain ? terrain.roads.length : 0,
+        rivers: terrain ? terrain.rivers.length : 0,
+      };
+    },
+    /* Wind the closing zone forward. The first circle holds for nearly a
+       minute by design, so a test that wanted to watch one close would have to
+       sit through it in real time; this skips to the interesting part.
+
+       Stepped in slices rather than in one go: Zone.step only crosses one
+       state boundary per call -- hold ends, and it returns -- so a single
+       dt of 240 moved the circle from "holding" to "about to close" and no
+       further. */
+    zoneSkip(secs) {
+      if (!zone) return null;
+      let left = secs || 60;
+      while (left > 0 && zone.state !== 'done') {
+        const dt = Math.min(0.5, left);
+        RoomSim.Zone.step(zone, dt);
+        left -= dt;
+      }
+      return { phase: zone.phase, state: zone.state, r: Math.round(zone.r) };
+    },
     onPoint() {
       const o = objectives.find(o2 => dist2(player.x, player.y, o2.x, o2.y) < o2.r * o2.r);
       return { mode, alive: player.alive, on: o ? o.name : null,

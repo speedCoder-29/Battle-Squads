@@ -116,7 +116,17 @@ const Progression = (() => {
   /* Apply a set of match metrics to missions; returns credits earned from completions. */
   function applyMissionProgress(profile, metrics) {
     let creditsEarned = 0;
-    const lists = [profile.missions.daily, profile.weekly];
+    /* Both lists are filled in by the home screen, so a profile that has gone
+       straight into a match has neither: `missions` is null on a fresh
+       profile and `weekly` is not a key at all. This read threw on the first
+       line of the end-of-match path, which takes the entire results screen,
+       the XP award and the saved match record with it — a crash with nothing
+       on screen to say it happened. Missing lists simply have no progress to
+       apply. */
+    const lists = [
+      (profile.missions && profile.missions.daily) || [],
+      profile.weekly || [],
+    ];
     lists.forEach(list => list.forEach(m => {
       if (m.done) return;
       const amount = metrics[m.metric] || 0;

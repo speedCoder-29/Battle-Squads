@@ -911,9 +911,15 @@ const Structures = (() => {
        anything, which is the whole point of a corridor. */
     const skew = opts.stagger === false ? 0 : 0.26;
 
-    const layBand = (kinds, bandAt, depth, outerSide, filler, dir) => {
+    /* `from`/`to` are the stretch of the run this band may fill. They used to
+       be implicit -- always inset to run-inset -- which is fine for a building
+       with one corridor in it and useless the moment a second corridor has to
+       cut across the band, because the rooms would be laid straight through
+       the space the cross corridor needs. */
+    const layBand = (kinds, bandAt, depth, outerSide, filler, dir, from, to) => {
       const doors = [];
       if (!kinds || !kinds.length || depth < MIN_ROOM) return doors;
+      if (to - from < MIN_ROOM) return doors;
       kinds = kinds.slice();
       /* Zoned along the run: public by the way in, private at the far end.
          `entrance` says which end of the run the front door is on. */
@@ -937,7 +943,7 @@ const Structures = (() => {
           kinds = left.reverse().concat(right);
         }
       }
-      const usable = run - inset * 2;
+      const usable = to - from;
       const sum = () => kinds.reduce((t, k) => t + roomExtent(k, depth), 0);
       /* A band with a lot of run and few rooms in it has to stretch them, and
          past a point that stops looking like a bigger house and starts looking
@@ -974,7 +980,7 @@ const Structures = (() => {
           ext[j] -= take; need -= take;
         }
       }
-      let cursor = inset;
+      let cursor = from;
       kinds.forEach((kind, i) => {
         const e = ext[i];
         // the wall that closes this room off from the one before it
@@ -1029,8 +1035,16 @@ const Structures = (() => {
       /* Doors at the ends only. A passage you can step into from every room it
          runs behind is just a wider room; two ways in, at the far corners, is
          a route you have to commit to. */
+      /* Doors at the ends, plus one where the cross corridor comes through if
+         there is one — without that the cross stops dead at the back of the
+         rooms and the loop it exists to close is never closed. */
+      const pDoors = [inset + 60, run - inset - 60];
+      if (opts.cross) {
+        const at = opts.cross === true ? 0.5 : opts.cross;
+        pDoors.push(inset + (run - inset * 2) * at);
+      }
       parts.push(...partition(type, c0.x, c0.y, run, horiz ? 'h' : 'v', th,
-        [inset + 60, run - inset - 60], doorType));
+        pDoors, doorType));
       const p0 = P(inset, at);
       passage = horiz
         ? { x: p0.x, y: p0.y + 8, w: run - inset * 2, h: pw - 16 }
@@ -1051,15 +1065,116 @@ const Structures = (() => {
       }
     }
 
-    const doorsA = layBand(opts.a, aAt, aD, sideA, opts.fillA, -1);
-    const doorsB = layBand(opts.b, bAt, bD, sideB, opts.fillB, 1);
+    /* ---------- the cross corridor ----------
+       A second hallway, at right angles to the first, cutting through both
+       bands from one outside wall to the other.
+
+       One spine is one route. Every room hangs off it, so whoever stands in
+       the middle of it sees every door in the building and the plan has no
+       decisions left in it -- which is the complaint about a single-corridor
+       layout in any game with interiors. A cross turns the plan into an H:
+       two ways from one end of the building to the other, four junctions to
+       watch instead of one, and rooms that can be entered from two sides.
+
+       Where there is a service passage as well it is the piece that closes
+       the loop -- spine, cross, passage, cross -- and a loop is what lets two
+       people fight over a building instead of one person holding it.
+
+       Measured out before the rooms are laid, like the passage, so the
+       building does not grow to get one. */
+    const crossW = opts.crossWidth || 92;
+    const spanLo = inset, spanHi = run - inset;
+    let cut = null;
+    if (opts.cross && spanHi - spanLo > crossW + MIN_ROOM * 2) {
+      const at = opts.cross === true ? 0.5 : opts.cross;
+      const mid2 = spanLo + (spanHi - spanLo) * at;
+      cut = {
+        lo: Math.max(spanLo + MIN_ROOM, Math.min(spanHi - MIN_ROOM - crossW, mid2 - crossW / 2)),
+      };
+      cut.hi = cut.lo + crossW;
+    }
+
+    const bandSpans = cut ? [[spanLo, cut.lo], [cut.hi, spanHi]] : [[spanLo, spanHi]];
+    /* The kinds are dealt across the stretches in proportion to how much run
+       each one has, so a cross a third of the way along does not put eight
+       rooms in the short half and one in the long. */
+    const splitKinds = (kinds) => {
+      if (!kinds || !kinds.length) return bandSpans.map(() => []);
+      if (bandSpans.length === 1) return [kinds];
+      const total = bandSpans.reduce((t, sp) => t + (sp[1] - sp[0]), 0) || 1;
+      const nFirst = Math.max(1, Math.min(kinds.length - 1,
+        Math.round(kinds.length * (bandSpans[0][1] - bandSpans[0][0]) / total)));
+      return [kinds.slice(0, nFirst), kinds.slice(nFirst)];
+    };
+
+    const aSets = splitKinds(opts.a), bSets = splitKinds(opts.b);
+    const doorsA = [], doorsB = [];
+    bandSpans.forEach((sp, i) => {
+      doorsA.push(...layBand(aSets[i], aAt, aD, sideA, opts.fillA, -1, sp[0], sp[1]));
+      doorsB.push(...layBand(bSets[i], bAt, bD, sideB, opts.fillB, 1, sp[0], sp[1]));
+    });
     if (passage) rooms.push(room('passage', passage.x, passage.y, passage.w, passage.h));
 
     /* The corridor itself: a wall each side with a doorway opposite the middle
-       of every room, so every room the plan lays out has a way in. */
-    const cA = P(0, aDepth), cB = P(0, bStart);
-    if (aDepth >= MIN_ROOM) parts.push(...partition(type, cA.x, cA.y, run, horiz ? 'h' : 'v', th, doorsA, doorType));
-    if (bDepth >= MIN_ROOM) parts.push(...partition(type, cB.x, cB.y, run, horiz ? 'h' : 'v', th, doorsB, doorType));
+       of every room, so every room the plan lays out has a way in — broken
+       open where the cross corridor meets it, because a junction is an opening
+       and not a door. */
+    const wallSpans = cut ? [[0, cut.lo], [cut.hi, run]] : [[0, run]];
+    const corridorWall = (bandAt, doors) => {
+      for (const sp of wallSpans) {
+        const q = P(sp[0], bandAt);
+        const local = doors.filter(d => d.at >= sp[0] && d.at <= sp[1])
+          .map(d => ({ at: d.at - sp[0], type: d.type }));
+        parts.push(...partition(type, q.x, q.y, sp[1] - sp[0], horiz ? 'h' : 'v', th, local, doorType));
+      }
+    };
+    if (aDepth >= MIN_ROOM) corridorWall(aDepth, doorsA);
+    if (bDepth >= MIN_ROOM) corridorWall(bStart, doorsB);
+
+    /* The cross corridor's own two walls, one each side, running the full
+       depth of the building. Each is broken by a doorway into whichever room
+       it passes — the room the band laid against it — so the cross is a way
+       into those rooms and not just a gap between them. */
+    if (cut) {
+      /* One wall segment per band, and nothing across the junctions.
+
+         The first version ran each of these walls the full depth of the
+         building with a door into each band — which walled off the main
+         corridor itself, because the spine is part of that depth and nothing
+         opened the wall where it passed through. Measured on three seeds, the
+         widest clear lane down the hall of a mansion, a resort, a bank, a
+         library and the relay was zero: the cross corridor had sealed the
+         building in half.
+
+         A junction is an opening. These walls only exist where they separate
+         the cross corridor from a room. */
+      [cut.lo, cut.hi].forEach((atRun) => {
+        if (aD >= MIN_ROOM) {
+          const q = P(atRun, aAt);
+          parts.push(...partition(type, q.x, q.y, aD, horiz ? 'v' : 'h', thP,
+            [{ at: aD / 2, type: doorType }], doorType));
+        }
+        if (bD >= MIN_ROOM) {
+          const q = P(atRun, bAt);
+          parts.push(...partition(type, q.x, q.y, bD, horiz ? 'v' : 'h', thP,
+            [{ at: bD / 2, type: doorType }], doorType));
+        }
+      });
+      /* The floor of it, in two pieces — the corridor it crosses is already a
+         room of its own, and one rect through the middle would overlap it and
+         confuse everything that asks "which room am I in". */
+      const cL = crossW - 16;
+      if (aD >= MIN_ROOM) {
+        const p1 = P(cut.lo + 8, aAt);
+        rooms.push(horiz ? room('hall', p1.x, p1.y + 6, cL, aD - 12)
+          : room('hall', p1.x + 6, p1.y, aD - 12, cL));
+      }
+      if (bD >= MIN_ROOM) {
+        const p2 = P(cut.lo + 8, bAt);
+        rooms.push(horiz ? room('hall', p2.x, p2.y + 6, cL, bD - 12)
+          : room('hall', p2.x + 6, p2.y, bD - 12, cL));
+      }
+    }
 
     /* The corridor rect stops short of both ends. The corridor wall runs the
        full width of the building, but the floor you can walk on does not — the
@@ -1338,9 +1453,26 @@ const Structures = (() => {
     const cols = Math.max(1, Math.ceil(w / bay) - 1);
     const rows = Math.max(1, Math.ceil(h / bay) - 1);
     if (cols < 1 || rows < 1) return out;
+    /* Bands the frame has to miss.
+
+       A real shed puts a column wherever the grid says and the forklift
+       drives round it; a 30px body in a 68px aisle cannot. Measured in the
+       warehouse, a 34px pillar landed on the centreline of the central aisle
+       and left 17px either side — the one route from one roller door to the
+       other, closed by the building's own structure. It had been like that
+       from the beginning; declaring the aisle a room is what finally made
+       something measure it.
+
+       `keepClear` is a list of world-space rects no column may stand in. */
+    const clear = opts.keepClear || [];
+    const blocked = (px, py) => clear.some(r =>
+      px > r.x - size / 2 && px < r.x + r.w + size / 2
+      && py > r.y - size / 2 && py < r.y + r.h + size / 2);
     for (let cy = 1; cy <= rows; cy++) {
       for (let cx = 1; cx <= cols; cx++) {
-        out.push(prop(kind, x + (w / (cols + 1)) * cx, y + (h / (rows + 1)) * cy, size));
+        const px = x + (w / (cols + 1)) * cx, py = y + (h / (rows + 1)) * cy;
+        if (blocked(px, py)) continue;
+        out.push(prop(kind, px, py, size));
       }
     }
     return out;
@@ -1627,6 +1759,7 @@ const Structures = (() => {
         b: ['living', 'dining', 'kitchen', 'study', 'safe', 'garage'],
         fillA: 'study', fillB: 'pantry', thickness: 0.3,
         passage: 'a',       // servants' corridor behind the bedrooms
+        cross: 0.44,        // ...and the hall that joins the two
       });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
         { side: 'w', at: h * 0.45 - 30, type: 'door', len: 2 },
@@ -1678,6 +1811,7 @@ const Structures = (() => {
         b: ['washroom', 'diningLobby', 'lounge', 'backKitchen', 'bedroom', 'bedroom', 'bedroom'],
         fillA: 'bedroom', fillB: 'lounge', thickness: 0.25, chicane: true,
         passage: 'b',       // service corridor behind the public rooms
+        cross: 0.5,         // a lobby corridor out to both long faces
       });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
         { side: 'w', at: h * 0.44 - 30, type: 'door', len: 2 },
@@ -1900,6 +2034,7 @@ const Structures = (() => {
         a: ['classroom', 'classroom'],
         b: ['study', 'staffRoom', 'strongroom'],
         fillA: 'study', fillB: 'office', thickness: 0.25,
+        cross: 0.55,
       });
       const out = shell(ox, oy, w, h, 'wood', WALL_T.exterior, [
         { side: 'n', at: 320, type: 'door', len: 2 },
@@ -2049,11 +2184,30 @@ const Structures = (() => {
       const top = roomGrid('metal', ox + 14, oy + 14, w - 28, 176, 4, 1, { access: 's', doorType: null, thickness: 0.3 });
       const bot = roomGrid('metal', ox + 14, oy + h - 190, w - 28, 176, 4, 1, { access: 'n', doorType: null, thickness: 0.3 });
       out.push(...top.parts, ...bot.parts);
-      out.push(seg('sandbag', ox + 120, oy + h / 2 - 10, 3, 'h', 0.5));
-      out.push(seg('barricade', ox + 460, oy + h / 2 - 10, 4, 'h', 0.3));
+      /* Cover along the aisle, not across it.
+
+         Both of these sat on the centreline at h/2 - 10, which is the middle
+         of the aisle between the racking — so the one route from the roller
+         door at one end of the warehouse to the other was pinched to 24px at
+         two points, and a body is 30. It has always been like that; nothing
+         measured it until the aisle was declared a room. Moved to the two
+         lips of the aisle, where a sandbag line is something you shoot over
+         rather than something you climb. */
+      out.push(seg('sandbag', ox + 120, oy + 198, 3, 'h', 0.5));
+      out.push(seg('barricade', ox + 460, oy + 242, 4, 'h', 0.3));
       // the frame the shed hangs on, at industrial bay spacing
-      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34,
+        keepClear: [{ x: ox + 24, y: oy + 196, w: w - 48, h: 68 }] }));
+      /* The central aisle, declared.
+
+         It was always there -- 80px of floor between the two racking blocks,
+         which is how the roller doors at each end are meant to connect -- but
+         nothing said so, so as far as the rest of the game was concerned the
+         middle of a warehouse was undefined space: no lights hung in it, no
+         decor placed against it, and the player's own map of the building
+         treated the one route through it as a gap between rooms. */
       out.rooms = [...cellRooms(top.cells, 'storeroom'), ...cellRooms(bot.cells, 'storeroom'),
+        room('hall', ox + 24, oy + 196, w - 48, 68),
         { kind: 'office', x: office.wing.x + 12, y: office.wing.y + 12, w: office.wing.w - 24, h: office.wing.h - 24 }];
       out.shape = [{ x: ox, y: oy, w, h }, office.wing];
       return out;
@@ -2090,6 +2244,7 @@ const Structures = (() => {
         a: ['lobby', 'office', 'storeroom'],
         b: ['radioRoom', 'guardRoom', 'workbay'],
         fillA: 'office', fillB: 'storeroom', thickness: 0.3, chicane: true,
+        cross: 0.5,
       });
       const out = [];
       objectiveShell(out, ox, oy, w, h, 'A', [
@@ -2297,7 +2452,11 @@ const Structures = (() => {
         out.push(seg('window', ox + dx, oy + h - 12, 1.6, 'h', 0.15));
       }
       out.push(...core.parts);
+      /* The landing: the corridor every flat opens onto, between the two
+         partitions above. Undeclared until now, which is a strange thing for
+         the single most-walked piece of floor in the building. */
       out.rooms = [...cellRooms(top.cells, 'apartment'), ...cellRooms(bot.cells, 'apartment'),
+        room('hall', ox + 24, oy + 194, w - 48, 82),
         { kind: 'foyer', x: core.wing.x + 12, y: core.wing.y + 12, w: core.wing.w - 24, h: core.wing.h - 24 }];
       out.shape = [{ x: ox, y: oy, w, h }, core.wing];
       return out;
@@ -2324,9 +2483,22 @@ const Structures = (() => {
       out.push(seg('sandbag', ox + 700, oy + 380, 4, 'h', 0.5));
       // a hangar is one clear span: columns only down the sides
       out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 36, bay: 360 }));
+      /* The apron either side of the airframe. A hangar is deliberately one
+         clear span rather than a warren, but "one clear span" and "floor the
+         game has no name for" are not the same thing: these are the two lanes
+         you actually walk, between the maintenance bays and the aircraft and
+         between the aircraft and the main door. */
       out.rooms = [
         ...cellRooms(bays.cells, 'workbay'),
         room('plane', ox + 240, oy + 315, 380, 80),
+        /* The upper lane is in two pieces because the aircraft's tail fin
+           stands in it. Declared as one strip it measured 30px of clear floor
+           at the fin — exactly one body width, which is a gap you fight the
+           collision solver to get through rather than a route. Two lanes
+           either side of the fin say what is actually there. */
+        room('hall', ox + 24, oy + 200, 430, 90),
+        room('hall', ox + 496, oy + 200, w - 520, 90),
+        room('hall', ox + 24, oy + 410, w - 48, 92),
       ];
       return out;
     },
@@ -2426,10 +2598,21 @@ const Structures = (() => {
         { side: 's', at: 460, type: 'rdoor', len: 4 },
         { side: 'w', at: 300, type: 'rdoor' },
       ]);
-      // the hall: three bays north, three south, with a walkway between
-      const hall = roomGrid('metal', ox + 240, oy + 14, w - 254, h - 180, 3, 2,
+      /* Three bays north, three south, with a walkway between them.
+
+         The walkway is the comment this line has always carried and never
+         built: a 3x2 grid divides its height into two touching rows, so what
+         separated the north bays from the south ones was a 28px seam, and the
+         only way across the shop floor was to squeeze between two machines.
+         Two grids with a gap measured out between them is the plan the
+         comment describes, and it gives the building the one thing a factory
+         floor needs — somewhere to walk that is not inside a bay. */
+      const bayH = 162, walk = 96;
+      const hallN = roomGrid('metal', ox + 240, oy + 14, w - 254, bayH, 3, 1,
+        { access: 's', thickness: 0.35, doorType: null });
+      const hallS = roomGrid('metal', ox + 240, oy + 14 + bayH + walk, w - 254, bayH, 3, 1,
         { access: 'n', thickness: 0.35, doorType: null });
-      out.push(...hall.parts);
+      out.push(...hallN.parts, ...hallS.parts);
       // offices along the west wall
       out.push(...partition('metal', ox + 226, oy + 14, h - 28, 'v', 0.4, [140, 420], 'door'));
       const offices = roomGrid('metal', ox + 14, oy + 14, 212, h - 28, 1, 3,
@@ -2438,14 +2621,16 @@ const Structures = (() => {
       // parts store, reinforced, along the south strip
       out.push(...partition('rwall', ox + 240, oy + h - 152, w - 254, 'h', 0.4, [200, 620], 'rdoor'));
       out.rooms = [
-        ...cellRooms(hall.cells, 'workbay'),
+        ...cellRooms(hallN.cells, 'workbay'), ...cellRooms(hallS.cells, 'workbay'),
+        room('hall', ox + 250, oy + 14 + bayH + 8, w - 274, walk - 16),
         room('office', offices.cells[0].x, offices.cells[0].y, offices.cells[0].w, offices.cells[0].h),
         room('controlRoom', offices.cells[1].x, offices.cells[1].y, offices.cells[1].w, offices.cells[1].h),
         room('office', offices.cells[2].x, offices.cells[2].y, offices.cells[2].w, offices.cells[2].h),
         room('storeroom', ox + 260, oy + h - 130, w - 300, 110),
       ];
       // the frame the shed hangs on, at industrial bay spacing
-      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34,
+        keepClear: [{ x: ox + 250, y: oy + 14 + bayH, w: w - 274, h: walk }] }));
       return out;
     },
 
@@ -2490,16 +2675,26 @@ const Structures = (() => {
       const north = roomGrid('metal', ox + 14, oy + 14, w - 28, 150, 4, 1, { access: 's' });
       out.push(...north.parts);
       out.push(...partition('metal', ox + 14, oy + 178, w - 28, 'h', 0.35, [120, 380, 620], 'door'));
-      out.push(...partition('metal', ox + 200, oy + 192, h - 206, 'v', 0.35, [180], 'door'));
+      /* The cross walls start below the corridor, not at the office wall.
+
+         They used to begin at y+192, two pixels under the partition above
+         them, which left the three big southern rooms butted straight onto
+         the office block with a 20px seam between — measured as the only
+         route across the building, and 20px is not a route. Starting them at
+         the rooms instead opens a 68px corridor the whole width of the
+         building, which is what the doors in the wall above were always
+         opening onto. */
+      out.push(...partition('metal', ox + 200, oy + 268, h - 298, 'v', 0.35, [180], 'door'));
       // signals room, reinforced, in the south-east
-      out.push(...partition('rwall', ox + w - 220, oy + 192, h - 206, 'v', 0.4, [200], 'rdoor'));
+      out.push(...partition('rwall', ox + w - 220, oy + 268, h - 298, 'v', 0.4, [200], 'rdoor'));
       out.push(seg('window', ox + 60, oy + h - 12, 2.6, 'h', 0.2));
       out.push(seg('window', ox + 440, oy + h - 12, 2.6, 'h', 0.2));
       out.rooms = [
         ...cellRooms(north.cells, 'office'),
-        room('controlRoom', ox + 220, oy + 210, w - 460, h - 240),
-        room('armoury',     ox + w - 200, oy + 210, 175, h - 240),
-        room('storeroom',   ox + 30, oy + 210, 150, h - 240),
+        room('hall',        ox + 24, oy + 196, w - 48, 68),
+        room('controlRoom', ox + 220, oy + 268, w - 460, h - 298),
+        room('armoury',     ox + w - 200, oy + 268, 175, h - 298),
+        room('storeroom',   ox + 30, oy + 268, 150, h - 298),
       ];
       return out;
     },
@@ -2580,6 +2775,7 @@ const Structures = (() => {
         b: ['lobby', 'surgery', 'dispensary', 'office'],
         fillA: 'ward', fillB: 'staffRoom', thickness: 0.28, chicane: true,
         passage: 'a',       // the way the trolleys go
+        cross: 0.56,        // and the cross hall they go down to reach it
       });
       /* The ambulance bay, projecting off the front. Hospitals are not boxes:
          the thing that makes one recognisable from the air is the covered bay
@@ -2627,6 +2823,9 @@ const Structures = (() => {
         room('storeroom', store.cells[0].x, store.cells[0].y, store.cells[0].w, store.cells[0].h),
         room('storeroom', store.cells[1].x, store.cells[1].y, store.cells[1].w, store.cells[1].h),
         room('controlRoom', ox + w - 170, oy + 30, 150, h - 60),
+        // the shop floor between the bays and the stores, which is the route
+        // from the roller door at the front to the back of the building
+        room('hall', ox + 24, oy + 232, w - 224, 92),
       ];
       return out;
     },
@@ -2708,6 +2907,7 @@ const Structures = (() => {
         b: ['cell', 'cell', 'cell', 'cell', 'cell', 'controlRoom'],
         fillA: 'cell', fillB: 'cell', thickness: 0.4, doorType: 'rdoor', chicane: true,
         passage: 'b',       // the guards' run behind the cells
+        cross: 0.48,        // the gate hall across the middle of the block
       });
       const out = shell(ox, oy, w, h, 'rwall', 0.5, [
         { side: 'w', at: h * 0.5 - 30, type: 'rdoor', len: 2 },
@@ -2733,6 +2933,7 @@ const Structures = (() => {
         b: ['office', 'office', 'strongroom', 'safe'],
         fillA: 'lobby', fillB: 'office', thickness: 0.35,
         passage: 'b',       // behind the counter, past the vault
+        cross: 0.52,
       });
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
         { side: 'n', at: 280, type: 'door', len: 2.5 },
@@ -2844,27 +3045,40 @@ const Structures = (() => {
         { side: 'n', at: 280, type: 'door', len: 2 },
         { side: 'e', at: 180, type: 'door' },
       ]);
-      // gallery halls (parallel wings with art display walls)
-      out.push(seg('wood', ox + 180, oy + 80, 6, 'v', 0.3));
-      out.push(seg('wood', ox + 380, oy + 80, 6, 'v', 0.3));
+      /* Display walls between the galleries, stopped short of the
+         concourse below them. They used to run 6m from y+80, which reached
+         y+320 — straight across the middle of the building, which is where
+         the concourse now runs. */
+      out.push(seg('wood', ox + 180, oy + 80, 4, 'v', 0.3));
+      out.push(seg('wood', ox + 380, oy + 80, 4, 'v', 0.3));
       out.push(seg('wood', ox + 580, oy + 140, 5, 'v', 0.3));
-      // central atrium (open area, few walls)
-      out.push(seg('wood', ox + 280, oy + 300, 3.2, 'h', 0.25));
+      // a display case set against the concourse's north side, not across it
+      out.push(seg('wood', ox + 280, oy + 232, 3.2, 'h', 0.25));
       // security desk
       out.push(seg('metal', ox + 100, oy + 200, 2.2, 'h', 0.3));
       /* The display hallway is the prize — a gold crate down the long east
          wing — and the main exhibit is deliberately empty, so the room that
          looks most important is the one you shouldn't linger in. */
+      /* A concourse across the middle, which is the one thing every museum
+         on earth has and this one did not.
+
+         The six rooms used to tile the footprint: two rows with a 40px seam
+         between them, so the route from the north door to the washrooms ran
+         through the middle of whichever gallery was in the way. Taking 55px
+         off each row buys a 90px concourse that both rows open onto — the
+         galleries are still the biggest rooms in the building, and now there
+         is somewhere to walk between them. */
       out.rooms = [
-        room('lobby',       ox + 20,  oy + 20,  150, 260),
-        room('mainExhibit', ox + 195, oy + 20,  175, 260),
-        room('gunExhibit',  ox + 395, oy + 20,  170, 260),
+        room('lobby',       ox + 20,  oy + 20,  150, 205),
+        room('mainExhibit', ox + 195, oy + 20,  175, 205),
+        room('gunExhibit',  ox + 395, oy + 20,  170, 205),
+        room('hall',        ox + 20,  oy + 245, 545, 90),
         // wide enough for its gold crate to reliably find floor: at 105 it was
         // a 60px usable band once the walls were inset, and the crate that
         // makes this building worth entering sometimes had nowhere to go
         room('displayHall', ox + 580, oy + 20,  125, 500),
-        room('washroom',    ox + 20,  oy + 320, 260, 235),
-        room('washroom',    ox + 300, oy + 320, 265, 235),
+        room('washroom',    ox + 20,  oy + 355, 260, 200),
+        room('washroom',    ox + 300, oy + 355, 265, 200),
       ];
       return out;
     },
@@ -3002,20 +3216,29 @@ const Structures = (() => {
         { side: 'w', at: 180, type: 'rdoor' }, { side: 'e', at: 240, type: 'rdoor' },
         { side: 'n', at: 430, type: 'rdoor', len: 3 },
       ]);
-      const hall = roomGrid('metal', ox + 14, oy + 14, w - 250, h - 190, 2, 2,
-        { access: 'e', thickness: 0.4, doorType: null });
-      out.push(...hall.parts);
+      /* Same split as the factory, for the same reason: a 2x2 grid of
+         turbine bays with no gap between the rows is four boxes, not a plant
+         floor. The walkway runs between them, from the roller door on the
+         west wall through to the control room door on the east. */
+      const bayH = 170, walk = 90;
+      const hallN = roomGrid('metal', ox + 14, oy + 14, w - 250, bayH, 2, 1,
+        { access: 's', thickness: 0.4, doorType: null });
+      const hallS = roomGrid('metal', ox + 14, oy + 14 + bayH + walk, w - 250, bayH, 2, 1,
+        { access: 'n', thickness: 0.4, doorType: null });
+      out.push(...hallN.parts, ...hallS.parts);
       out.push(...partition('metal', ox + 14, oy + h - 162, w - 250, 'h', 0.35, [180, 460], 'door'));
       out.push(seg('barricade', ox + 60, oy + h - 90, 4, 'h', 0.3));
       out.push(seg('barricade', ox + 420, oy + h - 90, 4, 'h', 0.3));
       out.push(...partition('rwall', ox + w - 236, oy + 14, h - 28, 'v', 0.4, [(h - 28) / 2], 'rdoor'));
       out.rooms = [
-        ...cellRooms(hall.cells, 'workbay'),
+        ...cellRooms(hallN.cells, 'workbay'), ...cellRooms(hallS.cells, 'workbay'),
+        room('hall', ox + 24, oy + 14 + bayH + 8, w - 270, walk - 16),
         room('storeroom',   ox + 40, oy + h - 145, w - 300, 120),
         room('controlRoom', ox + w - 220, oy + 30, 195, h - 60),
       ];
       // the frame the shed hangs on, at industrial bay spacing
-      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34 }));
+      out.push(...columnGrid(ox, oy, w, h, { kind: 'pillar', size: 34,
+        keepClear: [{ x: ox + 24, y: oy + 14 + bayH, w: w - 270, h: walk }] }));
       return out;
     },
 
@@ -3065,6 +3288,7 @@ const Structures = (() => {
         a: ['workbay', 'workbay', 'workbay'],
         b: ['storeroom', 'safe'],
         fillA: 'workbay', fillB: 'storeroom', thickness: 0.35, doorType: null,
+        cross: 0.5,         // the second adit, through to the back of the cut
       });
       const out = shell(ox, oy, w, h, 'rock', 0.4, [
         { side: 'n', at: 260, type: 'door' },

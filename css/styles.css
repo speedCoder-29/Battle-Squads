@@ -1427,6 +1427,10 @@ p  { text-wrap: pretty; }
 .debrief__row--warn b { color: #ffcf4a; }
 .debrief__row--bad { border-left-color: #ff7a7a; }
 .debrief__row--bad b { color: #ff7a7a; }
+/* A statement of fact rather than a judgement — what the job was, what
+   happened to it. The mission debrief opens with one. */
+.debrief__row--info { border-left-color: #6ea8e0; }
+.debrief__row--info b { color: #9fd8ff; }
 
 /* ---------- deployment screen ----------
    Between pressing deploy and standing on the island there is a screen swap,

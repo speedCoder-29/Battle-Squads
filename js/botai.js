@@ -29,11 +29,11 @@ const BotAI = (() => {
     const t = curve(lvl);
     return {
       // radians of error added to every shot — 0.30 is wild, 0.012 is surgical
-      error: lerp(0.30, 0.012, t),
+      error: lerp(1.0, 0.012, t),
       // how fast they swing onto a target (fraction of the gap closed per second)
       turnRate: lerp(3.0, 22.0, t),
       // seconds before they react to seeing someone
-      reaction: lerp(0.85, 0.09, t),
+      reaction: lerp(0.90, 0.09, t),
       // how much they compensate for a moving target (0 = none, 1 = perfect lead)
       lead: lerp(0, 1, Math.max(0, (t - 0.3) / 0.7)),
       // they hold fire past this fraction of their weapon's range

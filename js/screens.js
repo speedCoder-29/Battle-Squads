@@ -270,7 +270,13 @@ const Screens = (() => {
   /* ---- the last few matches ----
      Written by game.js at the end of every match. Newest first, with the
      numbers that say how the game went rather than only whether you won it. */
-  const MODE_LABEL = { domination: 'Domination', elimination: 'Elimination', range: 'Firing Range' };
+  const MODE_LABEL = {
+    domination: 'Domination', elimination: 'Elimination', range: 'Firing Range',
+    /* Added late and missed here, so a mission or an arms race in the match
+       history rendered as its own id -- and selectMode() below labelled both
+       of them "Elimination", because it was a two-way ternary. */
+    mission: 'Mission', armsrace: 'Arms Race', tutorial: 'Basic Training',
+  };
   function agoText(ms) {
     const mins = Math.round((Date.now() - ms) / 60000);
     if (mins < 1) return 'just now';
@@ -930,7 +936,7 @@ const Screens = (() => {
   function selectMode(mode) {
     selectedMode = mode;
     document.querySelectorAll('.mode-card').forEach(c => c.classList.toggle('is-selected', c.dataset.mode === mode));
-    const label = mode === 'domination' ? 'Domination' : 'Elimination';
+    const label = MODE_LABEL[mode] || 'Deploy';
     document.getElementById('queue-mode-label').textContent = label;
     SFX.click();
   }
@@ -1221,10 +1227,25 @@ const Screens = (() => {
       '<b>You respawn.</b> Dying costs you a few seconds and the walk back, not the match.',
       'Down and waiting? ' + kAct('deploy') + ' over a squadmate deploys you on them instead of at your own lines.',
     ])) +
-      hSection('Elimination', 'Six squads of four, one life each.', hList([
-        'No respawns and no timer worth waiting on: the last squad with anybody standing wins.',
+      hSection('Elimination', 'Six squads of four, one life each, on a shrinking island.', hList([
+        'No respawns: the last squad with anybody standing wins.',
+        '<b>The circle closes.</b> A safe area shrinks in four steps. The solid ring is where the edge is now; the dashed one is where it is going, and it appears as soon as the next step is decided — so you always have time to walk, if you start walking.',
+        'Outside it you take damage, and it gets worse every step: 2 HP/s at the first circle, 15 at the last. A vest does not help.',
         'Loot early, fight late. Armour and a full kit matter far more here than in Domination.',
         'Being downed is not being dead — but only if somebody is close enough to pick you up.',
+      ])) +
+      hSection('Arms Race', 'Twelve guns, and a kill is a rung.', hList([
+        'Everyone starts on the same pistol and climbs the same ladder. Finish all twelve to win — the last rung is a melee kill.',
+        '<b>The leader is marked</b> with a star, to everybody, from their first kill. Killing them is worth two rungs, so a runaway lead turns into a target.',
+        '<b>A knife kill steals a rung</b> off whoever you stabbed. Two-rung swing for the riskiest attack in the game.',
+      ])) +
+      hSection('Mission', 'You against a garrison that does not know you are coming.', hList([
+        'Land by boat, work inward, take the asset or the man, and get back to the extraction point.',
+        'The compound is built in rings: open ground and trees, then shacks, then real buildings, then the objective. The guards get harder the further in you go.',
+        '<b>Nobody is looking for you yet.</b> A guard who hears a shot investigates; a guard who finds a body calls the whole island. The three states are unaware, suspicious and hunting, and the only one you want is the first.',
+        'Guards patrol a fixed loop until something interrupts it. Cross a route behind a patrol, not in front of one.',
+        kAct('map') + ' opens the chart at any time, and the objective stays pinned on it — you were shown it in the briefing.',
+        'The debrief at the end grades the run on what the garrison knew, not on your kill count.',
       ])) +
       hSection('Practice', '', hList([
         '<b>Basic Training</b> — the base tour of every screen on the home page, then a guided match, one mechanic at a time, with nobody shooting until the last lesson.',

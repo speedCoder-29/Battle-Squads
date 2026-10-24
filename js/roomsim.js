@@ -81,6 +81,164 @@
      team-balancing loop, the score array and the spawn ring — so an
      elimination room quietly put everyone into four squads while every client
      drew six, and the fifth and sixth never got a spawn corner or a score. */
+  /* ================= THE CLOSING ZONE =================
+     Elimination had no clock pressure of its own. Six squads, no respawns, a
+     5200px island and eight minutes: the winning play was to pick a building
+     and wait, because the only thing that could make you move was somebody
+     else making a mistake. Every last-squad-standing mode in the genre solves
+     this the same way and has done since the first of them -- a safe area that
+     closes, so the map does the forcing instead of the players.
+
+     The schedule is the pacing. Each phase is three numbers, which is the
+     whole model:
+
+       hold   how long the current circle stands before it starts moving. This
+              is the breathing room -- time to loot, reposition, pick a fight
+              on your terms.
+       close  how long the shrink itself takes. Long enough to walk in from
+              the edge, short enough that leaving late is a decision.
+       dps    what standing outside costs. It escalates, so the first circle
+              is a nudge and the last is lethal.
+
+     Radii are fractions of the short edge, so the same schedule works on any
+     board size. The sum of the holds and closes is the real match length --
+     see ELIM_SECONDS -- because a mode paced by its zone should end when the
+     zone is done, not three minutes later.
+
+     Four phases, not eight. Each one has to be legible from inside the match
+     ("the next one takes the refinery"), and a schedule nobody can hold in
+     their head is just a timer that hurts. */
+  const ZONE_PHASES = [
+    { hold: 58, close: 34, to: 0.62, dps: 2 },
+    { hold: 42, close: 30, to: 0.38, dps: 5 },
+    { hold: 32, close: 26, to: 0.20, dps: 9 },
+    { hold: 26, close: 22, to: 0.075, dps: 15 },
+  ];
+  /* The opening circle covers the whole playable island, so phase one is the
+     first time the board actually gets smaller. */
+  const ZONE_START = 0.74;
+  const zoneTotal = () => ZONE_PHASES.reduce((n, p) => n + p.hold + p.close, 0);
+
+  const Zone = {
+    PHASES: ZONE_PHASES,
+    START: ZONE_START,
+    total: zoneTotal,
+    /* Which modes close. Domination and Arms Race are respawn modes fought
+       over fixed ground -- a shrinking board there would just delete the
+       objectives -- and Mission has its own clock in the shape of a garrison
+       that is waking up. */
+    has: (mode) => mode === 'elimination',
+
+    /* The opening state. `rand` is the world's seeded generator where there is
+       one, so the same seed closes on the same places: an island whose circles
+       are reproducible is an island two players can talk about. */
+    create(w, h, rand) {
+      const r0 = Math.min(w, h) * ZONE_START;
+      const rnd = rand || Math.random;
+      const z = {
+        x: w / 2, y: h / 2, r: r0,
+        /* Where this phase is heading. Equal to the current circle until the
+           first phase is rolled, so a zone that has never stepped still draws
+           and tests correctly. */
+        tx: w / 2, ty: h / 2, tr: r0,
+        r0, phase: -1, t: 0, state: 'hold', dps: 0, w, h,
+      };
+      Zone.next(z, rnd);
+      return z;
+    },
+
+    /* Roll the next phase: a new centre somewhere inside the current circle,
+       and the radius this phase is closing to.
+
+       The centre moves rather than staying put, which is the difference
+       between a zone that compresses the match and a zone that just punishes
+       whoever started furthest out. It is constrained to land wholly inside
+       the circle it came from, so nobody is ever cut off by a circle that
+       jumped somewhere they could not have walked to. */
+    next(z, rand) {
+      const rnd = rand || Math.random;
+      z.phase++;
+      const ph = ZONE_PHASES[z.phase];
+      if (!ph) { z.state = 'done'; z.tr = z.r; z.tx = z.x; z.ty = z.y; return; }
+      z.tr = z.r0 * ph.to;
+      const slack = Math.max(0, z.r - z.tr);
+      const ang = rnd() * Math.PI * 2;
+      /* How far the centre may wander, limited by two things at once.
+
+         It must stay inside the circle it came from, or the zone could strand
+         somebody on the wrong side of a jump they had no way to anticipate --
+         that is `slack`.
+
+         And the whole circle must stay on the island. The board is a map
+         rectangle but the playable part is an island inside it, with a beach
+         at 300px and bays that bite as deep as 600; a final circle wandering
+         freely over a 5200px board closes on open water about a third of the
+         time, and a safe area you drown in is not one. SHORE is the clearance
+         the far edge keeps from the map boundary.
+
+         The effect of the second limit is that the big early circles barely
+         move and the small late ones roam, which is the right way round: a
+         wandering 3000px circle is noise, a wandering 300px one is the whole
+         endgame. */
+      const SHORE = 650;
+      const room = Math.max(0, Math.min(z.w, z.h) * 0.5 - SHORE - z.tr);
+      // sqrt keeps the offset uniform over the disc rather than clustered in
+      // the middle, so the circle genuinely wanders
+      const d = Math.sqrt(rnd()) * slack * 0.75;
+      let nx = z.x + Math.cos(ang) * d;
+      let ny = z.y + Math.sin(ang) * d;
+      const ox = nx - z.w / 2, oy = ny - z.h / 2;
+      const off = Math.hypot(ox, oy);
+      if (off > room) {
+        const k = room / (off || 1);
+        nx = z.w / 2 + ox * k;
+        ny = z.h / 2 + oy * k;
+      }
+      z.tx = nx; z.ty = ny;
+      z.state = 'hold';
+      z.t = ph.hold;
+      z.dps = ph.dps;
+    },
+
+    /* One tick. Holds, then interpolates centre and radius over `close`, then
+       rolls the next phase. Returns nothing -- callers read the state off `z`,
+       which is also exactly what goes on the wire. */
+    step(z, dt, rand) {
+      if (!z || z.state === 'done') return;
+      z.t -= dt;
+      if (z.state === 'hold') {
+        if (z.t <= 0) {
+          const ph = ZONE_PHASES[z.phase];
+          z.state = 'close';
+          z.t = ph.close;
+          z.fx = z.x; z.fy = z.y; z.fr = z.r;     // where the close started from
+        }
+        return;
+      }
+      const ph = ZONE_PHASES[z.phase];
+      const k = 1 - Math.max(0, z.t) / Math.max(0.001, ph.close);
+      z.x = z.fx + (z.tx - z.fx) * k;
+      z.y = z.fy + (z.ty - z.fy) * k;
+      z.r = z.fr + (z.tr - z.fr) * k;
+      if (z.t <= 0) { z.x = z.tx; z.y = z.ty; z.r = z.tr; Zone.next(z, rand); }
+    },
+
+    outside: (z, x, y) => !!z && Math.hypot(x - z.x, y - z.y) > z.r,
+    /* What a point outside is taking, per second. Inside is zero, which is the
+       only reason any of this is a pacing tool rather than a death trap. */
+    damage: (z, x, y) => (Zone.outside(z, x, y) ? z.dps : 0),
+    /* Seconds until the circle next starts moving, for the HUD. Negative-safe
+       and zero while it is already closing. */
+    warnIn: (z) => (z && z.state === 'hold' ? Math.max(0, z.t) : 0),
+    /* The compact form that goes in a snapshot: five numbers and a state, not
+       the whole phase table the client already has a copy of. */
+    pack: (z) => (z ? {
+      x: Math.round(z.x), y: Math.round(z.y), r: Math.round(z.r),
+      tx: Math.round(z.tx), ty: Math.round(z.ty), tr: Math.round(z.tr),
+      p: z.phase, s: z.state, d: z.dps, t: +Math.max(0, z.t).toFixed(1),
+    } : null),
+  };
+
   const TEAM_COUNT = { domination: 4, elimination: 6 };
   /* A 6400px map is 128 tiles across; two dozen people on it are specks. The
      ceiling is per-squad rather than a flat number so that adding a squad adds
@@ -90,6 +248,12 @@
   const ROOM_MAX = 48;
   const MATCH_SECONDS = 8 * 60;
   const SCORE_CAP = 1000;              // domination win score, as offline
+  /* Elimination ends when the zone is done closing, plus a short tail for the
+     last circle to settle whatever is left in it. Eight minutes was the same
+     clock Domination uses, and it left three minutes of two squads staring at
+     each other after the board had already stopped shrinking. */
+  const ELIM_SECONDS = Math.round(zoneTotal() + 45);
+  const matchSecondsFor = (mode) => (mode === 'elimination' ? ELIM_SECONDS : MATCH_SECONDS);
   const COMMS_GAP = 550;               // ms between one player's pings/emotes
   const DOOR_REACH = 110;              // how close you must be to work a door
   const MAX_TRENCHES = 200;            // a dug map, not a moonscape
@@ -336,6 +500,7 @@
       this.walls = [];                   // world geometry, empty until setWorld
       this.wallIndex = null;
       this.downed = [];                  // walls destroyed so far, for late joiners
+      this.zone = Zone.has(this.mode) ? Zone.create(this.map.w, this.map.h) : null;
       this.objectives = [];              // domination capture points
       this.scores = new Array(this.teams).fill(0);   // domination score per team
       this.bullets = [];
@@ -356,7 +521,7 @@
       this.crates = [];                  // loot crates, by index, opened once each
       this.nextEnt = 1;                  // ids for all of the above
       this.events = [];                  // things clients should hear about
-      this.timeLeft = MATCH_SECONDS;     // see the accessor below — this sets endsAt
+      this.timeLeft = matchSecondsFor(this.mode);   // see the accessor below — this sets endsAt
       /* Rooms open in a lobby and only start fighting when whoever is hosting
          says so. Deploying the host straight into the match meant everybody
          after them was a late joiner into a round already in progress, on a
@@ -1206,8 +1371,19 @@
     startMatch() {
       if (this.phase === 'live' || this.over) return false;
       this.phase = 'live';
-      this.timeLeft = MATCH_SECONDS;
-      this.broadcast({ t: 'start', mode: this.mode, timeLeft: MATCH_SECONDS, roster: this.roster() });
+      /* Elimination runs on its own, shorter clock -- the one its closing zone
+         implies -- so the match ends when the board has finished shrinking
+         rather than three minutes afterwards. The length goes out with the
+         start message, because the client's HUD had been assuming eight
+         minutes for every mode. */
+      const secs = matchSecondsFor(this.mode);
+      this.timeLeft = secs;
+      /* The zone is rolled when the fighting starts, not when the room opened,
+         for the same reason the clock is: a lobby that sat for four minutes
+         would otherwise deploy everybody into a circle that had already
+         closed twice. */
+      if (Zone.has(this.mode)) this.zone = Zone.create(this.map.w, this.map.h);
+      this.broadcast({ t: 'start', mode: this.mode, timeLeft: secs, roster: this.roster() });
       return true;
     }
 
@@ -1313,7 +1489,24 @@
       this.stepVehicles(dt);
       this.stepDecay(dt);
       if (this.mode === 'domination') this.stepObjectives(dt);
+      if (this.zone) this.stepZone(dt);
       if (this.timeLeft <= 0) this.finish();
+    }
+
+    /* The closing zone, and the bill for being outside it. Damage is applied
+       through the normal kill path so a zone death feeds the feed, the
+       scoreboard and the respawn rules like any other -- "the island" is the
+       killer, which is the honest attribution. */
+    stepZone(dt) {
+      Zone.step(this.zone, dt);
+      for (const p of this.players.values()) {
+        if (!p.alive) continue;
+        const dps = Zone.damage(this.zone, p.x, p.y);
+        /* 'true' damage: armour does not help against the weather, and a vest
+           that reduced it would turn the zone into a loot check. No attacker,
+           so the feed credits the island. */
+        if (dps > 0) this.damage(p, dps * dt, 'true', null, 'body');
+      }
     }
 
     /* ---------- thrown things ----------
@@ -1918,6 +2111,11 @@
       const t = now();
       return {
         t: 'snapshot', tick: this.tick++, time: t, timeLeft: Math.max(0, Math.round(this.timeLeft)),
+        /* The circle, in the modes that have one. Ten numbers at 20Hz, which
+           is nothing next to the agent list, and it has to be authoritative:
+           a client that stepped its own copy would disagree about where the
+           edge is, and the edge is the only thing doing damage. */
+        zone: Zone.pack(this.zone),
         /* Only what moves. Half of what used to be here was identity — a name,
            a skin, a weapon id, a kill count — resent twenty times a second to
            every player for the whole match, and none of it had changed since
@@ -2126,5 +2324,6 @@
       this.broadcast({ t: 'end', scores, roster: this.roster() });
     }
   }
-  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS, moveSpeedFor, surfaceSpeedFor, BODY_R };
+  return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS, ELIM_SECONDS,
+    matchSecondsFor, Zone, moveSpeedFor, surfaceSpeedFor, BODY_R };
 }));
