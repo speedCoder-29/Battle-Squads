@@ -1731,8 +1731,10 @@ const Game = (() => {
       resupplyT += dt;
       if (resupplyT >= e.resupply) {
         resupplyT = 0;
-        if (player.ammo < player.weapon.mag) {
-          player.ammo = player.weapon.mag; updateWeaponHud(); hudMsg('Magazine topped up');
+        const g = slotsOf(player);
+        const spareShort = g && g[1 - player.gun] && g[1 - player.gun].ammo < g[1 - player.gun].weapon.mag;
+        if (player.ammo < player.weapon.mag || spareShort) {
+          refillAll(player); updateWeaponHud(); hudMsg('Magazine topped up');
         } else {
           const kit = Items.CONSUMABLES[player.cls.consumable];
           if (kit) addItem(kit.cat, player.cls.consumable, 1);
@@ -3300,7 +3302,7 @@ const Game = (() => {
       a.angle = Math.atan2(ty - sp.y, tx - sp.x);
     }
     a.hp = a.maxHp; a.alive = true;
-    a.ammo = a.weapon.mag; a.reloadTimer = 0; a.fireCd = 0;
+    refillAll(a); a.fireCd = 0;
     a.bloom = 0; a.burstLeft = 0; a.burstCd = 0; a.postBurstCd = 0;
     a.toolCd = 0; a.toolActive = false; a.swingT = 0;
     a.respawnTimer = 0;
@@ -4112,6 +4114,14 @@ const Game = (() => {
     // a different gun is a different outline — drop the cached one
     a.gunProfile = null;
     a.reloadTimer = 0; a.burstLeft = 0; a.postBurstCd = 0;
+    /* Mirrored into the slot this gun is standing in, or the swap is a trap:
+       selectGun() reads a.weapon back off g[i].weapon when you return to this
+       slot, and that reference was never touched here. A legendary pickup --
+       the single best weapon the loot table hands out -- would silently
+       revert to whatever you were holding before, the moment you swapped to
+       your sidearm and back. */
+    const g = slotsOf(a);
+    if (g && g[a.gun]) { g[a.gun].weapon = w; g[a.gun].ammo = w.mag; }
     if (a.isPlayer) updateWeaponHud();
   }
 
@@ -4401,7 +4411,7 @@ const Game = (() => {
       const mate = agents.find(o => !o.alive && !o.isVehicle && o.team === a.team && near2(o, a, reach + o.r));
       if (!mate) { a.toolCd = 1.5; if (a.isPlayer) hudMsg('No downed teammate in reach'); return; }
       a.toolCd = t.cooldown;
-      mate.alive = true; mate.hp = mate.maxHp; mate.ammo = mate.weapon.mag; mate.respawnTimer = 0;
+      mate.alive = true; mate.hp = mate.maxHp; refillAll(mate); mate.respawnTimer = 0;
       mate.x = a.x + rand(-26, 26); mate.y = a.y + rand(-26, 26);
       spawnFx(mate.x, mate.y, '#4be08a', 16);
       if (a.isPlayer) { hudMsg('Revived ' + mate.name); SFX.reward(); }
@@ -4892,7 +4902,7 @@ const Game = (() => {
   function reviveTeammate() {
     for (const a of agents) {
       if (!a.alive && !a.isVehicle && a.team === player.team && near2(a, player, 150)) {
-        a.alive = true; a.hp = a.maxHp * 0.5; a.ammo = a.weapon.mag;
+        a.alive = true; a.hp = a.maxHp * 0.5; refillAll(a);
         a.x = player.x + rand(-30, 30); a.y = player.y + rand(-30, 30);
         hudMsg('Revived ' + a.name); return;
       }
@@ -5249,7 +5259,7 @@ const Game = (() => {
     if (!c || c.opened) return;
     c.opened = true;
     a.lootCool = BOT_LOOT_COOL;
-    a.ammo = a.weapon.mag;
+    refillAll(a);
     const rich = c.tier === 'gold' || c.tier === 'chest' || c.tier === 'airdrop';
     const mid = c.tier === 'silver';
     a.hp = Math.min(a.maxHp, a.hp + (rich ? 45 : mid ? 28 : 14));
@@ -5576,7 +5586,8 @@ const Game = (() => {
     }
     for (const dp of deployables) {
       if (dp.type === 'ammo' && dp.supply > 0 && near2(dp, player, 95)) {
-        player.ammo = player.weapon.mag; dp.supply -= player.weapon.mag;
+        dp.supply -= player.weapon.mag;
+        refillAll(player);
         updateWeaponHud(); hudMsg('Resupplied'); SFX.reload(); return;
       }
     }
@@ -5910,7 +5921,7 @@ const Game = (() => {
   }
   function grantLoot(entry) {
     switch (entry.id) {
-      case 'ammo': { player.ammo = player.weapon.mag; addItem('grenade', player.inv.grenade.id || 'frag', 1); hudMsg('Ammo + spare mag'); break; }
+      case 'ammo': { refillAll(player); addItem('grenade', player.inv.grenade.id || 'frag', 1); hudMsg('Ammo + spare mag'); break; }
       case 'classConsumable': {
         const cid = Items.classConsumableFor(player.cls.name);   // your own kit, topped up
         const it = Items.CONSUMABLES[cid];
@@ -9159,8 +9170,7 @@ const Game = (() => {
       }
       hudMsg(found ? `📡  Recon sweep — ${found} contact${found > 1 ? 's' : ''} marked` : '📡  Recon sweep — nobody out there');
     } else if (id === 'resupply') {
-      player.ammo = player.weapon.mag;
-      player.reloadTimer = 0;
+      refillAll(player);
       refillFromBag();
       if (player.inv && player.inv.heal) {
         const h = player.inv.heal;
@@ -9663,6 +9673,31 @@ const Game = (() => {
   const SWAP_BASE = 0.45;         // seconds to bring a new gun up
 
   function slotsOf(a) { return (a && a.guns) || null; }
+
+  /* Refill both gun slots, not only the one in hand.
+
+     Every resupply path in the game -- respawning, an armoury, a medic's bag,
+     the Resupply streak, an ammo crate -- set `a.ammo`, which is the live
+     slot. The sidearm sitting in `a.guns[other]` was never touched by any of
+     them, because nothing after the original two-gun work went back through
+     the resupply call sites. Empty your pistol once and it stays empty for
+     the rest of the match, through every respawn, until you swap to it and
+     reload by hand -- which most players never do, because the HUD only ever
+     shows the gun you're holding as needing it.
+
+     Centralised here so every resupply site tops up both slots the same way,
+     rather than five near-identical lines that agree by accident. */
+  function refillAll(a) {
+    a.ammo = a.weapon.mag;
+    a.reloadTimer = 0;
+    const g = slotsOf(a);
+    if (!g) return;
+    for (const slot of g) {
+      if (!slot || !slot.weapon) continue;
+      slot.ammo = slot.weapon.mag;
+      slot.reloadTimer = 0;
+    }
+  }
 
   /* How long this gun takes to raise. Heavier guns come up slower, which is
      the only thing stopping a sniper from carrying an SMG as a free answer to

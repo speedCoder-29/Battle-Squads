@@ -623,6 +623,13 @@ p  { text-wrap: pretty; }
 .shop-card:hover { transform: translateY(-3px); border-color: var(--line-strong); }
 .shop-card.is-owned { border-color: var(--green); opacity: 0.75; }
 .shop-card.is-broke { opacity: 0.6; }
+/* Owned but not the one currently worn -- a cosmetic you can switch back to,
+   not a shelf item you have finished with. Full opacity and an accent border
+   so it reads as live and clickable, the opposite of the dimmed is-owned
+   state right above it. */
+.shop-card.is-equippable { border-color: var(--accent); opacity: 1; }
+.shop-card.is-equippable .shop-card__buy { border-color: var(--accent); color: var(--accent); }
+.shop-card.is-equippable .shop-card__buy:hover { background: var(--accent); color: #1a0e04; }
 .shop-card__icon { font-size: 30px; }
 .shop-card__name { font-weight: 800; font-size: 15px; }
 .shop-card__rarity { font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
@@ -1630,8 +1637,23 @@ p  { text-wrap: pretty; }
 
 /* The backdrop canvas fills the home screen and sits under everything. The
    screen itself needs a stacking context or the panels' own backdrop-filter
-   composites against the page instead of against this. */
-.screen--home { position: relative; isolation: isolate; }
+   composites against the page instead of against this.
+
+   `.screen` itself is `position: fixed; inset: 0`, which is also what pins it
+   to exactly the viewport's height — switching to `relative` for the
+   stacking context drops that pin along with the positioning, and nothing
+   here replaced it. The whole column layout below assumes it did: `.home`
+   has `overflow: hidden` and `.play-hub` has `overflow-y: auto` specifically
+   so a column too tall for the window scrolls within itself rather than
+   pushing the page down. With no definite height on `.screen--home`, neither
+   ever engages -- the column just grows to its natural content height
+   (1567px, measured at 1366x768) and `body { overflow: hidden }` silently
+   clips everything past the fold with no scrollbar and no way to reach it.
+   That is what was burying the kit strip, and on anything under about 900px
+   tall it buried the Deploy button too. `height: 100%` restores the pin
+   `position: relative` took away, off the same `html, body { height: 100% }`
+   chain every other screen relies on. */
+.screen--home { position: relative; height: 100%; isolation: isolate; }
 .home-backdrop {
   position: absolute; inset: 0; width: 100%; height: 100%;
   z-index: 0; pointer-events: none;

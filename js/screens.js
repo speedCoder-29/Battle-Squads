@@ -57,6 +57,14 @@ const Screens = (() => {
     document.querySelector('.home').dataset.view = view;
     document.querySelectorAll('.topnav__btn').forEach(b =>
       b.classList.toggle('is-active', b.dataset.nav === view));
+    /* Play was the one tab with nothing here, on the assumption that nothing
+       on it changes once enterHome() has drawn it. The kit strip is the
+       counterexample: pick a different primary or secondary on the loadout
+       tab, come back to Play, and it kept showing whatever you had equipped
+       when the page loaded -- the exact thing it exists to tell you, stale.
+       Re-read the profile rather than trust anything cached by an earlier
+       view, since the loadout tab is what just wrote to it. */
+    if (view === 'play') renderKit(DB.getProfile());
     if (view === 'missions') renderMissions();
     if (view === 'battlepass') renderBattlePass();
     if (view === 'loadout') renderLoadout();
@@ -177,35 +185,58 @@ const Screens = (() => {
     list.forEach(item => {
       const owned = Shop.isOwned(p, item);
       const afford = Shop.wallet(p, item.cur) >= item.price;
+      /* Four categories equip one item at a time -- you wear one avatar, fly
+         one name colour, fire one tracer, fly one banner -- so "owned" is not
+         the same question as "worn". It used to be: the buy button auto-
+         equipped whatever you had just bought and then permanently disabled
+         itself the moment `isOwned` was true, which meant owning a second
+         item in any of these categories made the first one unreachable --
+         own three name tags and the shop can only ever show you the one you
+         bought last, forever, with no way back to an earlier one short of
+         editing the save file. */
+      const equipField = { avatar: 'avatar', nametag: 'nametag', tracer: 'tracer', banner: 'banner' }[item.cat];
+      const equipValue = item.cat === 'avatar' ? item.icon : item.id;
+      const equipped = owned && equipField && p[equipField] === equipValue;
+      const equippable = owned && equipField && !equipped;
       const card = document.createElement('div');
-      card.className = 'shop-card' + (owned ? ' is-owned' : '') + (!owned && !afford ? ' is-broke' : '');
+      card.className = 'shop-card'
+        + (equipped || (owned && !equipField) ? ' is-owned' : '')
+        + (equippable ? ' is-equippable' : '')
+        + (!owned && !afford ? ' is-broke' : '');
       const swatch = item.cat === 'skin'
         ? `<span class="shop-swatch" style="background:linear-gradient(90deg,${item.barrel},${item.accent})"></span>`
         : item.color
           ? `<span class="shop-swatch" style="background:${item.color}"></span>`
           : '';
       const rarity = item.rarity ? Skins.RARITIES[item.rarity] : null;
+      const buyLabel = equipped ? '✓ Equipped' : equippable ? 'Equip'
+        : owned ? '✓ Owned' : `${item.cur === 'gems' ? '💎' : '🪙'} ${item.price}`;
       card.innerHTML = `
         <div class="shop-card__icon">${item.icon}</div>
         <div class="shop-card__name">${item.name}</div>
         ${rarity ? `<div class="shop-card__rarity" style="color:${rarity.color}">${rarity.name}</div>` : ''}
         ${swatch}
         <div class="shop-card__desc">${item.desc || ''}</div>
-        <button class="shop-card__buy">${owned ? '✓ Owned'
-          : `${item.cur === 'gems' ? '💎' : '🪙'} ${item.price}`}</button>`;
+        <button class="shop-card__buy">${buyLabel}</button>`;
       const buy = card.querySelector('.shop-card__buy');
-      if (owned) buy.disabled = true;
-      else buy.addEventListener('click', () => {
-        const r = Shop.purchase(p, item);
-        if (!r.ok) { Toast.show(r.error); SFX.lose(); return; }
-        DB.saveProfile(p);
-        Toast.show(`${item.name} unlocked!`, 'reward');
-        // equipping is the natural next step for the cosmetic categories
-        if (item.cat === 'avatar') { p.avatar = item.icon; DB.saveProfile(p); }
-        if (item.cat === 'nametag') { p.nametag = item.id; DB.saveProfile(p); }
-        if (item.cat === 'tracer') { p.tracer = item.id; DB.saveProfile(p); }
-        renderAll(); renderShop();
-      });
+      if (equippable) {
+        buy.addEventListener('click', () => {
+          p[equipField] = equipValue; DB.saveProfile(p);
+          SFX.click(); renderAll(); renderShop();
+        });
+      } else if (owned) {
+        buy.disabled = true;
+      } else {
+        buy.addEventListener('click', () => {
+          const r = Shop.purchase(p, item);
+          if (!r.ok) { Toast.show(r.error); SFX.lose(); return; }
+          DB.saveProfile(p);
+          Toast.show(`${item.name} unlocked!`, 'reward');
+          // equipping is the natural next step for the cosmetic categories
+          if (equipField) { p[equipField] = equipValue; DB.saveProfile(p); }
+          renderAll(); renderShop();
+        });
+      }
       grid.appendChild(card);
     });
   }
@@ -331,16 +362,31 @@ const Screens = (() => {
   /* ---- what you are deploying with ---- */
   function renderKit(p) {
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-    const lo = p.loadout || {};
-    const cls = lo.klass || lo.class || (typeof Classes !== 'undefined' ? Object.keys(Classes.CLASSES)[0] : '—');
+    /* This used to read everything off `p.loadout` -- a nested object nothing
+       in the whole codebase ever writes. `freshProfile()` puts `weapon`,
+       `secondary` and `perks` straight on the profile; there has never been a
+       `.loadout` property to read them from. So `lo` was always `{}`, and the
+       home screen's kit strip showed the class-list fallback, the literal
+       string "Class default", and "None" for perks -- permanently, for every
+       profile, however much gear had actually been equipped on the loadout
+       screen two clicks away. Reading the real fields fixes all four lines at
+       once; see js/storage.js freshProfile() for where they actually live. */
+    const w = p.weapon && typeof Weapons !== 'undefined' && Weapons.byId[p.weapon];
+    const cls = w && typeof Classes !== 'undefined' ? Classes.forWeapon(w).name
+      : (typeof Classes !== 'undefined' ? Object.keys(Classes.CLASSES)[0] : '—');
     set('kit-class', cls);
-    const w = lo.weapon && typeof Weapons !== 'undefined' && Weapons.byId[lo.weapon];
-    set('kit-weapon', w ? w.name : (lo.weapon || 'Class default'));
+    set('kit-weapon', w ? w.name : (p.weapon || 'Class default'));
+    /* The sidearm never had a line of its own either, even though a match has
+       used two guns since the slot system went in -- the strip said what your
+       primary was and nothing about the gun you would actually be swapping to
+       under fire. */
+    const sw = p.secondary && typeof Weapons !== 'undefined' && Weapons.byId[p.secondary];
+    set('kit-secondary', sw ? sw.name : 'None');
     /* All three, not just the first. The strip is the one-line summary of
        what you are deploying with, and showing a third of it is worse than
        showing none -- it reads as "you have one perk". */
     if (typeof Perks !== 'undefined') {
-      const names = Perks.normalise(lo.perks || lo.perk)
+      const names = Perks.normalise(p.perks || p.perk)
         .map(id => (id === 'none' ? null : Perks.byId(id).name))
         .filter(Boolean);
       set('kit-perk', names.length ? names.join(' · ') : 'None');
@@ -898,7 +944,7 @@ const Screens = (() => {
           <div class="weapon-card__badge">${equipped ? '✓ PRIMARY' : isSecond ? '✓ SECONDARY' : unlocked ? 'Equip' : '🔒 Locked'}</div>
           ${unlocked ? `<div class="weapon-card__slots">
             <button class="wslot" data-slot="1"${equipped ? ' disabled' : ''}>Primary</button>
-            <button class="wslot" data-slot="2"${isSecond ? ' disabled' : ''}>Secondary</button>
+            <button class="wslot" data-slot="2"${isSecond || equipped ? ' disabled' : ''}>Secondary</button>
           </div>` : ''}`;
         /* Two buttons rather than one click that guesses. A weapon can go in
            either hand and the interface has to let you say which -- clicking a
@@ -943,7 +989,13 @@ const Screens = (() => {
   const getSelectedMode = () => selectedMode;
 
   /* ---- settings modal ---- */
-  const AVATARS = ['🎯', '💀', '🤖', '🐺', '🦅', '🔥', '⚡', '👑', '🎮', '🥷', '🛡️', '☠️'];
+  /* The free starter set in Settings, deliberately disjoint from the shop's
+     paid avatars (js/shop.js CATALOG). Seven of these twelve used to be the
+     exact same icon as a priced item -- Wolf, Eagle, Crown, Reaper, Unit-7,
+     Shadow and Phoenix were all one free click away in Settings, which made
+     owning them pointless and buying them a mistake. A shop item has to
+     actually cost something to be worth calling a shop item. */
+  const AVATARS = ['🎯', '💀', '⚡', '🎮', '🛡️', '🦊', '🐻', '🦉', '🐢', '🦂', '🐲', '🧢'];
   function openSettings() {
     const s = DB.getSettings();
     const p = DB.getProfile();

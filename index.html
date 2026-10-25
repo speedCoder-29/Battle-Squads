@@ -269,6 +269,22 @@
           </button>
         </div>
 
+        <!-- What you are deploying with, moved up to sit right between
+             picking a mode and hitting Deploy -- it used to be the last thing
+             in this column, after two promo banners and the squad-size
+             steppers, which on an ordinary 900px-tall window put it roughly
+             900px below the fold: nobody saw their own loadout before
+             deploying without scrolling past the button that starts the
+             match. It answers the question right where the question is
+             being asked. -->
+        <div class="kitstrip" id="kitstrip">
+          <div class="kitstrip__item"><span class="kitstrip__k">Class</span><b id="kit-class">—</b></div>
+          <div class="kitstrip__item"><span class="kitstrip__k">Weapon</span><b id="kit-weapon">—</b></div>
+          <div class="kitstrip__item"><span class="kitstrip__k">Sidearm</span><b id="kit-secondary">—</b></div>
+          <div class="kitstrip__item"><span class="kitstrip__k">Perks</span><b id="kit-perk">—</b></div>
+          <button class="btn btn--ghost btn--tiny" data-nav="loadout">Change loadout</button>
+        </div>
+
         <div class="queue-bar">
           <div class="queue-bar__info">
             <span class="queue-bar__mode" id="queue-mode-label">Domination</span>
@@ -341,15 +357,6 @@
             </div>
           </div>
           <span class="setupbar__total" id="setup-total">16 in the match · you + 15 bots</span>
-        </div>
-
-        <!-- What you are deploying with, so the mode screen is not the only
-             thing you can see before a match. -->
-        <div class="kitstrip" id="kitstrip">
-          <div class="kitstrip__item"><span class="kitstrip__k">Class</span><b id="kit-class">—</b></div>
-          <div class="kitstrip__item"><span class="kitstrip__k">Weapon</span><b id="kit-weapon">—</b></div>
-          <div class="kitstrip__item"><span class="kitstrip__k">Perks</span><b id="kit-perk">—</b></div>
-          <button class="btn btn--ghost btn--tiny" data-nav="loadout">Change loadout</button>
         </div>
 
         <!-- ===== PARTY ===== -->

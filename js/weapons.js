@@ -124,11 +124,16 @@ const Weapons = (() => {
      The average hit-zone roll is exactly 1.0 (see combat.js HIT_ZONES), so DPS
      here is also damage-per-second on an unarmoured target:
 
-       SMG      170–190   0.53–0.59s     shortest reach, widest cones
+       SMG      168–190   0.53–0.60s     shortest reach, widest cones; P90
+                                 sits at the floor on purpose -- the 50-round
+                                 mag and 17-tile range it trades for are a
+                                 different kind of edge than two more DPS
        LMG      150–170   0.59–0.67s     heavy, punishing reloads
        AR       140–150   0.67–0.71s     the reference band
        Carbine  140–150   0.67–0.71s     AR damage, less reach, lighter
-       Burst    110–140   two bursts, but only if every round lands
+       Burst    110–140   two bursts, but only if every round lands -- see
+                                 the FAMAS/AN-94/K11 comment below for why their
+                                 per-gun burst delays are not a single number
        DMR      120–135   0.75–0.83s
        Pistol   105–115   0.87–0.95s     sidearms, not primaries
        Sniper   —         Barrett one-shots a bare torso; bolts want a head
@@ -168,19 +173,32 @@ const Weapons = (() => {
     ['M16','Assault Rifle','13',11.5,'20, 30','3.1s',3.17,0.2,'0.28s',1.2,9,'Blue','Automatic','9%','None','Grenade Launcher, Scope, Suppressor','AP, Tracer, HP','Rifleman','A,Rc,H','M,W,Rd','D,F,S',54,24,'Flattest recoil in the class - the reference rifle',4],
     ['AKM','Assault Rifle','15',9.5,'30, 45','2.5s',3.97,0.3,'0.4s',1,7,'Blue','Automatic','5%','None','Grenade Launcher, Scope, Suppressor','AP, Tracer, HP','Rifleman','F,M,W','D,S,A','Rc,H,Rd',52,27,'Longest reach of the ARs, but it kicks and wanders when you move',7.5],
     ['SCAR-H','Assault Rifle','17',8.8,'20','2.4s',3.97,0.25,'0.34s',0.8,11,'Blue','Automatic','8%','None','Grenade Launcher, Scope, Suppressor','AP, Tracer, HP','Rifleman','D,S,Rd','F,Rc,H','A,W,M',56,25,'Heaviest round per shot, smallest magazine - six hits, not eight',6],
-    /* Burst delay 0.26s -> 0.20s, matching the K11's.
+    /* Burst delay 0.26s -> 0.20s, matching the K11's -- and that is the bug.
 
-       The Scout was the weakest class on the roster by a distance — 104-126
-       DPS against 168-188 for Assault and 153-170 for Gunner — and the reason
-       was not its damage but the gap between bursts: a third of every second
-       was spent waiting. The burst cycle is our own mapping of survev's
-       full-auto guns onto a burst count (the README lists both as documented
-       deviations already), so the delay is the honest knob. Scout keeps the
-       lowest sustained DPS in the game, as the class with 1.25x speed should,
-       but the gap closes to something a good player can fight out of. */
-    ['FAMAS F1','Burst Rifle','17*3',14.3,'25','2.3s',1.74,0.35,'0.38s',0.5,6,'Green','Automatic','10%','0.20s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','D,S,W','F,A,Rd','M,Rc,H',55,22,'Pin-point burst - land both and it is a two-burst kill',2],
-    ['AN-94','Burst Rifle','26*2',8.3,'30, 45','2.35s',2.38,0.3,'0.3s',1.1,8,'Green','Automatic','3%','0.20s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','A,Rd,H','M,Rc,W','F,D,S',58,30,'Hyperburst: two rounds land almost together, and it reaches',4],
-    ['K11','Burst Rifle','16*3',16.7,'45','2.8s',3.4,0.25,'0.34s',0.8,10,'Green','Automatic','7%','0.20s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','F,M,Rc','D,S,H','Rd,A,W',55,24,'Huge magazine, tightest burst spacing',5],
+       The Scout was the weakest class on the roster by a distance -- 104-126
+       DPS against 168-188 for Assault and 153-170 for Gunner -- and the fix
+       copied one number (K11's new 0.20s delay) onto all three burst guns.
+       That treats delay as the only variable, when DPS is damage-per-burst
+       divided by cycle time and the three guns carry different damage: AN-94
+       moves 52 per cycle to FAMAS/K11's 48 and 51, so the same delay gives it
+       a different answer. Measured with the real fire-cycle math (see
+       scratch/ttk.js from the balance pass that caught this): FAMAS and K11
+       landed at 150 DPS and AN-94 at 162 -- above every Assault Rifle and
+       Carbine (140-150) and within reach of the LMG floor (150-170), which
+       is the opposite of "keeps the lowest sustained DPS in the game", the
+       invariant this very comment still claimed two lines down from numbers
+       that no longer supported it.
+
+       Solved per gun for a delay that lands each one inside the ORIGINALLY
+       documented Burst band (110-140, see BALANCE BANDS above) rather than
+       re-copying a single number: FAMAS and K11 at 230ms, AN-94 at 255ms --
+       its higher per-round damage needs more time between bursts to land in
+       the same band, not the same pause. Scout stays the clear upgrade on
+       the pre-fix 104-126 floor, lands at 135-138 DPS, and is once again
+       strictly below the 140 floor every AR and Carbine starts at. */
+    ['FAMAS F1','Burst Rifle','17*3',14.3,'25','2.3s',1.74,0.35,'0.38s',0.5,6,'Green','Automatic','10%','0.23s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','D,S,W','F,A,Rd','M,Rc,H',55,22,'Pin-point burst - land both and it is a two-burst kill',2],
+    ['AN-94','Burst Rifle','26*2',8.3,'30, 45','2.35s',2.38,0.3,'0.3s',1.1,8,'Green','Automatic','3%','0.255s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','A,Rd,H','M,Rc,W','F,D,S',58,30,'Hyperburst: two rounds land almost together, and it reaches',4],
+    ['K11','Burst Rifle','16*3',16.7,'45','2.8s',3.4,0.25,'0.34s',0.8,10,'Green','Automatic','7%','0.23s Burst Delay','Scope, Suppressor','AP, Tracer, HP','Scout','F,M,Rc','D,S,H','Rd,A,W',55,24,'Huge magazine, tightest burst spacing',5],
     ['M249','LMG','13.5',12.5,'100','6.7s',2.38,0.17,'0.6s',0.8,15,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','F,S,A','M,Rd,W','D,Rc,H',60,27,'100 rounds of suppression, punishing reload',6],
     ['RPK-74','LMG','17',9,'45','3.3s',3.17,0.15,'0.5s',1.2,12,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','D,Rd,W','A,Rc,H','M,S,F',58,30,'Rifle-weight rounds; the LMG you can actually move with',8],
     ['PKP','LMG','17',10,'200','5s',3.97,0.13,'0.4s',1,18,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','M,Rc,H','D,S,F','Rd,A,W',58,28,'200-round belt - chews cover as fast as people',7.5],
