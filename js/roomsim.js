@@ -352,6 +352,25 @@
     if (!surf) return 1;
     const speed = typeof surf === 'number' ? surf : surf.speed;
     if (typeof speed !== 'number' || !(speed > 0)) return 1;
+    /* moveSpeedFor() above calls deps() first, specifically so PERK is
+       resolved before anything here reads it. This function read the raw
+       module-scope `PERK` without doing the same -- fine as long as
+       something else had already called deps() this session, which
+       moveSpeedFor is the only other thing in this file that does.
+
+       Offline, nothing ever calls moveSpeedFor: the local movement code in
+       game.js computes its own speed directly and only reaches into RoomSim
+       for this one terrain multiplier, every frame, on dry land and in
+       water alike. So PERK stayed undefined all match, right up until the
+       first frame anyone was standing on a surface with `swim` set -- the
+       only branch that actually touches it -- at which point `PERK.mod`
+       threw on undefined. That exception came out of update(), every single
+       frame for as long as the player stayed wet: not just this call
+       failing, the rest of that frame's simulation silently skipped too,
+       while render() kept drawing happily. The world stops, the screen
+       doesn't -- which is exactly what "moving through water freezes the
+       game" looks like from the other side of the monitor. */
+    deps();
     // a diver swims as fast as they walk; a river is no longer a wall
     // through `has`, so it sees all three rather than only the first
     // through the mod, not the id: the perk declares `swim` and that is the

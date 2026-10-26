@@ -287,6 +287,16 @@ const Game = (() => {
   const rand = (a, b) => a + Math.random() * (b - a);
   const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  // Fisher-Yates, in place on a copy — worldgen uses this to visit a list in
+  // a random order without biasing toward whatever order it started in.
+  const shuffle = (arr) => {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
 
   /* ---------------- setup ---------------- */
   function resize() {
@@ -2088,6 +2098,10 @@ const Game = (() => {
       if (s.x < 20 || s.y < 20 || s.x + s.w > MAP_W - 20 || s.y + s.h > MAP_H - 20) break;
       if (!Terrain.isSpawnable(terrain, s.x + s.w / 2, s.y + s.h / 2)) break;
       if (insideAnyBuilding(s.x + s.w / 2, s.y + s.h / 2, 12)) break;
+      // never block the one thing on the map everybody is already using to get
+      // around -- a wall sitting across a road isn't cover, it's a roadblock
+      // nobody chose to put there
+      if (Terrain.onRoad(terrain, s.x + s.w / 2, s.y + s.h / 2)) break;
       if (genHits(s, 22)) break;
       out.push(s);
       if (axis === 'h') cx += s.w; else cy += s.h;
@@ -2110,35 +2124,188 @@ const Game = (() => {
     return coverRun('wire', x, b.y - 30, 'v', Math.max(2, Math.round(b.h / per)), LEN_M, 0.4);
   }
 
-  function placeCover(count) {
-    let guard = count * 30;
-    let made = 0;
-    /* Wire goes up first and against the buildings, because that is the only
-       placement for it that means anything. The rest of the budget is spent
-       on runs out in the open. */
-    const fences = Math.round(count * 0.3);
-    for (let i = 0; i < fences && buildings.length; i++) {
-      const b = buildings[Math.floor(Math.random() * buildings.length)];
-      const run = wireAlong(b);
-      if (run.length < 2) continue;
-      commitRun(run);
-      made += run.length;
+  /* A defensive line along one face of a building: the same geometry wire
+     already uses -- grid-snapped, parallel to the wall, set back from it --
+     in heavier material and closer in, because this is meant to be fought
+     from rather than strung as a boundary. One per building, not a scatter
+     of them, so a base reads as "defended" rather than "cluttered". */
+  function defendBuilding(b, standoff) {
+    const LEN_M = 3.5;
+    const per = LEN_M * Structures.PX_PER_M;
+    const side = ['n', 's', 'w', 'e'][Math.floor(Math.random() * 4)];
+    const type = Math.random() < 0.55 ? 'sandbag' : 'barricade';
+    const th = type === 'sandbag' ? 0.5 : 0.3;
+    if (side === 'n' || side === 's') {
+      const y = snapTo(side === 'n' ? b.y - standoff : b.y + b.h + standoff);
+      return coverRun(type, b.x - 20, y, 'h', Math.max(2, Math.round(b.w / per)), LEN_M, th);
     }
-    while (made < count && guard-- > 0) {
-      const type = rollMix(COVER_MIX);
-      const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
-      const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
-      if (!Terrain.isSpawnable(terrain, x, y)) continue;
-      if (insideAnyBuilding(x, y, 12)) continue;      // cover belongs outside, not in a corridor
-      const axis = Math.random() < 0.5 ? 'h' : 'v';
-      const th = type === 'metal' ? 0.6 : type === 'wire' ? 0.4 : type === 'sandbag' ? 0.5 : 0.3;
-      /* Two to four lengths in a line. A single stub is litter; a line is a
-         thing to fight from one side of. */
-      const segs = type === 'wire' ? 3 + Math.floor(Math.random() * 3) : 2 + Math.floor(Math.random() * 3);
-      const run = coverRun(type, x, y, axis, segs, 3 + Math.random() * 2, th);
-      if (!run.length) continue;
-      commitRun(run);
-      made += run.length;
+    const x = snapTo(side === 'w' ? b.x - standoff : b.x + b.w + standoff);
+    return coverRun(type, x, b.y - 20, 'v', Math.max(2, Math.round(b.h / per)), LEN_M, th);
+  }
+
+  /* Cover along a road's shoulder: parallel to the road's own local
+     direction, set back onto the verge rather than blocking the lane, and
+     spaced at a fixed interval down the whole length rather than at one
+     lucky spot. Every road in the island gets outposts the same way, which
+     is what makes a road read as a road worth following instead of a strip
+     with one accident of cover beside it. */
+  function roadOutposts(road) {
+    const runs = [];
+    if (!road.pts || road.pts.length < 2) return runs;
+    let total = 0;
+    for (let i = 0; i < road.pts.length - 1; i++) {
+      total += Math.hypot(road.pts[i + 1].x - road.pts[i].x, road.pts[i + 1].y - road.pts[i].y);
+    }
+    if (total < 500) return runs;
+    // one roughly every 1100px, so a short spur gets one and a trunk road
+    // down the spine of the island gets several, evenly
+    const n = Math.max(1, Math.round(total / 1100));
+    for (let i = 0; i < n; i++) {
+      const target = ((i + 0.5) / n) * total;
+      let dist = target, cx = road.pts[0].x, cy = road.pts[0].y, tx = 1, ty = 0;
+      for (let k = 0; k < road.pts.length - 1; k++) {
+        const a = road.pts[k], b = road.pts[k + 1];
+        const segLen = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        if (dist <= segLen || k === road.pts.length - 2) {
+          const f = clamp(dist / segLen, 0, 1);
+          cx = a.x + (b.x - a.x) * f; cy = a.y + (b.y - a.y) * f;
+          tx = (b.x - a.x) / segLen; ty = (b.y - a.y) / segLen;
+          break;
+        }
+        dist -= segLen;
+      }
+      // perpendicular to the road's tangent, alternating shoulders so a long
+      // straight road isn't lined down one side only
+      const nx = -ty, ny = tx;
+      const side = i % 2 ? 1 : -1;
+      const standoff = road.width / 2 + 90;
+      const ox = cx + nx * standoff * side, oy = cy + ny * standoff * side;
+      // walls are axis-aligned, so "parallel to the road" means whichever of
+      // the two the road is actually running closer to here
+      const axis = Math.abs(tx) >= Math.abs(ty) ? 'h' : 'v';
+      const type = Math.random() < 0.5 ? 'sandbag' : 'barricade';
+      const th = type === 'sandbag' ? 0.5 : 0.3;
+      const segs = 2 + Math.floor(Math.random() * 2);
+      const run = coverRun(type, ox - (axis === 'h' ? 70 : 0), oy - (axis === 'v' ? 70 : 0),
+        axis, segs, 3, th);
+      if (run.length >= 2) runs.push(run);
+    }
+    return runs;
+  }
+
+  /* A dug-in position out in open ground: two short runs meeting at a right
+     angle, both facing the same way -- toward the middle of the island,
+     which is the one direction that is true of everywhere at once and reads
+     as deliberate rather than arbitrary. Anchored to a coarse lattice laid
+     over the map rather than to a random roll, so the open country reads as
+     evenly watched instead of as a dice roll that happened to cluster here
+     and leave there bare. */
+  function fieldPosition(x, y) {
+    const toCentre = Math.atan2(MAP_H / 2 - y, MAP_W / 2 - x);
+    // which quadrant "facing the centre" falls into, in this axis-aligned
+    // engine: the corner opens toward whichever two of N/S/E/W that is
+    const faceX = Math.cos(toCentre) >= 0 ? 1 : -1;   // 1 = open to the east
+    const faceY = Math.sin(toCentre) >= 0 ? 1 : -1;
+    const type = rollMix(COVER_MIX);
+    const th = type === 'metal' ? 0.6 : type === 'wire' ? 0.4 : type === 'sandbag' ? 0.5 : 0.3;
+    const segs = 2 + Math.floor(Math.random() * 2);
+    // the back wall sits behind the corner, away from the centre on both axes
+    const runH = coverRun(type, faceX > 0 ? x - segs * 3 * Structures.PX_PER_M : x,
+      faceY > 0 ? y - 30 : y, 'h', segs, 3, th);
+    const runV = coverRun(type, faceX > 0 ? x - 30 : x,
+      faceY > 0 ? y - segs * 3 * Structures.PX_PER_M : y, 'v', segs, 3, th);
+    const out = [];
+    if (runH.length >= 2) out.push(runH);
+    if (runV.length >= 2) out.push(runV);
+    return out;
+  }
+
+  /* ---------------- loose cover: four purposeful families, not one random one ----------------
+     Every run used to land at a uniform-random point on a coin-flip axis,
+     which is what "random walls everywhere" describes exactly: nothing
+     about a piece of cover said why it was there, two runs near each other
+     were as likely to be perpendicular as parallel, and a field a kilometre
+     from anything got exactly as much clutter as a crossroads.
+
+     The budget is split four ways instead, and every way answers "why is
+     this here":
+       wire        strung along a building's frontage -- a boundary
+       perimeters  a line dug in along one face of a base, a landmark or a
+                   handful of the biggest ordinary buildings -- something
+                   worth defending, defended
+       outposts    spaced evenly down every road's own shoulder -- the
+                   roads, watched their whole length
+       positions   an L of cover on a coarse lattice over open ground, every
+                   one of them facing the middle of the island -- so even
+                   the empty country reads as laid out, not scattered */
+  function placeCover(count) {
+    let guard = count * 40;
+    let made = 0;
+    const commit = (run) => { if (run.length >= 2) { commitRun(run); made += run.length; } };
+
+    const fenceBudget = Math.round(count * 0.25);
+    while (made < fenceBudget && buildings.length && guard-- > 0) {
+      const b = buildings[Math.floor(Math.random() * buildings.length)];
+      commit(wireAlong(b));
+    }
+
+    /* Worth defending: team bases first (every squad gets one), then the
+       landmarks, then the handful of largest ordinary buildings -- a shed
+       does not get a dug-in perimeter, a mansion does. */
+    const bases = buildings.filter(b => b.teamBase !== undefined);
+    const bigOrdinary = buildings
+      .filter(b => b.teamBase === undefined && !b.landmark)
+      .sort((a, b) => (b.w * b.h) - (a.w * a.h))
+      .slice(0, 10);
+    const targets = shuffle([...bases, ...landmarks, ...bigOrdinary]);
+    const perimeterBudget = fenceBudget + Math.round(count * 0.25);
+    for (let i = 0; made < perimeterBudget && i < targets.length; i++) {
+      commit(defendBuilding(targets[i], targets[i].landmark || targets[i].teamBase !== undefined ? 70 : 54));
+    }
+
+    const outpostBudget = perimeterBudget + Math.round(count * 0.25);
+    const roads = shuffle(terrain.roads.slice());
+    outer:
+    for (const road of roads) {
+      for (const run of roadOutposts(road)) {
+        commit(run);
+        if (made >= outpostBudget) break outer;
+      }
+    }
+
+    /* The lattice: a grid across the playable island, jittered a little so
+       it does not itself look drawn with a ruler, skipping cells that land
+       in water, inside a building, or within reach of something already
+       placed -- that last check is what keeps a lattice cell from dropping
+       a position directly behind cover an earlier family already put there. */
+    const CELL = 720;
+    const cells = [];
+    for (let gx = Terrain.BEACH_INSET + CELL / 2; gx < MAP_W - Terrain.BEACH_INSET; gx += CELL) {
+      for (let gy = Terrain.BEACH_INSET + CELL / 2; gy < MAP_H - Terrain.BEACH_INSET; gy += CELL) {
+        cells.push({ x: gx, y: gy });
+      }
+    }
+    /* One lattice point can miss on its first jitter and still be a
+       perfectly good position a few metres over -- tried blind (one roll,
+       one chance) against a building-dense map, four in five cells failed
+       the clearance check and the budget went unspent instead of just
+       moving a little. A handful of retries per cell, each with a fresh
+       jitter, fixes that without weakening the margin that keeps a position
+       from reading as glued to somebody's wall. */
+    const TRIES = 5;
+    for (const c of shuffle(cells)) {
+      if (made >= count) break;
+      for (let t = 0; t < TRIES; t++) {
+        const x = c.x + rand(-CELL * 0.4, CELL * 0.4);
+        const y = c.y + rand(-CELL * 0.4, CELL * 0.4);
+        if (!Terrain.isSpawnable(terrain, x, y)) continue;
+        if (insideAnyBuilding(x, y, 110)) continue;      // positions are for open ground
+        if (Terrain.onRoad(terrain, x, y)) continue;
+        const box = { x: x - 130, y: y - 130, w: 260, h: 260 };
+        if (genHits(box, 40)) continue;                  // nothing else already standing here
+        for (const run of fieldPosition(x, y)) commit(run);
+        break;
+      }
     }
   }
 
@@ -2457,6 +2624,47 @@ const Game = (() => {
   /* How far out along the ring each squad deploys, as a multiple of the ring
      radius. Filled in by alignSpawnRing(); 1 for everybody is the old layout. */
   let spawnBands = null;
+  /* Which position on the spawn ring a team actually occupies.
+
+     Team 0 was always the one at the top of the ring, every map, every
+     match -- `ang` was computed straight off the team index, so whoever the
+     matchmaker happened to call team 0 started due north of center and
+     always had team 1 immediately clockwise of them. A player does not
+     experience a seed; they experience which direction they walked out of
+     spawn, and that direction never moved.
+
+     Rolled once per match, off the match's own seed, so a shared seed still
+     produces a shared layout -- this is a permutation of *positions*, not an
+     extra source of unseeded randomness. Nothing below it changes: the ring
+     is exactly as spaced and exactly as far apart as it always was, teams
+     are just handed a shuffled set of which spot is theirs. */
+  let spawnSlot = null;        // team index -> ring slot index
+  /* xorshift32's first output barely moves between seeds that only differ in
+     their low bits (it's a function of the high bits almost exclusively), so
+     XORing worldSeed straight into a small constant and feeding that to
+     withSeed left the 2-team Fisher-Yates -- just ONE Math.random() call --
+     landing on the same outcome for every seed tried. A real integer hash
+     (splitmix-style finalizer) avalanches the low bits into the high ones
+     first, so nearby worldSeeds no longer produce the same first draw. */
+  function mixSeed(a, b) {
+    let h = (a ^ b) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+    return (h ^ (h >>> 16)) >>> 0;
+  }
+  function rollSpawnOrder() {
+    const order = [];
+    for (let t = 0; t < Math.max(1, nTeams); t++) order.push(t);
+    withSeed(mixSeed(worldSeed, 0x5eed), () => {
+      // Fisher-Yates
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+    });
+    spawnSlot = order;
+  }
+  const slotOf = (team) => (spawnSlot && spawnSlot[team] !== undefined) ? spawnSlot[team] : team;
 
   /* Even out the walk to the objectives.
 
@@ -2496,7 +2704,7 @@ const Game = (() => {
     const rx = MAP_W / 2 - SPAWN_INSET, ry = MAP_H / 2 - SPAWN_INSET;
     const tight = nTeams >= 9;
     const at = (team, band) => {
-      const ang = -Math.PI / 2 + (team / Math.max(1, nTeams)) * Math.PI * 2;
+      const ang = -Math.PI / 2 + (slotOf(team) / Math.max(1, nTeams)) * Math.PI * 2;
       return { x: cx + Math.cos(ang) * rx * band, y: cy + Math.sin(ang) * ry * band };
     };
     /* What "the same walk" means, in one number.
@@ -2517,7 +2725,7 @@ const Game = (() => {
     /* The target is the middle of what the squads would each have walked, so
        the correction is shared out rather than applied to everybody. */
     const base = [];
-    for (let t = 0; t < nTeams; t++) base.push(walk(t, tight && (t % 2) ? 0.62 : 1));
+    for (let t = 0; t < nTeams; t++) base.push(walk(t, tight && (slotOf(t) % 2) ? 0.62 : 1));
     const target = base.slice().sort((a, b) => a - b)[Math.floor(nTeams / 2)];
 
     /* How far the solver may pull a squad off the layout it was given.
@@ -2535,7 +2743,7 @@ const Game = (() => {
     const BAND_SWING = 0.18;
     spawnBands = [];
     for (let t = 0; t < nTeams; t++) {
-      const home = tight && (t % 2) ? 0.62 : 1;
+      const home = tight && (slotOf(t) % 2) ? 0.62 : 1;
       /* Distance to the objective set is monotonic in the band over this
          range — further out is further away — so twenty bisection steps land
          within a few pixels, and no closed form is needed for an ellipse
@@ -2570,9 +2778,28 @@ const Game = (() => {
      where there is no such thing as a home flag. */
   function homeFlag(team) {
     if (mode !== 'domination' || nTeams !== 2) return null;
-    const spots = objectiveSpots();
+    /* objectiveAnchors(), not objectiveSpots(). The cache objectiveSpots()
+       reads is only filled at the very end of buildMapInner -- placeObjectives()
+       is deliberately last, so every wall on the map exists before a capture
+       point has to dodge one. placeTeamBases() runs near the START of the
+       same pipeline, before even the landmarks the anchors are keyed off.
+
+       On the first match played after a page load -- cache still empty --
+       `spots.length < 3` was true, homeFlag() returned null, and a base got
+       built on the generic ring (north/south) while the squad that was
+       actually meant to live in it spawned at its home flag (west/east):
+       the base and the people defending it were never in the same place.
+       On every later match it was *closer* but still wrong, because the
+       cache held the PREVIOUS match's flags, not this one's.
+
+       objectiveAnchors() needs none of that: with no landmarks placed yet
+       (also true this early, same pipeline) it falls straight to the fixed
+       west/B-north/east triangle every map is laid out around -- the same
+       anchor placeLandmarks() itself aims for -- so it is never stale and
+       never empty, at this call site or any other. */
+    const spots = objectiveAnchors();
     if (spots.length < 3) return null;
-    return spots[team === 0 ? 0 : 2] || null;
+    return spots[slotOf(team) === 0 ? 0 : 2] || null;
   }
 
   function spawnPoint(team, arc) {
@@ -2597,9 +2824,10 @@ const Game = (() => {
         y: clamp(home.y + (dy / d) * back + py * side + rand(-60, 60), SPAWN_INSET, MAP_H - SPAWN_INSET),
       };
     }
+    const slot = slotOf(team);
     const sector = Math.PI / Math.max(1, nTeams);        // half the gap to a neighbour
     const swing = (arc || 0) * sector * 0.55;
-    const ang = -Math.PI / 2 + swing + (team / Math.max(1, nTeams)) * Math.PI * 2;
+    const ang = -Math.PI / 2 + swing + (slot / Math.max(1, nTeams)) * Math.PI * 2;
     /* Squads sat on one ring, evenly spaced by angle. That is fine for four
        and cramped for twenty: the gap between neighbours on a single circle
        shrinks as the count grows, so at twenty you deploy within sight of the
@@ -2623,7 +2851,7 @@ const Game = (() => {
        tunes each squad's radius so everyone has the same walk to the points.
        Either way this is the only place a spawn radius is decided. */
     const band = spawnBands ? spawnBands[team]
-      : (tight && (team % 2) ? 0.62 : 1);
+      : (tight && (slot % 2) ? 0.62 : 1);
     /* Pulled in from 240 to SPAWN_INSET. The island's edge is no longer a
        straight line at a fixed distance — a bay can bite 600px inland — so a
        ring that used to sit comfortably on grass would now drop half the
@@ -3164,6 +3392,7 @@ const Game = (() => {
 
     const setup = coached ? COACH_SETUP : setupFor(mode);
     nTeams = setup.teams;
+    rollSpawnOrder();           // who stands where on the ring, before anyone does
 
     if (mode === 'range') {
       setupRange();
@@ -3350,6 +3579,17 @@ const Game = (() => {
     botLevel = coached ? COACH_BOTS : (DB.getSettings().botLevel || BotAI.DEFAULT);
     squadIntel = [];
     spawnStat = { rolls: 0, sumDist: 0, unsafe: 0, sumFirst: 0, unsafeFirst: 0, improved: 0, byKind: {} };
+    /* nTeams and the ring permutation, ahead of buildMap() rather than after
+       it. placeTeamBases() runs inside buildMap() and calls spawnPoint() for
+       each team's base building -- if nTeams and spawnSlot were still
+       whatever the PREVIOUS match left them as (setupTeams() used to be the
+       only place either was set, and that runs after buildMap()), a base got
+       built at last match's ring layout while the squad that was actually
+       supposed to live there spawned somewhere else on this match's. setupTeams()
+       still sets both again below; calling setupFor() and rollSpawnOrder()
+       twice for the same mode and seed is just the same answer read twice. */
+    nTeams = (coached ? COACH_SETUP : setupFor(mode)).teams;
+    rollSpawnOrder();
     buildMap();
     /* The ladder is built before the squads are, because setupTeams hands out
        weapons and in this mode the ladder decides what they are. */
@@ -14193,15 +14433,51 @@ const Game = (() => {
   }
 
   /* ---------------- loop ---------------- */
+  /* requestAnimationFrame(loop) used to be the LAST line of this function,
+     reached only if update() and render() both returned normally. Between
+     them those two touch almost everything in the file every frame -- bot
+     AI, structure damage, worldgen triggered by a wall coming down, the
+     closing zone, every draw call. One uncaught exception anywhere in that
+     call graph, on any one frame, and the line that schedules the next
+     frame never runs. Nothing crashes, nothing logs anywhere a player would
+     see it, the tab just stops: no more updates, no more frames, controls
+     that still register a keydown but move nothing. That is what "the game
+     randomly freezes" was -- random because it depended on whichever rare
+     state a bot, a building or a network message happened to hit, on
+     whichever frame.
+
+     update() and render() are now guarded independently and the loop
+     reschedules itself unconditionally. A frame that throws during update()
+     skips simulation but still renders whatever state exists, rather than
+     also losing the one chance to show anything moved; a frame that throws
+     during render() skips drawing but still advances the sim, rather than
+     the world silently stopping while the thrown error silently did
+     nothing. Either way the *next* frame gets a clean attempt -- most of
+     these are state a bot or a projectile passed through once, not a
+     condition that reproduces forever. */
+  let frameErrLastLog = 0;        // throttle: at most one console entry a second
+  const frameErrSeen = new Set(); // ...and the full stack only once per distinct error
+  function reportFrameError(stage, e) {
+    const msg = stage + ': ' + ((e && e.message) || e);
+    if (!frameErrSeen.has(msg)) {
+      frameErrSeen.add(msg);
+      console.error('[frame] ' + msg, (e && e.stack) || '');
+    } else if (performance.now() - frameErrLastLog > 1000) {
+      frameErrLastLog = performance.now();
+      console.error('[frame] ' + msg + ' (repeating)');
+    }
+  }
   function loop(now) {
-    if (!running) { render(); return; }   // draw final frame under results
+    if (!running) { try { render(); } catch (e) { reportFrameError('render(final)', e); } return; }
     if (paused) return;
     let dt = (now - lastTime) / 1000;
     lastTime = now;
     dt = Math.min(dt, 0.05);
     lastDt = dt;               // render() needs it for the weather layer
-    perfMark('update', () => update(dt));
-    perfMark('render', render);
+    try { perfMark('update', () => update(dt)); }
+    catch (e) { reportFrameError('update', e); }
+    try { perfMark('render', render); }
+    catch (e) { reportFrameError('render', e); }
     requestAnimationFrame(loop);
   }
 
@@ -14381,6 +14657,16 @@ const Game = (() => {
     if (typeof raw === 'string') { try { msg = JSON.parse(raw); } catch (e) { return; } }
     else msg = raw;
     if (!msg) return;
+    /* Everything from here down runs off whatever the host or a peer just
+       sent -- a message shape this build has never seen, a field a newer or
+       older host fills in differently, a snapshot naming an agent that has
+       already been removed on our side. None of that should be able to take
+       the handler down: this fires from a raw WebSocket/data-channel
+       onmessage callback, a completely different call stack from loop(), so
+       the per-frame guard in loop() cannot catch it -- an unguarded throw
+       here would silently end an online match exactly the way an unguarded
+       frame used to end an offline one. */
+    try {
     if (msg.t === 'welcome') {
       online.id = msg.id;
       setRoster(msg.roster || []);
@@ -14534,6 +14820,7 @@ const Game = (() => {
       endMatch(won, roster);
       online = null;
     }
+    } catch (e) { reportFrameError('onlineMessage(' + (msg && msg.t) + ')', e); }
   }
 
   /* ---------- the room's world, in the shapes the renderer already draws ----------
@@ -15198,6 +15485,15 @@ const Game = (() => {
      naturally is not a way to check them. Read-mostly, and it changes nothing
      about how the game plays unless something calls it. */
   const debug = {
+    /* How long one full nav-grid rebuild actually takes on the live map.
+       buildNav() runs mid-match whenever enough walls have come down (see the
+       navChanges/navRebuildIn debounce) -- this measures the one thing the
+       debounce can't amortize away: the single frame it finally fires on. */
+    navRebuildCost() {
+      const t0 = performance.now();
+      buildNav();
+      return { ms: performance.now() - t0, mapW: MAP_W, mapH: MAP_H, mode };
+    },
     state() {
       if (!player) return null;
       const kit = player.inv && Items.CONSUMABLES[player.cls.consumable];
@@ -15245,7 +15541,17 @@ const Game = (() => {
       player.weapon = Perks.applyToWeapon(player.baseWeapon || player.weapon, perk);
       player.ammo = player.weapon.mag;
     },
-    buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h })),
+    buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h,
+      teamBase: b.teamBase, landmark: !!b.landmark })),
+    // a handful of real points along each road, for anything that wants to
+    // look at or stand on one without duplicating the polyline math
+    roadSamples() {
+      if (!terrain) return [];
+      return terrain.roads.map(r => ({
+        width: r.width, kind: r.kind,
+        mid: r.pts[Math.floor(r.pts.length / 2)],
+      }));
+    },
     interior() {
       const counts = {};
       for (const d of decor) counts[d.kind] = (counts[d.kind] || 0) + 1;
@@ -15405,6 +15711,31 @@ const Game = (() => {
        Nothing the map generator places may end up in the sea, and the coast
        has to actually bend. Both are things the old rectangular island made
        impossible to get wrong and the new one does not. */
+    /* One point that is genuinely in a river and inside the playable map, for
+       the harnesses -- "find a water tile" is not otherwise reachable from
+       outside without duplicating the coastline math. */
+    riverPoint() {
+      if (!terrain || !terrain.rivers.length) return null;
+      const r = terrain.rivers[0];
+      const mid = r.pts[Math.floor(r.pts.length / 2)];
+      return { x: Math.round(mid.x), y: Math.round(mid.y), width: r.width };
+    },
+    /* The loose-cover layout: how much landed in each material, and whether
+       any of it ended up somewhere it was never supposed to -- on a road, or
+       overlapping a building. Written for the "organized, not random" pass
+       on placeCover(): without this there was no way to check from outside
+       whether a run actually ended up parallel to the road it was supposed
+       to be watching, only to look at a screenshot and guess. */
+    coverReport() {
+      const loose = obstacles.filter(o => !o.building && !o.isProp
+        && ['sandbag', 'barricade', 'wire', 'wood', 'metal', 'rwall'].includes(o.type));
+      const byType = {};
+      for (const o of loose) byType[o.type] = (byType[o.type] || 0) + 1;
+      const onRoad = loose.filter(o =>
+        terrain && Terrain.onRoad(terrain, o.x + o.w / 2, o.y + o.h / 2)).length;
+      const inBuilding = loose.filter(o => insideAnyBuilding(o.x + o.w / 2, o.y + o.h / 2, 0)).length;
+      return { total: loose.length, byType, onRoad, inBuilding };
+    },
     coastReport() {
       const T = terrain;
       if (!T) return { missing: true };
@@ -15813,18 +16144,26 @@ const Game = (() => {
        hulls. Enough to ask whether two squads are being handed the same game,
        which is not a question you can answer by playing one. */
     spawnMap() {
+      /* Reads spawnPoint() itself rather than a second copy of its formula.
+         The second copy was written before two-sided Domination's home-flag
+         branch existed, so it quietly kept reporting the OLD ring anchor for
+         every mode -- north/south for two teams, nothing like the west/east
+         triangle positions a real match actually uses. A diagnostic that
+         disagrees with the game is worse than no diagnostic: it looks
+         authoritative and it is wrong. spawnPoint() does carry its own small
+         live jitter (the same jitter a real spawn gets), so two calls a few
+         hundred ms apart will not land on identical pixels -- anything reading
+         this for an exact-repro check should compare `slots`, which is the
+         seeded, truly deterministic part. */
       const anchors = [];
       for (let t = 0; t < nTeams; t++) {
-        const cx = MAP_W / 2, cy = MAP_H / 2;
-        const ang = -Math.PI / 2 + (t / Math.max(1, nTeams)) * Math.PI * 2;
-        const tight = nTeams >= 9;
-        const band = spawnBands ? spawnBands[t] : (tight && (t % 2) ? 0.62 : 1);
-        const rx = (MAP_W / 2 - SPAWN_INSET) * band, ry = (MAP_H / 2 - SPAWN_INSET) * band;
-        anchors.push({ team: t, x: Math.round(cx + Math.cos(ang) * rx), y: Math.round(cy + Math.sin(ang) * ry) });
+        const p = spawnPoint(t);
+        anchors.push({ team: t, slot: slotOf(t), x: Math.round(p.x), y: Math.round(p.y) });
       }
       return {
         map: { w: MAP_W, h: MAP_H }, mode, teams: nTeams,
         bands: spawnBands ? spawnBands.map(b => +b.toFixed(2)) : null,
+        slots: spawnSlot,
         spawns: anchors,
         objectives: objectives.map(o => ({ name: o.name, x: Math.round(o.x), y: Math.round(o.y), r: o.r })),
         crates: crates.map(c => ({ x: Math.round(c.x), y: Math.round(c.y), tier: c.tier, indoors: !!c.indoors })),

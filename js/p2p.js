@@ -23,6 +23,30 @@
    ============================================================ */
 const P2P = (() => {
 
+  /* Throttled error reporting, mirroring game.js's reportFrameError.
+
+     Hosting a match means running the one simulation everyone else's screen
+     is a window onto -- a malformed packet from any single peer used to be
+     able to throw straight out of the host's own per-tick callback, and
+     because the corrupted state it came from does not go away on its own,
+     every tick after it threw too: the room stopped advancing, silently, for
+     the whole squad, triggered by whatever one person's client happened to
+     send. Logged once per distinct failure rather than once per tick, so a
+     genuinely stuck room does not also flood the console sixty times a
+     second. */
+  const errSeen = new Set();
+  let errLastLog = 0;
+  function reportHostError(stage, e) {
+    const msg = stage + ': ' + ((e && e.message) || e);
+    if (!errSeen.has(msg)) {
+      errSeen.add(msg);
+      console.error('[p2p] ' + msg, (e && e.stack) || '');
+    } else if (Date.now() - errLastLog > 1000) {
+      errLastLog = Date.now();
+      console.error('[p2p] ' + msg + ' (repeating)');
+    }
+  }
+
   const PEER_LIB = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
   const ROOM_PREFIX = 'battlesquads-';         // namespaces our ids on the broker
   const TICK = 1000 / 20;
@@ -284,7 +308,17 @@ const P2P = (() => {
       const t = Date.now();
       backlog = Math.min(SIM_CATCHUP_MAX, backlog + (t - last) / 1000);
       last = t;
-      while (backlog >= SIM_STEP) { room.step(SIM_STEP); backlog -= SIM_STEP; }
+      try {
+        while (backlog >= SIM_STEP) { room.step(SIM_STEP); backlog -= SIM_STEP; }
+      } catch (e) {
+        /* Drop the rest of this tick's backlog rather than retrying the same
+           step() call in a loop that cannot exit -- `while` would otherwise
+           throw on the same backlog amount forever without ever making
+           backlog < SIM_STEP true, which is a tight synchronous loop, not a
+           recoverable skipped frame. */
+        backlog = 0;
+        reportHostError('room.step', e);
+      }
     }, 1000 / 60);
     /* ---------- how often the world goes out ----------
        A dedicated server sends twenty a second to everybody and thinks nothing
@@ -307,7 +341,7 @@ const P2P = (() => {
       if (host.timer) host.timer.stop();
       host.timer = ticker(() => {
         // personalised on the way out: each player's own inventory and input ack
-        room.sendSnapshot();
+        try { room.sendSnapshot(); } catch (e) { reportHostError('room.sendSnapshot', e); }
         retime();
       }, want);
     };
@@ -395,7 +429,10 @@ const P2P = (() => {
       dropPlayer(player);
       return;
     }
-    host.room.handle(player, msg);
+    // a bad packet from this one peer should cost this one peer a dropped
+    // input, not the room everyone else is standing in
+    try { host.room.handle(player, msg); }
+    catch (e) { reportHostError('room.handle(' + msg.t + ')', e); }
   }
 
   /* take a player out of the room and tell the lobby */
