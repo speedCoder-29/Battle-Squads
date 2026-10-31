@@ -12,7 +12,10 @@ const Game = (() => {
      which meant an online match simulated in one size and rendered in another. */
   const MAP_SIZES = (typeof RoomSim !== 'undefined' && RoomSim.MAP_SIZES)
     ? RoomSim.MAP_SIZES
-    : { domination: { w: 7400, h: 7400 }, elimination: { w: 5200, h: 5200 } };
+    // stale: roomsim.js grew domination to 8600 for population density and
+    // this fallback — never actually read while RoomSim loads, which is
+    // always, but worth keeping honest — still had the old 7400
+    : { domination: { w: 8600, h: 8600 }, elimination: { w: 5200, h: 5200 } };
 
   /* ---------------- world seed ----------------
      Every client builds its own copy of the map, so the two have to agree
@@ -279,7 +282,16 @@ const Game = (() => {
 
   /* Every wall on the map is a Structures.seg — see js/structures.js for the
      wall-type table (height, HP, toughness, ballistics). */
-  const kindOf = (s) => Structures.def(s.type);
+  /* A low-profile fixture (see Structures.fixture) borrows its material's
+     combat stats wholesale -- same fill, same HP, same penetration -- and
+     overrides only the one field that makes it draw and block sight like a
+     wall: `height`. Allocated fresh only for the handful of segments that
+     actually carry the flag, so the common case (a real wall) stays the
+     shared, zero-allocation lookup it always was. */
+  const kindOf = (s) => {
+    const d = Structures.def(s.type);
+    return s.lowProfile ? Object.assign({}, d, { height: 'low' }) : d;
+  };
   const isSolid = (s) => Structures.blocksMove(s);
 
   const input = { up: false, down: false, left: false, right: false, shooting: false, fireEdge: false, ads: false, mx: 0, my: 0, dashCd: 0 };
@@ -568,6 +580,41 @@ const Game = (() => {
     Object.entries(BUILDING_CATEGORIES).map(([cat, names]) => [cat, names.filter(name => BUILDING_WEIGHT_BY_NAME[name] !== undefined)])
   );
 
+  /* ---------------- districts ----------------
+     The ring a building belongs to already says how contested it should be --
+     rich and centre, quiet and edge -- but said nothing about *where around*
+     that ring it landed, so a house and a power plant were exactly as likely
+     to end up neighbours as a house and another house. A real town organizes
+     by what a building is for as much as by how valuable it is: a knot of
+     houses reads as a neighbourhood, a run of warehouses and a depot reads as
+     a yard somebody works in.
+
+     Each category gets a bearing for this map -- shuffled off the seed, so
+     the quarters move between maps but hold together within one -- and
+     `ringSpot` leans toward it rather than rolling the angle uniformly. The
+     lean is loose, not a pie slice: a hard boundary would make every map's
+     skyline the same shape from the lobby map, and `fittingSpot`'s occasional
+     placement anywhere already proves a handful of buildings standing outside
+     their own quarter does no harm. */
+  const BUILDING_CATEGORY_OF = {};
+  for (const [cat, names] of Object.entries(BUILDING_CATEGORIES)) {
+    for (const name of names) BUILDING_CATEGORY_OF[name] = cat;
+  }
+  let districtBearing = {}, districtSector = Math.PI * 2;
+  function assignDistricts() {
+    const cats = Object.keys(BUILDING_CATEGORIES);
+    const order = cats.slice();
+    // a seeded shuffle, same as rollSpawnOrder -- this already runs inside
+    // withSeed(worldSeed, ...), so Math.random() here is reproducible
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    districtSector = (Math.PI * 2) / order.length;
+    districtBearing = {};
+    order.forEach((cat, i) => { districtBearing[cat] = i * districtSector + Math.random() * districtSector * 0.3; });
+  }
+
   /* Where map generation actually spends its time. Cheap to leave on: one
      timestamp per phase, ten phases, once per match. */
   const genProf = {};
@@ -588,7 +635,9 @@ const Game = (() => {
       return r;
     };
     for (const k in genProf) delete genProf[k];
-    terrain = gp('terrain', () => Terrain.generate(MAP_W, MAP_H, worldSeed));
+    terrain = gp('terrain', () => Terrain.generate(MAP_W, MAP_H, worldSeed, mode));
+    Sprites.setBiome(terrain.biome && terrain.biome.id);  // the props' palette follows the ground's
+    assignDistricts();          // where this map's quarters sit, before anything asks ringSpot
     invalidateChart();          // the traced coastline belongs to this island
 
     // playable ground is the grass interior, not the whole rectangle
@@ -1214,6 +1263,24 @@ const Game = (() => {
     return tier;
   }
 
+  /* The same "where you are is worth as much as what you found" rule indoor
+     loot already lives by (see gradeTier/GRADE_LOOT above), extended to the
+     crates scattered across open ground. Those were rolling a flat 72/24/4
+     no matter where they landed -- a regular crate in the contested middle
+     of the island was exactly as likely as one on the empty beachfront, so
+     the risk of fighting over the centre bought nothing a quiet edge didn't
+     already have. Reuses the same ring bands buildings are zoned by, so a
+     map's single "better loot" gradient holds for everything standing on it,
+     indoors or out. */
+  function ringGradeAt(x, y) {
+    const cx = MAP_W / 2, cy = MAP_H / 2;
+    const maxR = Math.min(cx, cy) - Terrain.BEACH_INSET;
+    const frac = Math.hypot(x - cx, y - cy) / (maxR || 1);
+    if (frac <= Structures.RINGS.centre[1]) return 'rich';
+    if (frac <= Structures.RINGS.mid[1]) return 'medium';
+    return 'poor';
+  }
+
   function stockRooms(rooms, grade, building) {
     if (!rooms || !rooms.length) return;
     for (const r of rooms) {
@@ -1247,9 +1314,19 @@ const Game = (() => {
          on the side of it that faces into the room. Open floor is the
          fallback, not the rule. */
       const anchors = anchorsFor(r);
+      /* Spread across the room's own furniture rather than letting the dice
+         pile every crate against whichever one piece it keeps finding — a
+         room with five crates and one of them stacked three deep by the
+         lamp doesn't read as "organised", it reads as a bug. Anchors not
+         yet used by this room's loot are preferred; once every anchor has
+         something by it, a second pass is fine. */
+      const usedAnchors = new Set();
       const spot = () => {
         if (anchors.length && Math.random() < 0.8) {
-          const a = anchors[Math.floor(Math.random() * anchors.length)];
+          const fresh = anchors.filter(a2 => !usedAnchors.has(a2));
+          const pool = fresh.length ? fresh : anchors;
+          const a = pool[Math.floor(Math.random() * pool.length)];
+          usedAnchors.add(a);
           const m = Sprites.META[a.kind] || { r: 20 };
           const off = m.r + 19;
           // push away from the nearest wall, so the crate lands in the room
@@ -1259,11 +1336,15 @@ const Game = (() => {
           const p = along
             ? { x: a.x + towardX * off, y: a.y + rand(-off * 0.4, off * 0.4) }
             : { x: a.x + rand(-off * 0.4, off * 0.4), y: a.y + towardY * off };
+          // square to whatever it's stacked against, not dropped at a random
+          // angle — a crate beside a wall-aligned shelf sits the same way
+          p.rot = a.rot || 0;
           if (p.x > r.x + 12 && p.x < r.x + r.w - 12 && p.y > r.y + 12 && p.y < r.y + r.h - 12) return p;
         }
         return {
           x: rand(r.x + inset, r.x + r.w - inset),
           y: rand(r.y + inset, r.y + r.h - inset),
+          rot: Math.round(Math.random() * 4) * (Math.PI / 2),   // still square to the room
         };
       };
       const taken = [];
@@ -1280,7 +1361,7 @@ const Game = (() => {
              them, one gold. Everything else is exactly what the table says. */
           let t = gradeTier(tier, grade);
           if (spec.chance && Math.random() < spec.chance.odds) t = spec.chance.tier;
-          pendingIndoorCrates.push({ x: p.x, y: p.y, tier: t, room: r.kind, needs: spec.needs });
+          pendingIndoorCrates.push({ x: p.x, y: p.y, tier: t, room: r.kind, needs: spec.needs, rot: p.rot || 0 });
         }
       }
       /* ...and a rich building has a bit more of it. One extra crate per
@@ -1292,7 +1373,7 @@ const Game = (() => {
           taken.push(p);
           pendingIndoorCrates.push({
             x: p.x, y: p.y, tier: gradeTier(spec.crates[0][0], grade),
-            room: r.kind, needs: spec.needs,
+            room: r.kind, needs: spec.needs, rot: p.rot || 0,
           });
         }
       }
@@ -1492,6 +1573,7 @@ const Game = (() => {
        the wall or corner it belongs to — scattering another two dozen props
        across the same floor on top of that put furniture in doorways and
        undid the arrangement. */
+    const placed = [];    // this building's own decor, for loot to anchor against below
     for (let i = 0; i < (rooms && rooms.length ? 0 : conf.n); i++) {
       for (let tries = 0; tries < 20; tries++) {
         const p = spot();
@@ -1502,15 +1584,47 @@ const Game = (() => {
         if (genHits(box, 8)) continue;
         if (decor.some(d => dist2(d.x, d.y, p.x, p.y) < 46 * 46)) continue;
         // square to the building, even with no room to be square to
-        decor.push({ kind, x: p.x, y: p.y, rot: Math.round(Math.random() * 4) * (Math.PI / 2), scale: 1, indoors: true });
+        const item = { kind, x: p.x, y: p.y, rot: Math.round(Math.random() * 4) * (Math.PI / 2), scale: 1, indoors: true };
+        decor.push(item);
+        placed.push(item);
         break;
       }
     }
+    /* Loot lands beside this building's own furniture, the same way a
+       room-based building's does (see stockRooms's `spot`, just above) --
+       the two loops used to run on the same blind `spot()` with nothing
+       connecting them, so a crate could as easily land in the dead middle
+       of the floor as next to the one shelf in the room. A shed with a
+       crate marooned in open space and a pallet stack in the corner reads
+       as a bug even when nothing it did was wrong. Falls back to the open
+       floor only when this building rolled no furniture to stand next to. */
+    // see stockRooms's `usedAnchors`, just above — the same reason not to
+    // let every crate in a shed pile up against the one pallet the dice like
+    const usedFurnitureAnchors = new Set();
+    const lootSpot = () => {
+      if (placed.length && Math.random() < 0.75) {
+        const fresh = placed.filter(a2 => !usedFurnitureAnchors.has(a2));
+        const pool = fresh.length ? fresh : placed;
+        const a = pool[Math.floor(Math.random() * pool.length)];
+        usedFurnitureAnchors.add(a);
+        const m = Sprites.META[a.kind] || { r: 20 };
+        const off = m.r + 19;
+        const towardX = a.x < bb.x + bb.w / 2 ? 1 : -1;
+        const towardY = a.y < bb.y + bb.h / 2 ? 1 : -1;
+        const along = Math.random() < 0.5;
+        const p = along
+          ? { x: a.x + towardX * off, y: a.y + rand(-off * 0.4, off * 0.4) }
+          : { x: a.x + rand(-off * 0.4, off * 0.4), y: a.y + towardY * off };
+        p.rot = a.rot || 0;   // square to whatever it's stacked against
+        if (p.x > bb.x + 12 && p.x < bb.x + bb.w - 12 && p.y > bb.y + 12 && p.y < bb.y + bb.h - 12) return p;
+      }
+      return { ...spot(), rot: Math.round(Math.random() * 4) * (Math.PI / 2) };
+    };
     // loot crates: the reason to go inside. Skipped for buildings whose rooms
     // already say precisely what they hold.
     for (let i = 0; i < (rooms && rooms.length ? 0 : conf.loot); i++) {
       for (let tries = 0; tries < 20; tries++) {
-        const p = spot();
+        const p = lootSpot();
         const box = { x: p.x - 20, y: p.y - 20, w: 40, h: 40 };
         if (genHits(box, 10)) continue;
         // Loot gets better the harder the building is to hold: landmarks are
@@ -1525,7 +1639,7 @@ const Game = (() => {
           : grade === 'poor'
             ? (roll < 0.05 ? 'gold' : roll < 0.28 ? 'silver' : 'regular')
             : (roll < 0.18 ? 'gold' : roll < 0.52 ? 'silver' : 'regular');
-        pendingIndoorCrates.push({ x: p.x, y: p.y, tier });
+        pendingIndoorCrates.push({ x: p.x, y: p.y, tier, rot: p.rot || 0 });
         break;
       }
     }
@@ -1978,15 +2092,35 @@ const Game = (() => {
     };
   }
 
-  /* Somewhere inside the band this building belongs in. The angle is free —
-     only the distance from the middle is constrained — so a ring reads as a
-     belt of similar places rather than a circle drawn on the map. */
-  function ringSpot(name) {
+  /* Somewhere inside the band this building belongs in and, for the
+     procedural scatter only, somewhere inside its own quarter besides: the
+     radius still runs the full ring so a belt reads as a belt, but the
+     bearing leans toward the category's district for this map instead of
+     landing anywhere on the circle.
+
+     `districted` defaults off because the required pass cannot afford it.
+     Tried there first -- a handful of required buildings sharing a category
+     (five houses, two farms, two campgrounds, all 'edge' ring) funnelled
+     into the same narrow arc and fought each other for room in it: measured
+     over two maps, house's rejected-as-occupied count went from 37-174 to
+     559-644, and most of its five instances were only landing through the
+     unzoned fittingSpot fallback anyway, so the "neighbourhood" it was
+     meant to join barely happened. Required placement already has its own
+     hard-won reliability (see placeRequiredBuildings); this leaves it the
+     plain ring it always had. The procedural pass has no such promise to
+     keep -- a rejected candidate there just tries a different roll next
+     iteration out of a budget of thousands -- so it is where the district
+     lean actually belongs, and it is also most of the map: forty-plus
+     buildings against required's dozen or so one-offs. */
+  function ringSpot(name, districted) {
     const band = Structures.RINGS[Structures.purposeOf(name).ring] || Structures.RINGS.mid;
     const cx = MAP_W / 2, cy = MAP_H / 2;
     const maxR = Math.min(cx, cy) - Terrain.BEACH_INSET;
     const r = (band[0] + Math.random() * (band[1] - band[0])) * maxR;
-    const a2 = Math.random() * Math.PI * 2;
+    const cat = districted ? BUILDING_CATEGORY_OF[name] : undefined;
+    const a2 = cat !== undefined
+      ? districtBearing[cat] + (Math.random() - 0.5) * districtSector * 1.3
+      : Math.random() * Math.PI * 2;
     const sz = placedSize(name);
     return {
       x: clamp(cx + Math.cos(a2) * r, Terrain.BEACH_INSET, Math.max(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET - sz.w)),
@@ -2049,7 +2183,7 @@ const Game = (() => {
       const easing = guard < count * 20 ? (guard < count * 8 ? 2 : 1) : 0;
       const pad = [120, 78, 48][easing];
       const gap = [112, 74, 46][easing];
-      const spot = (Math.random() < 0.82 && !easing) ? ringSpot(name) : fittingSpot(name);
+      const spot = (Math.random() < 0.82 && !easing) ? ringSpot(name, true) : fittingSpot(name);
       const parts = placeBuilding(name, spot.x, spot.y, pad);
       if (!parts.length) continue;
       const bb = boundsOf(parts);
@@ -2214,10 +2348,15 @@ const Game = (() => {
       faceY > 0 ? y - 30 : y, 'h', segs, 3, th);
     const runV = coverRun(type, faceX > 0 ? x - 30 : x,
       faceY > 0 ? y - segs * 3 * Structures.PX_PER_M : y, 'v', segs, 3, th);
-    const out = [];
-    if (runH.length >= 2) out.push(runH);
-    if (runV.length >= 2) out.push(runV);
-    return out;
+    /* Each arm is checked against terrain independently, so one of them could
+       clear while the other ran into a river bend or somebody else's cover
+       and got cut short. Committing whichever arm survived used to be fine
+       by the run-length check alone, but a single fence segment standing by
+       itself in open grass, with no corner partner and nothing nearby to
+       explain it, is exactly "weird wall spawning" -- a wall whose presence
+       answers no question. A position is a corner or it is nothing. */
+    if (runH.length < 2 || runV.length < 2) return [];
+    return [runH, runV];
   }
 
   /* ---------------- loose cover: four purposeful families, not one random one ----------------
@@ -2238,12 +2377,29 @@ const Game = (() => {
        positions   an L of cover on a coarse lattice over open ground, every
                    one of them facing the middle of the island -- so even
                    the empty country reads as laid out, not scattered */
+  /* How the cover budget splits across the four families, by mode. Used to
+     be an even quarter each regardless of mode, which is part of why two
+     modes on the same map felt like the same map. Domination leans on
+     perimeter, because it's the only mode where a building (the team base)
+     is worth defending for the whole match. Arms Race leans on fence and
+     outpost -- the linear, path-constraining families -- because it's a
+     chase, and a chase wants corridors, not open ground to shoot across.
+     Elimination leans hard on the lattice, because its shrinking zone is
+     supposed to force the fight into the open, not let everyone dig into a
+     building and wait it out again. Each mode's numbers sum to 1. */
+  const COVER_FAMILY_MIX = {
+    domination:  { fence: 0.20, perimeter: 0.35, outpost: 0.20, lattice: 0.25 },
+    armsrace:    { fence: 0.30, perimeter: 0.20, outpost: 0.30, lattice: 0.20 },
+    elimination: { fence: 0.20, perimeter: 0.15, outpost: 0.20, lattice: 0.45 },
+  };
+  const DEFAULT_COVER_FAMILY_MIX = { fence: 0.25, perimeter: 0.25, outpost: 0.25, lattice: 0.25 };
   function placeCover(count) {
+    const mix = COVER_FAMILY_MIX[mode] || DEFAULT_COVER_FAMILY_MIX;
     let guard = count * 40;
     let made = 0;
     const commit = (run) => { if (run.length >= 2) { commitRun(run); made += run.length; } };
 
-    const fenceBudget = Math.round(count * 0.25);
+    const fenceBudget = Math.round(count * mix.fence);
     while (made < fenceBudget && buildings.length && guard-- > 0) {
       const b = buildings[Math.floor(Math.random() * buildings.length)];
       commit(wireAlong(b));
@@ -2258,12 +2414,12 @@ const Game = (() => {
       .sort((a, b) => (b.w * b.h) - (a.w * a.h))
       .slice(0, 10);
     const targets = shuffle([...bases, ...landmarks, ...bigOrdinary]);
-    const perimeterBudget = fenceBudget + Math.round(count * 0.25);
+    const perimeterBudget = fenceBudget + Math.round(count * mix.perimeter);
     for (let i = 0; made < perimeterBudget && i < targets.length; i++) {
       commit(defendBuilding(targets[i], targets[i].landmark || targets[i].teamBase !== undefined ? 70 : 54));
     }
 
-    const outpostBudget = perimeterBudget + Math.round(count * 0.25);
+    const outpostBudget = perimeterBudget + Math.round(count * mix.outpost);
     const roads = shuffle(terrain.roads.slice());
     outer:
     for (const road of roads) {
@@ -2303,7 +2459,14 @@ const Game = (() => {
         if (Terrain.onRoad(terrain, x, y)) continue;
         const box = { x: x - 130, y: y - 130, w: 260, h: 260 };
         if (genHits(box, 40)) continue;                  // nothing else already standing here
-        for (const run of fieldPosition(x, y)) commit(run);
+        /* fieldPosition() now refuses to hand back a lone arm (see its own
+           comment), so an unlucky jitter that clips one arm against terrain
+           comes back empty here. That's one more reason to re-jitter within
+           the cell, same as the checks above it, rather than spend the only
+           try on a spot that was never going to produce a real corner. */
+        const runs = fieldPosition(x, y);
+        if (!runs.length) continue;
+        for (const run of runs) commit(run);
         break;
       }
     }
@@ -2379,7 +2542,25 @@ const Game = (() => {
     // Interactive props (crates, barrels, trees, rocks, containers, bushes) are
     // real obstacles you can shoot, break and hide behind. The rest — pallets,
     // tyres, cones, signs, rubble, stumps — stay pure dressing.
-    const live = ['tree', 'tree', 'bush', 'bush', 'rock', 'crate', 'crate', 'barrel', 'container'];
+    /* The vegetation kind here used to be the literal string 'tree' no matter
+       what grew in the groves a screen away -- a volcanic island planted
+       with burnt stumps in its stands and ordinary oaks everywhere between
+       them, because this list never looked at the biome. Same species the
+       groves already settled on, so a walk from a stand into open ground
+       doesn't cross into a different climate. */
+    const bioId = (terrain && terrain.biome && terrain.biome.id) || 'temperate';
+    const treeKind = (terrain.biome && terrain.biome.tree) || 'tree';
+    /* Composition also leans with the climate -- the Ashfields are mostly
+       rock with the odd scorched stump, the Jungle Coast is mostly green,
+       the Basin is palm and sand, not an even split of everything. */
+    const LIVE_MIX = {
+      temperate: [treeKind, treeKind, 'bush', 'bush', 'rock'],
+      arid:      [treeKind, treeKind, 'rock', 'rock', 'bush'],
+      tundra:    [treeKind, treeKind, 'rock', 'rock', 'rock'],
+      tropic:    [treeKind, treeKind, 'bush', 'bush', 'bush'],
+      volcanic:  [treeKind, 'rock', 'rock', 'rock', 'rock'],
+    };
+    const live = (LIVE_MIX[bioId] || LIVE_MIX.temperate).concat(['crate', 'crate', 'barrel', 'container']);
     const biomeScatter = (terrain && terrain.biome && terrain.biome.scatter) || [];
     const dressing = ['pallet', 'tyre', 'sign', 'cone', 'antenna', 'tent'].concat(biomeScatter);
 
@@ -3089,7 +3270,7 @@ const Game = (() => {
       weaponId: w.id, weapon: w,
       cls, tool: cls.tool, skin,                            // class kit + weapon skin
       diff: BotAI.individual(botLevel),                     // aim / survival / teamwork
-      vx: 0, vy: 0, contactT: 0, healCd: 0,
+      vx: 0, vy: 0, contactT: 0, healCd: 0, healingT: 0, grenadeCd: 0,
       toolCd: 0, toolActive: false, swingT: 0, builds: 0, stillT: 0,
       ammo: w.mag, reloadTimer: 0, fireCd: 0,
       bloom: 0, burstLeft: 0, burstCd: 0, postBurstCd: 0,   // firing state
@@ -3728,7 +3909,7 @@ const Game = (() => {
     const move = [Controls.all().up[0], Controls.all().left[0], Controls.all().down[0], Controls.all().right[0]]
       .map(Controls.label).join(' ');
     const groups = [
-      ['MOVE', move, `${k('dash')} dash`],
+      ['MOVE', move, `${k('dash')} dash`, `${k('crouch')} crouch (slide while sprinting)`],
       ['FIGHT', 'L-click fire', 'R-click aim', `${k('reload')} reload`,
         `${k('slot1')}/${k('slot2')} or wheel — swap weapon`],
       ['ACTIONS', `${k('tool')} tool`, `${k('grenade')} grenade`, `${k('tactical')} tactical`,
@@ -3786,6 +3967,7 @@ const Game = (() => {
         case 'down': input.down = true; break;
         case 'left': input.left = true; break;
         case 'right': input.right = true; break;
+        case 'crouch': input.crouch = true; break;
         case 'reload': startReload(hudSubject()); break;   // the gun you're actually firing
         case 'dash': dash(); break;
         case 'grenade': throwGrenade(); break;
@@ -3824,6 +4006,7 @@ const Game = (() => {
         case 'down': input.down = false; break;
         case 'left': input.left = false; break;
         case 'right': input.right = false; break;
+        case 'crouch': input.crouch = false; break;
         // let go of the wheel key and whatever you were pointing at is sent
         case 'ping': if (wheel && wheel.kind === 'ping') closeWheel(true); break;
         case 'emote': if (wheel && wheel.kind === 'emote') closeWheel(true); break;
@@ -3832,7 +4015,7 @@ const Game = (() => {
     });
     /* Rebinding mid-match must not leave a key stuck down: if "move left" was
        held when it stopped being "move left", nothing will ever clear it. */
-    Controls.onChange(() => { input.up = input.down = input.left = input.right = false; });
+    Controls.onChange(() => { input.up = input.down = input.left = input.right = input.crouch = false; });
     canvas.addEventListener('mousemove', e => {
       const rect = canvas.getBoundingClientRect();
       input.mx = e.clientX - rect.left; input.my = e.clientY - rect.top;
@@ -3908,6 +4091,8 @@ const Game = (() => {
      smallest thing it can hit — a BODY_R hitbox, or the thinnest wall — or
      fast rounds fly straight through. */
   const BULLET_STEP = 10;
+  // how close an enemy round has to pass to count as a near miss (see addWhiz)
+  const WHIZ_RANGE2 = 50 * 50;
   /* How far a settled bot gets toward its gun's full ADS cone (0 = always
      hipfire, 1 = as steady as a scoped player). */
   const BOT_STEADY = 0.55;
@@ -4002,8 +4187,17 @@ const Game = (() => {
     // a suppressor really does keep you quiet: bots only "hear" loud shots
     if ((!w.audio || w.audio > 0.5) && !Perks.mod(a, 'silent', false)) alertNearbyBots(a);
     logGunshot(a);
+    /* Everyone's gunfire is audible now, not just your own. It used to be
+       gated behind isYours(a), which meant every other agent on the map —
+       every enemy, every bot, every squadmate — fired in total silence; a
+       16-person firefight sounded exactly like standing alone on an empty
+       island unless you personally pulled the trigger. Distance and the
+       weapon's own audio rating do the muting SFX.shoot's old gate used to
+       do by hand: a suppressed shot three tiles away and a Barrett on the
+       horizon both fall out naturally rather than needing their own rule. */
+    SFX.shoot(w.type, audioRel(a.x, a.y), w.audio === undefined ? 1 : w.audio);
     if (isYours(a)) {
-      SFX.shoot(); if (a.ammo === 0) startReload(a); updateWeaponHud();
+      if (a.ammo === 0) startReload(a); updateWeaponHud();
       // one trigger pull is one shot, whether it threw one round or nine pellets
       if (!a.isDummy) matchStats.shots++;
     }
@@ -4093,6 +4287,10 @@ const Game = (() => {
       if (d < radius * 3) addShake(11 * (1 - Math.min(1, d / (radius * 3))));
     }
     spawnFx(x, y, '#ff9d3b', 22);
+    /* A real detonation sound. This had none at all offline — explode() had
+       a shake and a flash of sparks but nothing to hear, so a frag going off
+       behind a wall was a silent event unless it happened to hit you. */
+    SFX.explosion(audioRel(x, y));
     for (const a of agents) {
       if (!a.alive || a.riding) continue;      // the hull eats it, not the driver
       const d = Math.hypot(a.x - x, a.y - y);
@@ -4206,6 +4404,38 @@ const Game = (() => {
 
   const worldMouse = () => ({ x: input.mx / zoom + camX, y: input.my / zoom + camY });
   const near2 = (a, b, r) => dist2(a.x, a.y, b.x, b.y) < r * r;
+  /* Where a sound happened, relative to the listener — what every
+     positional SFX.* call passes as `rel`. Undefined with no player (a
+     sound that somehow fires before spawn, or in a menu context) falls
+     back to SFX's own centred, full-volume default rather than throwing. */
+  const audioRel = (x, y) => player ? { dx: x - player.x, dy: y - player.y } : undefined;
+
+  /* Footfalls, pitched by what's underfoot. There was no footstep audio at
+     all before this — in a genre where tracking a fight by ear is core
+     gameplay, every agent on the map walking in total silence is a real
+     gap, not a missing flourish. A distance-travelled counter per agent
+     rather than a fixed timer, so a sprinting agent's footsteps land
+     faster without a separate "run" sound to author, and Terrain already
+     computes the surface under every agent for movement speed (see the
+     player-control block above) — this is the same lookup, just also kept
+     for what it sounds like instead of only what it costs to walk on.
+     Online only covers local agents (the player and bots): a remote human
+     player's position comes from the room's snapshot, not this loop, and
+     reaching into that is a larger change than a footstep earns. */
+  const STRIDE_LEN = 46;          // px between footfalls, roughly a stride
+  function updateFootsteps(dt) {
+    if (!terrain) return;
+    for (const a of agents) {
+      if (!a.alive || a.isVehicle || a.riding || a.downed) { a.strideAcc = 0; continue; }
+      const spd = Math.hypot(a.vx || 0, a.vy || 0);
+      if (spd < 20) { a.strideAcc = 0; continue; }
+      a.strideAcc = (a.strideAcc || 0) + spd * dt;
+      if (a.strideAcc >= STRIDE_LEN) {
+        a.strideAcc = 0;
+        SFX.footstep(audioRel(a.x, a.y), Terrain.surfaceAt(terrain, a.x, a.y).kind);
+      }
+    }
+  }
 
   /* Add to a slot. Nothing is ever silently destroyed: if the slot already
      holds something else, that stack is dropped at your feet, and anything
@@ -4903,8 +5133,10 @@ const Game = (() => {
   /* The room's blast, drawn where the room put it. */
   function netBoom(x, y, r) {
     spawnFx(x, y, '#ff9d3b', 22);
-    // only audible if it was near enough to matter — r is the blast radius
-    if (player && dist2(player.x, player.y, x, y) < (r + 400) ** 2) SFX.kill();
+    // a real detonation sound, not the kill noise standing in for one — a
+    // nearby blast that killed nobody used to sound exactly like a confirmed
+    // elimination, which is actively misleading rather than merely plain
+    SFX.explosion(audioRel(x, y));
   }
   /* Somebody dug in. Same circle on every screen, because the room is rolling
      a dodge against it. */
@@ -5118,6 +5350,8 @@ const Game = (() => {
 
   /* --- channel a heal / boost item --- */
   function useHeal() {
+    // downed, the heal key means something else entirely — see trySelfRevive
+    if (player && player.downed) { trySelfRevive(); return; }
     if (!canAct() || player.channel) return;
     const slot = player.inv.heal;
     if (!slot || !slot.id || slot.n <= 0) { hudMsg('No heal item'); return; }
@@ -5147,6 +5381,46 @@ const Game = (() => {
         hudMsg('Revived ' + a.name); return;
       }
     }
+  }
+
+  /* A downed player can bring themselves back, with the same item that
+     already means "second chance" to everyone else — the Stim's `revive`
+     flag, which otherwise only powers reviveTeammate() above. Deliberately
+     worse than waiting for help: more than twice REVIVE_SECS, it spends
+     the Stim whether or not you make it, and it's racing the same bleed-out
+     clock updateDowned already runs — there is no pause button on dying
+     just because you're also trying not to. Apex's original self-revive was
+     pulled from the game for being too strong, and Warzone's is widely read
+     as "quick and annoying" rather than fun; this is built as a genuine
+     last resort, not a habit. */
+  const SELF_REVIVE_SECS = 7.5;
+  const canActDowned = () => running && !paused && player && player.downed && player.inv && !player.riding;
+  function trySelfRevive() {
+    if (!canActDowned() || player.channel) return;
+    const slot = player.inv.heal;
+    /* A Stim in reserve counts even when it isn't the item currently
+       selected — bandages are the obvious default pick, and a player who
+       never switched to the Stim they're carrying should not be told they
+       don't have one. Scans for *any* held item with the revive flag
+       rather than hardcoding "stim", the same way the flag already works
+       for reviveTeammate() above. */
+    const reviveId = slot && slot.held && Object.keys(slot.held).find(id => {
+      const it = Items.CONSUMABLES[id];
+      return it && it.revive && slot.held[id] > 0;
+    });
+    if (!reviveId) { hudMsg('Need a Stim to get back up alone'); return; }
+    if (online) { hudMsg('Wait for a teammate — not out here alone'); return; }
+    player.channel = {
+      t: SELF_REVIVE_SECS, total: SELF_REVIVE_SECS, label: 'Self-reviving',
+      onDone: () => {
+        if (!player.downed) return;   // bled out, or a teammate already got there first
+        slot.held[reviveId] = (slot.held[reviveId] || 0) - 1;
+        syncSlot('heal');
+        reviveAgent(player, null);
+      },
+    };
+    hudMsg('Holding on — this takes a while, alone');
+    SFX.reload();
   }
 
   /* --- deploy the equipped tactical item --- */
@@ -5690,7 +5964,9 @@ const Game = (() => {
     if (s.open || s.dead) return false;
     if (s.type === 'window') return true;
     const k = Structures.def(s.type);
-    return k.height === 'low' && !k.passable && !k.prop;
+    // a fixture reads as low cover (see-over, see drawStructure/blocksSight),
+    // so it should go over the same way sandbags and barricades do
+    return (s.lowProfile || k.height === 'low') && !k.passable && !k.prop;
   };
 
   /* The piece in front of you that you could get over, and where you would
@@ -5780,7 +6056,12 @@ const Game = (() => {
     invalidateRects();
     const c = doorCentre(d);
     spawnFx(c.x, c.y, '#e2b46e', 5);
-    if (who && who.isPlayer) { hudMsg((d.open ? 'Opened ' : 'Closed ') + kindOf(d).name); SFX.click(); }
+    if (who && who.isPlayer) {
+      hudMsg((d.open ? 'Opened ' : 'Closed ') + kindOf(d).name);
+      // a door, not the same generic click every other interaction still
+      // shares — opening and closing get their own direction
+      SFX.door(d.open, audioRel(c.x, c.y));
+    }
   }
 
   /* somebody else worked a door — match it, quietly */
@@ -5805,31 +6086,52 @@ const Game = (() => {
     if (ride) { boardVehicle(ride); return; }
     // dropped kit first — it's what you most often want when you press E
     if (grabDrop()) return;
-    const door = nearestDoor(player.x, player.y, 70);
-    if (door) { toggleDoor(door, player); return; }
-    // a window or a low wall you are facing: climb it rather than walk round
-    if (tryVault()) return;
-    let best = null, bi = -1, bd = 95 * 95;
+
+    /* The nearest crate and ammo box, found before the door check rather than
+       after it. A door used to be checked first and returned unconditionally,
+       so standing over a crate a few steps inside an open doorway meant E
+       always swung the door instead of looting it — the door "won" a contest
+       it was never actually closer to. Loot stacks against the nearest wall
+       in a room now (see stockRooms), which is sometimes the one a door is
+       cut into, so this was no longer a rare corner case. */
+    let bestCrate = null, bci = -1, bcd = 95 * 95;
     for (let i = 0; i < crates.length; i++) {
       const c = crates[i];
       if (c.opened) continue;
       const d = dist2(player.x, player.y, c.x, c.y);
-      if (d < bd) { bd = d; best = c; bi = i; }
+      if (d < bcd) { bcd = d; bestCrate = c; bci = i; }
     }
-    if (best) {
+    let bestAmmo = null, bad = 95 * 95;
+    for (const dp of deployables) {
+      if (dp.type !== 'ammo' || dp.supply <= 0) continue;
+      const d = dist2(player.x, player.y, dp.x, dp.y);
+      if (d < bad) { bad = d; bestAmmo = dp; }
+    }
+    const closestPickup = Math.min(bcd, bad);
+
+    // the door still wins at equal range — closing it behind you matters more
+    // than a crate you were about to walk past anyway — but a pickup that is
+    // genuinely nearer wins now, instead of losing just for being checked second
+    const door = nearestDoor(player.x, player.y, 70);
+    if (door) {
+      const dc = doorCentre(door);
+      const doorD = dist2(player.x, player.y, dc.x, dc.y);
+      if (doorD <= closestPickup) { toggleDoor(door, player); return; }
+    }
+    // a window or a low wall you are facing: climb it rather than walk round
+    if (tryVault()) return;
+    if (bestCrate) {
       /* Online the crate is opened by index, by the room. It rolls the loot and
          it decides who got there first — opening our own copy meant two people
          walking up to the same gold crate each came away with a legendary. */
-      if (online) { online.transport.send('crate', { i: bi }); SFX.click(); return; }
-      openCrate(best);
+      if (online) { online.transport.send('crate', { i: bci }); SFX.click(); return; }
+      openCrate(bestCrate);
       return;
     }
-    for (const dp of deployables) {
-      if (dp.type === 'ammo' && dp.supply > 0 && near2(dp, player, 95)) {
-        dp.supply -= player.weapon.mag;
-        refillAll(player);
-        updateWeaponHud(); hudMsg('Resupplied'); SFX.reload(); return;
-      }
+    if (bestAmmo) {
+      bestAmmo.supply -= player.weapon.mag;
+      refillAll(player);
+      updateWeaponHud(); hudMsg('Resupplied'); SFX.reload(); return;
     }
     hudMsg('Nothing to interact with');
   }
@@ -5909,7 +6211,8 @@ const Game = (() => {
         if (!pointInObstacle(x, y) && Terrain.isSpawnable(terrain, x, y)) { placed = true; break; }
       }
       if (!placed) continue;
-      crates.push({ x, y, tier: Items.rollCrateTier(), opened: false });
+      const tier = gradeTier(Items.rollCrateTier(), ringGradeAt(x, y));
+      crates.push({ x, y, tier, opened: false });
     }
   }
   /* Spread the parked hulls so no squad is handed one at its feet while
@@ -6236,9 +6539,11 @@ const Game = (() => {
   function detonate(g) {
     const it = g.item;
     if (g.mode === 'fuze' || g.mode === 'impact' || g.mode === 'c4') {
-      // C4 is the demolition charge — it opens what ordinary explosives can't
+      // C4 is the demolition charge — it opens what ordinary explosives can't.
+      // explode() plays its own detonation sound now; this used to also play
+      // SFX.kill() right after, so every grenade sounded like an elimination
+      // twice over, once as explode()'s proxy and once again right here.
       explode(g.x, g.y, it.damage, it.radius, g.team, g.owner, 'explosive', g.mode === 'c4' ? 'c4' : null);
-      SFX.kill();
     }
     else if (g.mode === 'smoke') smokes.push({ x: g.x, y: g.y, r: it.radius, life: it.duration, max: it.duration });
     else if (g.mode === 'flash') flashDetonate(g.x, g.y, it.radius, it.blind, g.team);
@@ -6623,6 +6928,22 @@ const Game = (() => {
     };
   }
 
+  /* A bot's throw: same shape as the player's throwGrenade(), aimed at a
+     world point rather than the cursor, with a little scatter that scales
+     off the bot's own aim error — a thrown grenade is not a bullet, so even
+     a sharp bot shouldn't drop it dead-centre every time. */
+  function botThrowGrenade(a, it, pt) {
+    const dx = pt.x - a.x, dy = pt.y - a.y, dd = Math.hypot(dx, dy) || 1;
+    const dist = Math.min(dd, it.throwRange || 520);
+    const err = (Math.random() - 0.5) * 2 * (0.05 + a.diff.aim.error * 0.4);
+    const ang = Math.atan2(dy, dx) + err;
+    grenades.push({
+      x: a.x, y: a.y, tx: a.x + Math.cos(ang) * dist, ty: a.y + Math.sin(ang) * dist,
+      vx: Math.cos(ang) * 660, vy: Math.sin(ang) * 660,
+      mode: it.mode, item: it, team: a.team, owner: a, arrived: false, fuzeLeft: it.fuze || 0,
+    });
+  }
+
   function updateBot(a, dt) {
     a.throttle = 1;              // set by whatever steers this frame; see followPath
     /* Down: no fighting, just dragging yourself toward someone who can pick
@@ -6644,6 +6965,25 @@ const Game = (() => {
       const spd = (a.isVehicle ? a.vspeed : a.weapon.moveSpeed * 0.5) * dt;
       a.x += Math.cos(a.angle + a.strafeDir) * spd * 0.3;
       a.y += Math.sin(a.angle + a.strafeDir) * spd * 0.3;
+      resolveObstacles(a);
+      return;
+    }
+    /* Channeling a heal: stood still, not fighting, same bargain a player's
+       bandage or medkit makes. This used to be a free instant +35 with no
+       animation, no stock to run dry and no window to punish — a bot just
+       quietly topped off mid-fight for nothing, which is the textbook
+       "the AI is cheating" complaint. The trigger below only starts the
+       channel; nothing is healed and the cooldown doesn't start until it
+       finishes, so a push during it is a real punish, the way it is against
+       a person. Damage still lands normally while this runs — nothing here
+       stops the bullet-collision pass from hurting a healing bot. */
+    if (a.healingT > 0) {
+      a.healingT -= dt;
+      if (a.healingT <= 0) {
+        a.hp = Math.min(a.maxHp, a.hp + 35);
+        a.healCd = 14;
+        spawnFx(a.x, a.y, '#4be08a', 8);
+      }
       resolveObstacles(a);
       return;
     }
@@ -6970,11 +7310,25 @@ const Game = (() => {
       }
     }
 
-    // point blank? use the tool — melee beats reloading
+    /* Point blank? Use the tool — but only when the gun genuinely would not
+       win faster. This used to fire unconditionally: a bot standing
+       muzzle-to-chest with a full, fast-firing SMG would still lunge into a
+       half-second melee swing instead of just holding the trigger down,
+       which is both a free tell (back off a step, let the whiff happen,
+       gun them down) and reads as irrationally aggressive rather than
+       dangerous. Melee is now the move only when it is actually the faster
+       kill — chiefly an empty magazine, which is what "melee beats
+       reloading" was actually describing. */
     const reach = a.tool.melee > 0 ? a.tool.range + a.r : 0;
     if (enemy && reach > 0 && d < reach + enemy.r && a.toolCd <= 0 && !a.isVehicle) {
-      a.angle = Math.atan2(enemy.y - a.y, enemy.x - a.x);
-      swingTool(a);
+      const meleeDps = a.tool.melee / Math.max(0.1, a.tool.cooldown);
+      const gunDps = a.ammo > 0
+        ? (a.weapon.damage * (a.weapon.pellets || 1) * (a.weapon.burst || 1)) / (a.weapon.fireInterval / 1000)
+        : 0;
+      if (gunDps <= meleeDps) {
+        a.angle = Math.atan2(enemy.y - a.y, enemy.x - a.x);
+        swingTool(a);
+      }
     }
 
     const D = a.diff, AIM = D.aim, SURV = D.survival, TEAM = D.teamwork;
@@ -7010,11 +7364,34 @@ const Game = (() => {
     }
     const reacted = a.contactT >= AIM.reaction;
 
-    // SURVIVAL — hurt bots use a heal, then break contact
+    /* Lob your class grenade at someone you know is there but can't get a
+       bead on. Bots never touched a single consumable before this: every
+       class carries a signature item (Classes.CLASSES) and the grenade
+       ones — frag, smoke, flashbang, impact, C4 — sat completely unused by
+       the AI, so a human fighting bots never had to respect a thrown
+       weapon, and the mode's whole Consumables layer read as a player-only
+       toy. Triggers off the same lastSeen memory the rest of the combat
+       loop already keeps, so it fires exactly when a frag is actually
+       useful: you had them, they broke line of sight, you still roughly
+       know where. Gated to level 4+, where SURV.reloadsInCover also turns
+       on, so rookies don't suddenly start lobbing frags with surgical
+       timing. */
+    if (D.level >= 4 && !a.isVehicle && target && !canSee && a.lastSeen && a.lastSeen.t < 1.3 && (a.grenadeCd || 0) <= 0) {
+      const kit = Items.CONSUMABLES[a.cls.consumable];
+      if (kit && kit.cat === 'grenade') {
+        const reach = kit.throwRange || 520;
+        if (dist2(a.x, a.y, a.lastSeen.x, a.lastSeen.y) < reach * reach) {
+          botThrowGrenade(a, kit, a.lastSeen);
+          a.grenadeCd = 7 + Math.random() * 5;
+        }
+      }
+    }
+    if (a.grenadeCd > 0) a.grenadeCd -= dt;
+
+    // SURVIVAL — hurt bots start a heal (see the channel above), then break contact
     const hpFrac = a.hp / a.maxHp;
-    if (SURV.usesHeals && hpFrac < SURV.healAt && !a.healCd) {
-      a.hp = Math.min(a.maxHp, a.hp + 35); a.healCd = 14;
-      spawnFx(a.x, a.y, '#4be08a', 8);
+    if (SURV.usesHeals && !a.isVehicle && hpFrac < SURV.healAt && !a.healCd && !a.healingT) {
+      a.healingT = 1.2;
     }
     if (a.healCd > 0) a.healCd -= dt;
     const retreating = hpFrac < SURV.retreatAt;
@@ -7129,7 +7506,7 @@ const Game = (() => {
       if (goal) {
         let dir = null;
         // a clear straight line is cheaper than a path, and looks better
-        if (navGrid && Nav.clearLine(navGrid, a, goal)) {
+        if (gridFor(a) && Nav.clearLine(gridFor(a), a, goal)) {
           const ang = Math.atan2(goal.y - a.y, goal.x - a.x);
           dir = { x: Math.cos(ang), y: Math.sin(ang) };
           a.path = null;
@@ -7307,6 +7684,14 @@ const Game = (() => {
      want to be and follow the waypoints. Recomputes are staggered and budgeted
      so twenty-odd bots don't all run A* on the same frame. */
   let navGrid = null;
+  /* The tank's hull is 56px in radius (see VEHICLES); 18px of pedestrian
+     padding plus a matching margin leaves it room to turn without clipping
+     a corner it's about to route around anyway. The jeep is smaller, so it
+     always fits inside whatever this grid calls open — one grid sized for
+     the bigger of the two beats maintaining a grid per vehicle type. */
+  const VEHICLE_PAD = 62;
+  let vehicleNavGrid = null;
+  const gridFor = (a) => (a.isVehicle ? vehicleNavGrid : navGrid);
   let pathBudget = 0;
   /* A* cells the whole game may expand this frame, shared by every bot. About
      three milliseconds' worth on the machine this was tuned on. */
@@ -7328,45 +7713,62 @@ const Game = (() => {
     /* ...and then say so out loud. Leaving the doorway to be discovered by
        sampling left most rooms in the map cut off from the rest of it. */
     Nav.openDoorways(navGrid, solids.filter(s => Structures.isDoor(s)));
+
+    /* A second grid, same geometry, padded for a vehicle's hull rather than
+       a person's. Bot-driven cars and tanks were routing off the pedestrian
+       grid — a corridor wide enough for a person reads as open to it no
+       matter what is actually driving through, so a tank picked routes
+       straight at doorways and gaps it is built to be too big for (see
+       VEHICLES' comment on why that collision is deliberate), then sat
+       there sidestepping against a frame it could never fit through. Only a
+       garage door — explicitly vehicle-width, see WALL_TYPES — opens on
+       this grid; an ordinary doorway stays shut, the same as a wall, because
+       that is what it is to something this size. */
+    vehicleNavGrid = Nav.build(MAP_W, MAP_H, solids.filter(s => s.type !== 'garage-door'), null, VEHICLE_PAD);
+    Nav.openDoorways(vehicleNavGrid, solids.filter(s => s.type === 'garage-door'));
+
     if (!terrain) return;
     // Stamp costs by walking the paths rather than asking the terrain about
     // every cell: surfaceAt does a distance-to-polyline test, and running that
     // 5000 times per rebuild was the single most expensive thing in the frame.
-    const g = navGrid;
-    const stamp = (pts, halfWidth, value) => {
-      for (let i = 0; i < pts.length - 1; i++) {
-        const a = pts[i], b = pts[i + 1];
-        const steps = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (Nav.CELL * 0.5));
-        for (let k = 0; k <= steps; k++) {
-          const t = k / steps;
-          const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
-          const spread = Math.ceil(halfWidth / Nav.CELL);
-          const [ccx, ccy] = Nav.cellOf(x, y);
-          for (let dy = -spread; dy <= spread; dy++) {
-            for (let dx = -spread; dx <= spread; dx++) {
-              const cx = ccx + dx, cy = ccy + dy;
-              if (cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows) continue;
-              const idx = cy * g.cols + cx;
-              if (!g.blocked[idx]) g.cost[idx] = value;
+    const stampGrid = (g) => {
+      const stamp = (pts, halfWidth, value) => {
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i], b = pts[i + 1];
+          const steps = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (Nav.CELL * 0.5));
+          for (let k = 0; k <= steps; k++) {
+            const t = k / steps;
+            const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
+            const spread = Math.ceil(halfWidth / Nav.CELL);
+            const [ccx, ccy] = Nav.cellOf(x, y);
+            for (let dy = -spread; dy <= spread; dy++) {
+              for (let dx = -spread; dx <= spread; dx++) {
+                const cx = ccx + dx, cy = ccy + dy;
+                if (cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows) continue;
+                const idx = cy * g.cols + cx;
+                if (!g.blocked[idx]) g.cost[idx] = value;
+              }
             }
+          }
+        }
+      };
+      for (const r of terrain.rivers) stamp(r.pts, r.width / 2, 4);      // avoid swimming
+      for (const rd of terrain.roads) stamp(rd.pts, rd.width / 2, 0.7);  // prefer roads
+      for (const b of terrain.bridges) {                                  // bridges are fine
+        const [cx, cy] = Nav.cellOf(b.x, b.y);
+        const spread = Math.ceil(Math.max(b.w, b.h) / 2 / Nav.CELL);
+        for (let dy = -spread; dy <= spread; dy++) {
+          for (let dx = -spread; dx <= spread; dx++) {
+            const nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
+            const idx = ny * g.cols + nx;
+            if (!g.blocked[idx]) g.cost[idx] = 0.7;
           }
         }
       }
     };
-    for (const r of terrain.rivers) stamp(r.pts, r.width / 2, 4);      // avoid swimming
-    for (const rd of terrain.roads) stamp(rd.pts, rd.width / 2, 0.7);  // prefer roads
-    for (const b of terrain.bridges) {                                  // bridges are fine
-      const [cx, cy] = Nav.cellOf(b.x, b.y);
-      const spread = Math.ceil(Math.max(b.w, b.h) / 2 / Nav.CELL);
-      for (let dy = -spread; dy <= spread; dy++) {
-        for (let dx = -spread; dx <= spread; dx++) {
-          const nx = cx + dx, ny = cy + dy;
-          if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
-          const idx = ny * g.cols + nx;
-          if (!g.blocked[idx]) g.cost[idx] = 0.7;
-        }
-      }
-    }
+    stampGrid(navGrid);
+    stampGrid(vehicleNavGrid);
   }
 
   /* Ask for a path, respecting the per-frame budget. Returns true if the bot
@@ -7403,7 +7805,8 @@ const Game = (() => {
   const resetMoveStat = () => { moveStat = { frames: 0, want: 0, got: 0, turn: 0, turnN: 0, stuck: 0, crowd: 0 }; };
 
   function ensurePath(a, tx, ty, urgent) {
-    if (!navGrid) return false;
+    const grid = gridFor(a);
+    if (!grid) return false;
     navStat.ask++;
     const moved = !a.pathTarget || dist2(a.pathTarget.x, a.pathTarget.y, tx, ty) > 240 * 240;
     a.pathAge = (a.pathAge || 0) - 1;
@@ -7451,7 +7854,7 @@ const Game = (() => {
        of A* in a sixteen millisecond frame, and the frame rate halved. What
        has to be capped is the work, so that is what is counted. */
     const t0 = performance.now();
-    a.path = Nav.findPath(navGrid, a.x, a.y, tx, ty, navNodeBudget) || null;
+    a.path = Nav.findPath(grid, a.x, a.y, tx, ty, navNodeBudget) || null;
     navNodeBudget -= Nav.lastSteps();
     navStat.ms += performance.now() - t0;
     a.pathI = 0;
@@ -7488,11 +7891,12 @@ const Game = (() => {
        per candidate, the answer barely changes in a tenth of a second, and
        fifteen bots asking sixty times a second is real work for nothing. */
     a.lookT = (a.lookT || 0) - 1;
-    if (navGrid && a.lookT <= 0) {
+    const grid = gridFor(a);
+    if (grid && a.lookT <= 0) {
       a.lookT = 6 + Math.floor(Math.random() * 6);
       const far = Math.min(a.pathI + 3, a.path.length - 1);
       for (let j = far; j > a.pathI; j--) {
-        if (Nav.clearLine(navGrid, a, a.path[j])) { a.pathI = j; wp = a.path[j]; break; }
+        if (Nav.clearLine(grid, a, a.path[j])) { a.pathI = j; wp = a.path[j]; break; }
       }
     }
 
@@ -7662,9 +8066,12 @@ const Game = (() => {
     return raceLadder;
   }
 
-  /* The weapon for a given rung, ready to carry. The last rung has no gun at
-     all -- it is the knife, and `raceMelee` is what the HUD calls it. */
-  const raceMelee = () => 'Bayonet';
+  /* The weapon for a given rung, ready to carry. `raceWeaponFor` clamps to
+     the last entry in the ladder, so the top rung keeps whatever gun rung
+     10 carries rather than going to "no gun at all" -- there never was a
+     separate unarmed/knife-only slot to go to. A comment here and the HUD
+     text both used to claim the final rung was a bare bayonet; neither was
+     ever true, which is what prompted this note. */
   const raceTop = () => RACE_RUNGS - 1;
   function raceWeaponFor(rung) {
     const id = raceLadder[Math.min(rung, raceLadder.length - 1)];
@@ -7676,10 +8083,14 @@ const Game = (() => {
      promotion a punishment. */
   function setRung(a, rung) {
     a.rung = clamp(rung, 0, raceTop());
-    /* The last rung is the knife. They keep the final gun in hand -- taking
-       every weapon off somebody and asking them to charge four squads with a
-       bayonet is a punishment, not a finale -- but the kill that ends the
-       match has to come off the blade, which is what `raceKnife` gates. */
+    /* The last rung: they keep their gun in hand, and the kill that ends the
+       match can come from it exactly as well as from the blade -- nothing
+       disables firing once this flag is set (see raceAdvance, which checks
+       only "was the killer already at the top rung", never the weapon).
+       `raceKnife` is the HUD's cue that this is the finishing rung, not a
+       melee-only restriction; the old comment here described a restriction
+       that was never actually wired in, and the HUD message used to promise
+       it too (see the 'FINAL RUNG' text in raceAdvance). */
     a.raceKnife = a.rung >= raceTop();
     /* No slots in this mode. The ladder is the only thing that decides what
        you hold, and a second gun off your loadout would let you sidestep the
@@ -7748,7 +8159,7 @@ const Game = (() => {
     if (killer.isPlayer) {
       SFX.reward();
       hudMsg(killer.rung >= raceTop()
-        ? 'FINAL RUNG - one melee kill to win'
+        ? 'FINAL RUNG - one more kill to win'
         : tookLeader
           ? 'LEADER DOWN - two rungs to ' + (killer.rung + 1) + '/' + RACE_RUNGS
           : 'Rung ' + (killer.rung + 1) + '/' + RACE_RUNGS + ' - ' + killer.weapon.name);
@@ -8050,7 +8461,12 @@ const Game = (() => {
       const y = clamp(gy + Math.sin(ang) * r, 240, MAP_H - 240);
       if (terrain && !Terrain.isSpawnable(terrain, x, y)) continue;
       if (insideAnyBuilding(x, y, 30)) continue;
-      const kind = Math.random() < 0.82 ? 'tree' : 'rock';
+      // Same mismatch placeProps had: this band always planted 'tree' no
+      // matter the biome, so a mission rolled onto the Jungle Coast still
+      // had oak in its outer ring instead of the palm everything else there
+      // uses.
+      const treeKind = (terrain.biome && terrain.biome.tree) || 'tree';
+      const kind = Math.random() < 0.82 ? treeKind : 'rock';
       const pr = Structures.prop(kind, x, y,
         (Sprites.META[kind] || { r: 23 }).r * 2, 0.85 + Math.random() * 0.4);
       if (genHits(pr, 20)) continue;
@@ -8563,6 +8979,31 @@ const Game = (() => {
       const m = Math.hypot(dx, dy);
       // "standing still" powers the ghillie suit
       player.stillT = m > 0 ? 0 : player.stillT + dt;
+      /* Crouch and the slide it launches from a run. Offline only, for the
+         same reason channelling and a raised gadget are offline-only just
+         above — the room has never been told about either and would only
+         fight the prediction. A slide needs real speed to launch from, so
+         crouching from a standstill just crouches; there is no separate
+         sprint key in this game, movement is already always at full pace,
+         so "crouch while sprinting" is just "crouch while moving". */
+      if (!online) {
+        /* 40, not some higher "sprinting" number: movement here has no
+           ramp-up, a key press is full speed on the very next frame (see
+           the instant assignment to player.vx/vy below), and the slowest
+           a loadout can move is weapons.js's own floor of 120 before any
+           class or armour penalty even applies. A measured 140 threshold
+           sat ABOVE a default Rifleman's actual top speed of ~125 — the
+           slide could not trigger for the single most common loadout in
+           the game, caught by actually logging real speeds rather than
+           guessing at a "fast" number. 40 only has to clear "stationary". */
+        if (input.crouch && !player.crouchHeld && m > 0 && !player.downed
+          && Math.hypot(player.vx || 0, player.vy || 0) > 40) {
+          player.slideT = SLIDE_TIME;
+        }
+        if (player.slideT > 0) player.slideT = Math.max(0, player.slideT - dt);
+      }
+      player.crouchHeld = !!input.crouch;
+      player.crouched = !!input.crouch && !player.downed;
       if (m > 0) {
         let base;
         if (online) {
@@ -8586,6 +9027,13 @@ const Game = (() => {
           if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
           if (tool.shield && input.ads) base *= tool.slow;
           base *= (player.wireSlow || 1);
+          /* A real tradeoff, not a toggle with no cost: slower, and a
+             smaller target (see drawTrooperBody's own a.crouched check).
+             A slide spends your run speed on a burst that decays into the
+             ordinary crouch-walk pace rather than stopping dead, which is
+             what makes it read as momentum rather than a canned animation. */
+          if (player.slideT > 0) base *= 0.55 + 0.45 * (player.slideT / SLIDE_TIME);
+          else if (player.crouched) base *= CROUCH_SPEED_MULT;
         }
         // terrain applies either way: the room is handed the same lookup, so
         // both sides slow down in the same river
@@ -8793,6 +9241,15 @@ const Game = (() => {
         }
         if (dead) break;
 
+        // a near miss — see addWhiz. Once per bullet: a round flying
+        // parallel to you could otherwise stay in range for several hops.
+        if (!b.whizzed && player && player.alive && b.team !== player.team
+          && dist2(player.x, player.y, b.x, b.y) < WHIZ_RANGE2) {
+          b.whizzed = true;
+          addWhiz(Math.atan2(b.y - player.y, b.x - player.x));
+          SFX.whiz(audioRel(b.x, b.y));
+        }
+
         for (let k = deployables.length - 1; k >= 0; k--) {
           const dp = deployables[k];
           if (dp.type !== 'sentry' || dp.team === b.team) continue;
@@ -8821,6 +9278,7 @@ const Game = (() => {
     // tactical layer
     updateComms(dt);
     updateSquadIntel(dt);
+    updateFootsteps(dt);
     /* Online every one of these belongs to the room, and the snapshot rewrites
        our copy of them each tick (see netSyncEntities). Running them here as
        well would fly the same grenade twice, trigger our own private copy of a
@@ -9058,6 +9516,8 @@ const Game = (() => {
   const REVIVE_REACH = 74;       // and how close
   const REVIVE_HP = 0.35;        // what you come back on
   const CRAWL = 0.32;            // fraction of normal pace while down
+  const CROUCH_SPEED_MULT = 0.55;  // crouch-walk pace, a real tradeoff for a smaller profile
+  const SLIDE_TIME = 0.35;         // seconds a slide's speed takes to decay into the crouch-walk
 
   function knockOut(a, owner) {
     if (a.isVehicle || a.riding) return false;      // hulls brew up, they don't bleed
@@ -9087,6 +9547,9 @@ const Game = (() => {
   function bleedOut(a) {
     a.downed = false; a.reviveT = 0;
     a.hp = 0;
+    // a self-revive channel racing this exact clock shouldn't finish and
+    // stand a player back up a moment after they've already died
+    if (a === player && player.channel) player.channel = null;
     killAgent(a, a.lastAttacker || null, null);
   }
 
@@ -9154,12 +9617,6 @@ const Game = (() => {
   }
 
   function applyDamage(a, dmg, owner, type = 'normal', zone = null) {
-    /* Feedback, before any of the mitigation below can turn the number into a
-       zero: you still want to know you connected with a shot that a vest ate. */
-    if (owner && owner.isPlayer && a !== player && !a.isPlayer) {
-      addHitMarker(a.hp - dmg <= 0 ? 'kill' : (zone === 'head' ? 'head' : 'normal'));
-      SFX.click();
-    }
     if (a.isPlayer) {
       if (owner) addHurtArc(owner.x, owner.y);
       addShake(Math.min(7, 2 + dmg * 0.09));
@@ -9193,6 +9650,26 @@ const Game = (() => {
     // damage type vs target class, hit zone, armour, adrenaline
     const hit = Combat.resolve({ damage: dmg, type, zone }, a);
     dmg = hit.damage;
+    /* Feedback, now that mitigation has actually run. This used to fire the
+       instant a shot connected, before armour, adrenaline or a zone's
+       resistance had a say — so a round a vehicle's armour shrugged off
+       completely showed the exact same crosshair hit marker as one that
+       actually hurt. Moved here so a fully negated round (the dmg<=0
+       branch right below) gets no hit marker at all instead of a
+       misleading one, and so a vest or helmet that ate most of a hit gets
+       its own marker and sound rather than reading as a clean hit. */
+    if (owner && owner.isPlayer && a !== player && !a.isPlayer && dmg > 0) {
+      const kind = a.hp - dmg <= 0 ? 'kill'
+        : zone === 'head' ? 'head'
+        : hit.raw > dmg * 1.25 ? 'armor'
+        : 'normal';
+      addHitMarker(kind);
+      if (kind !== 'normal') addImpactPunch();
+      const rel = audioRel(a.x, a.y);
+      // 'kill' gets its own confirmation sound from killAgent() in a moment
+      if (kind === 'armor') SFX.armorHit(rel);
+      else if (kind !== 'kill') SFX.hit(rel, kind === 'head');
+    }
     if (dmg <= 0) {
       // a round that simply cannot hurt this target (rifle fire on a tank)
       spawnFx(a.x + rand(-a.r, a.r), a.y + rand(-a.r, a.r), '#cfd8ee', 4);
@@ -9534,7 +10011,15 @@ const Game = (() => {
         if (obj.owner !== t) {
           // somebody else's push does not carry over into yours
           if (obj.capTeam !== t) { obj.capTeam = t; obj.progress = 0; }
-          obj.progress += 45 * dt * counts[t];
+          /* Capped, not linear. Squads here run up to 8 — uncapped, a full
+             stack flipped a point in 100/(45*8) = 0.28s, faster than the
+             capture bar even has time to render before it's already over.
+             That guts the comment a few lines up: "the whole contest was
+             decided by who walked in last" is exactly what an 0.28s flip
+             is, just with more bodies doing it. A second attacker still
+             matters — capped, two bring it down to 1.11s instead of one's
+             2.22s — a fifth or an eighth don't compound it further. */
+          obj.progress += 45 * dt * Math.min(counts[t], 2);
           if (obj.progress >= 100) {
             obj.progress = 0; obj.capTeam = -1; obj.owner = t;
             // player capture credit
@@ -9570,21 +10055,57 @@ const Game = (() => {
         const maxScore = Math.max(...teamScores);
         return endMatch(teamScores[0] === maxScore);
       }
-    } else {
-      // elimination: count teams with living members
-      const alive = new Set();
-      for (const a of agents) if (a.alive) alive.add(a.team);
-      // also a team is "out" only if all its members are dead (lives=1, no respawn)
-      if (alive.size <= 1) {
-        return endMatch(alive.has(0));
-      }
+      return;
+    }
+    /* Arms Race and Mission each own their ending outright — a kill that
+       tops the ladder calls endMatch itself (see raceAdvance, called from
+       killAgent) and reaching exfil or running the clock out does the same
+       for a mission (see updateMission). Both used to also fall into the
+       elimination branch below on every single frame, because it was the
+       `else` to domination and neither of them is domination.
+
+       With only three players a side and a three-second respawn, "every
+       team but one currently has zero living bodies" is a coincidence that
+       happens mid-fight, not a win — so an Arms Race match in its first
+       minute could end on a headcount blip with nobody near the top rung.
+       Mission doesn't respawn, so the same check could fire the instant a
+       squad thinned out, well before anyone reached the asset, let alone
+       extraction — silently overruling updateMission's own "the clock is
+       the loss" rule with a headcount comparison that has nothing to do
+       with the objective. Mission is handled in full elsewhere, so there
+       is nothing for this function to add there; it must not run the
+       elimination fallback for it. */
+    if (mode === 'mission') return;
+    if (mode === 'armsrace') {
+      /* raceAdvance only ever ends the match on the kill that tops the
+         ladder — running the clock out with nobody there yet used to fall
+         through to the line above and get resolved by live headcount, which
+         is the elimination answer to a question this mode never asked. Not
+         replacing it with anything left Arms Race with no timeout ending at
+         all: the clock could reach zero and the match would just keep
+         running. The leader when time runs out is already a tracked,
+         HUD-visible fact (see raceLeader, read by the leader marker and the
+         bonus-rung rule) — reusing it here means the person who was shown
+         as winning the whole match is also who the clock credits. */
       if (timeLeft <= 0) {
-        // time out — most members alive wins
-        const counts = new Array(teamScores.length).fill(0);
-        agents.forEach(a => { if (a.alive) counts[a.team]++; });
-        const max = Math.max(...counts);
-        return endMatch(counts[0] === max && counts[0] > 0);
+        const lead = raceLeader();
+        return endMatch(!!(lead && lead.team === 0));
       }
+      return;
+    }
+    // elimination: count teams with living members
+    const alive = new Set();
+    for (const a of agents) if (a.alive) alive.add(a.team);
+    // also a team is "out" only if all its members are dead (lives=1, no respawn)
+    if (alive.size <= 1) {
+      return endMatch(alive.has(0));
+    }
+    if (timeLeft <= 0) {
+      // time out — most members alive wins
+      const counts = new Array(teamScores.length).fill(0);
+      agents.forEach(a => { if (a.alive) counts[a.team]++; });
+      const max = Math.max(...counts);
+      return endMatch(counts[0] === max && counts[0] > 0);
     }
   }
 
@@ -10334,11 +10855,8 @@ const Game = (() => {
            interface and the teleport all at once. */
         continue;
       }
-      // body
-      ctx.beginPath(); ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
-      ctx.fillStyle = teamInk(a.team); ctx.fill();
-      ctx.lineWidth = a.isPlayer ? 4 : 2;
-      ctx.strokeStyle = a.isPlayer ? '#fff' : 'rgba(0,0,0,0.4)'; ctx.stroke();
+      // body — a trooper, not a disc (see drawTrooperBody)
+      drawTrooperBody(a, teamInk(a.team));
       // player glow ring
       if (a.isPlayer) { ctx.beginPath(); ctx.arc(a.x, a.y, a.r + 6, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(53,224,255,0.6)'; ctx.lineWidth = 2; ctx.stroke(); }
       // health bar — kept proportional to the body it sits over
@@ -10479,6 +10997,21 @@ const Game = (() => {
     ctx.fillRect(-400, -400, MAP_W + 800, MAP_H + 800);
     ctx.fillStyle = C.ocean;
     ctx.fillRect(-200, -200, MAP_W + 400, MAP_H + 400);
+    /* Ripples over the open water -- see waterTexture, right above
+       grassTexture. Clipped to the viewport rather than filled across the
+       whole map the way the two flat colours above are: a solid fill is one
+       GPU rect regardless of size, but tiling a pattern over an 8600px
+       island every frame is real work, and almost none of it is ever on
+       screen. The grass tile already learned this lesson (see fillSeen()
+       below); the water fill just hadn't been taught it yet. */
+    const wt = texOff ? null : waterTexture(C);
+    if (wt) {
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = wt;
+      ctx.fillRect(viewX0, viewY0, viewX1 - viewX0, viewY1 - viewY0);
+      ctx.restore();
+    }
 
     /* The island itself, filled from the outlines Terrain solved out of the
        same functions the game queries — so the sand you can see is exactly the
@@ -10629,6 +11162,55 @@ const Game = (() => {
     grassTile = ctx.createPattern(off, 'repeat');
     grassTileFor = C.grass;
     return grassTile;
+  }
+
+  /* The ocean got none of this. Every other surface on the island — grass,
+     sand, even the chart's own coastline — was built up over this session
+     with real texture and shading; the water underneath all of it stayed
+     two flat fillRects, same colour from the beach to the edge of the
+     world. On a map that is at minimum a third open sea, and considerably
+     more on a bay-heavy coast, that is the single largest patch of totally
+     flat colour anyone looking at the game ever sees. Same technique as the
+     grass tile — pale ripple streaks, tiled once and repeated — because a
+     flat colour reads as a swatch and a few thousand short curved strokes
+     read as a surface with motion in it. */
+  let waterTile = null, waterTileFor = null;
+  function waterTexture(C) {
+    if (waterTile && waterTileFor === C.ocean) return waterTile;
+    const S = 160;
+    const off = document.createElement('canvas');
+    off.width = off.height = S;
+    const g = off.getContext('2d');
+    let seed = 0x5bd1e995;
+    const rnd = () => {
+      seed ^= seed << 13; seed >>>= 0;
+      seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
+      return seed / 4294967296;
+    };
+    // short, gently bowed streaks -- a ripple caught from directly above,
+    // not a wave seen from the side
+    for (let i = 0; i < 60; i++) {
+      const x = rnd() * S, y = rnd() * S, len = 10 + rnd() * 20, bow = (rnd() - 0.5) * 8;
+      g.strokeStyle = `rgba(255,255,255,${(0.07 + rnd() * 0.09).toFixed(2)})`;
+      g.lineWidth = 1 + rnd() * 1.1;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.quadraticCurveTo(x + len * 0.5, y + bow, x + len, y);
+      g.stroke();
+    }
+    // a few darker ones too, so it isn't glitter on a flat colour but real
+    // peaks and troughs
+    for (let i = 0; i < 24; i++) {
+      const x = rnd() * S, y = rnd() * S, len = 8 + rnd() * 16;
+      g.strokeStyle = hexA(C.oceanDeep, 0.16 + rnd() * 0.1);
+      g.lineWidth = 1 + rnd();
+      g.beginPath();
+      g.moveTo(x, y); g.lineTo(x + len, y + (rnd() - 0.5) * 4);
+      g.stroke();
+    }
+    waterTile = ctx.createPattern(off, 'repeat');
+    waterTileFor = C.ocean;
+    return waterTile;
   }
 
   /* ---------------- terrain & structures ---------------- */
@@ -12163,11 +12745,9 @@ const Game = (() => {
       const lift = Math.sin(d.bob) * 3;
       ctx.globalAlpha = d.life < 8 ? clamp(d.life / 8, 0.15, 1) : 1;
       drawUnitShadow(d.x, d.y + 6, 11);
-      // little pedestal so it reads as loot rather than scenery
-      ctx.beginPath(); ctx.arc(d.x, d.y + lift, 14, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(20,28,48,0.8)'; ctx.fill();
-      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(120,200,255,0.6)'; ctx.stroke();
-      ctx.font = '17px Outfit, Segoe UI, sans-serif'; ctx.fillText(it.icon, d.x, d.y + lift + 1);
+      // an actual pouch on the ground, not a coin over a dark disc
+      Sprites.draw(ctx, 'dropPouch', d.x, d.y + lift, 1, 0);
+      ctx.font = '17px Outfit, Segoe UI, sans-serif'; ctx.fillText(it.icon, d.x, d.y + lift - 2);
       if (d.n > 1) {
         ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#fff';
         ctx.fillText('×' + d.n, d.x + 13, d.y + lift - 10);
@@ -12233,6 +12813,10 @@ const Game = (() => {
   }
 
   /* ---------------- tactical rendering helpers ---------------- */
+  // which crate sprite (see sprites.js) draws for each real spawnable tier.
+  // 'furniture' isn't here: a searchable piece of furniture draws as the
+  // furniture it is (c.look), never as a crate sprite.
+  const CRATE_SPRITE = { regular: 'crate', silver: 'crateSilver', gold: 'crateGold', chest: 'lootChest', airdrop: 'crateAirdrop' };
   function drawCratesAndDeployables() {
     // crates
     for (const c of crates) {
@@ -12260,16 +12844,20 @@ const Game = (() => {
         ctx.globalAlpha = 1;
         continue;
       }
-      const half = c.tier === 'chest' ? 20 : 15;
-      roundRect(c.x - half, c.y - half, half * 2, half * 2, 6);
-      ctx.fillStyle = c.opened ? '#37456b' : hexA(st.color, 0.95); ctx.fill();
-      ctx.lineWidth = c.tier === 'chest' ? 3 : 2; ctx.strokeStyle = st.color; ctx.stroke();
-      if (!c.opened) {
-        ctx.font = (c.tier === 'chest' ? '23px' : '18px') + ' Outfit, Segoe UI, sans-serif';
+      /* Every tier used to draw as the same flat rounded square — a
+         tier-coloured fill with an emoji dropped on it, not a sprite — so
+         the thing that told you a gold crate from a regular one was a hue
+         and a glyph rather than its own shape. Each tier now has a sprite
+         of its own (see sprites.js) and reads like the rest of the world
+         does: a reinforced case for silver, a gilded strongbox for gold, a
+         strapped chest for the big one, a hazard-striped drop crate. */
+      const spriteKind = CRATE_SPRITE[c.tier] || 'crate';
+      const m = Sprites.META[spriteKind] || { r: 20 };
+      Sprites.draw(ctx, spriteKind, c.x, c.y, 1, c.rot || 0);
+      if (!c.opened && near2(player, c, 95)) {
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(st.icon, c.x, c.y + 1);
-        // interact prompt when player is close
-        if (near2(player, c, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillText('[E] ' + st.name, c.x, c.y - half - 11); }
+        ctx.fillText('[E] ' + st.name, c.x, c.y - m.r - 11);
       }
       ctx.globalAlpha = 1;
     }
@@ -12348,28 +12936,105 @@ const Game = (() => {
       ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
     }
   }
+  /* The body a unit actually has, not a flat disc with a stroke round it.
+     Everything else standing on the map earned a drawn shape before this —
+     crates, trees, loot, the vehicles below — while the thing every match
+     spends the whole time looking at, your own squad and everyone shooting
+     at them, stayed a circle with a team-coloured fill. Boots trail behind
+     the facing, a vest carries the team colour (still the one loudest cue
+     a player reads at a glance, same job the old disc did), and a helmet
+     sits forward, the same direction the weapon already points. The
+     highlight is drawn separately, in world space, undoing the body's own
+     rotation the way Sprites.lit() undoes a prop's — so every unit catches
+     the map's one sun regardless of which way it's facing. */
+  function drawTrooperBody(a, col) {
+    // a crouching body reads as a smaller, lower silhouette -- the actual
+    // hit radius (a.r, used everywhere combat and collision care about it)
+    // never changes, only how much of it this draw call bothers filling
+    const r = a.r * (a.crouched ? 0.82 : 1);
+    ctx.save();
+    ctx.translate(a.x, a.y); ctx.rotate(a.angle);
+    // the vest: wider than it is deep, so it reads as shoulders facing a
+    // direction instead of a dot. Still the one shape carrying team colour.
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.06, 0, r * 0.82, r * 0.72, 0, 0, Math.PI * 2);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.lineWidth = a.isPlayer ? 3.2 : 1.6;
+    ctx.strokeStyle = a.isPlayer ? '#fff' : 'rgba(0,0,0,0.42)'; ctx.stroke();
+    /* Boots, peeking out from under the back of the vest. These used to be
+       drawn first and sit entirely inside the vest's own footprint, so they
+       never showed at all — an invisible layer is worse than no layer,
+       because it was there in the code and on nobody's screen. Drawn on top
+       of the vest's rear edge instead, the way a coat hem actually shows
+       the shoes under it. */
+    ctx.fillStyle = 'rgba(18,20,26,0.9)';
+    ctx.beginPath(); ctx.ellipse(-r * 0.68, -r * 0.34, r * 0.24, r * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-r * 0.68, r * 0.34, r * 0.24, r * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+    // a chest strap — the one piece of rig detail that still reads at this scale
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = r * 0.14;
+    ctx.beginPath(); ctx.moveTo(-r * 0.5, -r * 0.5); ctx.lineTo(r * 0.3, r * 0.14); ctx.stroke();
+    // helmet, forward of the shoulders — a dark dome, not tinted by team,
+    // the way real gear doesn't match a unit patch either
+    ctx.beginPath(); ctx.arc(r * 0.46, 0, r * 0.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#23262e'; ctx.fill();
+    ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+    ctx.restore();
+
+    // the highlight: one sun for the whole map, the same LIGHT the cast
+    // shadows use, drawn un-rotated so it stays on the sun side regardless
+    // of which way the body itself is facing
+    ctx.save();
+    ctx.translate(a.x + LIGHT.x * r * 0.4, a.y + LIGHT.y * r * 0.4);
+    ctx.beginPath(); ctx.ellipse(0, 0, r * 0.46, r * 0.38, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fill();
+    ctx.restore();
+  }
+
   function drawVehicle(a) {
     const col = teamInk(a.team);
     const def = vehicleDef(a);
+    const isTank = a.vtype === 'tank';
+    const r = a.r;
     // hull points where it's driving, turret where it's aiming — so you can
     // read a vehicle's heading and its threat separately
     ctx.save();
     ctx.translate(a.x, a.y); ctx.rotate(a.hullAngle !== undefined ? a.hullAngle : a.angle);
-    roundRect(-a.r, -a.r * 0.8, a.r * 2, a.r * 1.6, 5);
-    ctx.fillStyle = a.vtype === 'tank' ? '#2c3a24' : '#243a2c'; ctx.fill();
+    /* Tracks or road wheels, under the hull. This is what actually told a
+       tank from a jeep before the fix — the icon did, which meant the hull
+       itself was the same rounded rectangle either way. */
+    if (isTank) {
+      ctx.fillStyle = '#20251b';
+      for (const sy of [-1, 1]) {
+        roundRect(-r * 1.04, sy * r * 0.8 - (sy < 0 ? r * 0.3 : 0), r * 2.08, r * 0.3, 3); ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 1.4;
+      for (let i = -r * 0.9; i < r; i += r * 0.3) {
+        for (const sy of [-1, 1]) {
+          const y0 = sy * r * 0.8 - (sy < 0 ? r * 0.3 : 0), y1 = y0 + r * 0.3;
+          ctx.beginPath(); ctx.moveTo(i, y0); ctx.lineTo(i, y1); ctx.stroke();
+        }
+      }
+    } else {
+      ctx.fillStyle = '#20251b';
+      for (const [sx, sy] of [[-0.82, -0.86], [0.78, -0.86], [-0.82, 0.86], [0.78, 0.86]]) {
+        ctx.beginPath(); ctx.arc(sx * r, sy * r * 0.8, r * 0.26, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    roundRect(-r, -r * 0.8, r * 2, r * 1.6, 5);
+    ctx.fillStyle = isTank ? '#2c3a24' : '#243a2c'; ctx.fill();
     ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
+    // a windshield or engine deck panel, catching the light
+    ctx.fillStyle = 'rgba(255,255,255,0.09)';
+    roundRect(-r * 0.84, -r * 0.6, r * (isTank ? 0.62 : 0.96), r * 1.2, 3); ctx.fill();
     ctx.restore();
     // turret
     ctx.save();
     ctx.translate(a.x, a.y); ctx.rotate(a.angle);
     ctx.fillStyle = '#e9f0ff'; ctx.fillRect(0, -3, a.r + 16, 6);
     ctx.beginPath(); ctx.arc(0, 0, a.r * 0.42, 0, Math.PI * 2);
-    ctx.fillStyle = a.vtype === 'tank' ? '#3a4a30' : '#2f4a38'; ctx.fill();
+    ctx.fillStyle = isTank ? '#3a4a30' : '#2f4a38'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke();
     ctx.restore();
-    // icon + hp
-    ctx.font = '16px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(def.icon, a.x, a.y);
     const hpw = 46;
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 14, hpw, 5);
     ctx.fillStyle = col; ctx.fillRect(a.x - hpw / 2, a.y - a.r - 14, hpw * (a.hp / a.maxHp), 5);
@@ -12410,6 +13075,7 @@ const Game = (() => {
     }
     drawNetStatus();
     drawChannelRing(p);
+    drawSquadPanel();
     drawWeather(Math.min(0.05, lastDt || 0.016));
     drawFeel();
     drawSpectateUi();
@@ -12626,6 +13292,48 @@ const Game = (() => {
     ctx.restore();
   }
 
+  /* A persistent read on your own squad — HP, and whether they're still
+     standing — always on screen rather than only as an unlabelled dot
+     moving around the minimap. Apex Legends keeps exactly this in a
+     corner permanently; here a squadmate's condition was a position and
+     nothing else, which tells you where to go but not whether there's any
+     point going. Sits well clear of the kill feed above it and the status
+     stack/HP bar below — see HUD.statusLeft and drawKillFeed's own y. */
+  function drawSquadPanel() {
+    if (!player || !player.alive) return;
+    const mates = agents.filter(a => a.team === player.team && a !== player && !a.isVehicle);
+    if (!mates.length) return;
+    const x = 16, w = 150, rh = 30, gap = 6;
+    let y = 250;
+    ctx.save();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    for (const m of mates) {
+      ctx.fillStyle = 'rgba(8,13,26,0.72)';
+      roundRect(x, y, w, rh, 7); ctx.fill();
+      ctx.strokeStyle = hexA(teamInk(m.team), 0.4); ctx.lineWidth = 1; ctx.stroke();
+      ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
+      ctx.fillStyle = m.alive ? '#e9f0ff' : 'rgba(200,210,230,0.45)';
+      const nm = nameOf(m, 'Squadmate');
+      ctx.fillText(nm.length > 10 ? nm.slice(0, 9) + '…' : nm, x + 9, y + 10);
+      const bw = w - 18;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(x + 9, y + 19, bw, 5);
+      if (m.alive) {
+        const f = clamp(m.hp / m.maxHp, 0, 1);
+        ctx.fillStyle = m.downed ? '#ffcf4a' : f > 0.35 ? '#4be08a' : '#ff4b5c';
+        ctx.fillRect(x + 9, y + 19, bw * f, 5);
+        if (m.downed) {
+          ctx.font = 'bold 9px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#ffcf4a';
+          ctx.textAlign = 'right'; ctx.fillText('DOWN', x + w - 9, y + 10); ctx.textAlign = 'left';
+        }
+      } else {
+        ctx.font = '9px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = 'rgba(200,210,230,0.4)';
+        ctx.textAlign = 'right'; ctx.fillText('DEAD', x + w - 9, y + 10); ctx.textAlign = 'left';
+      }
+      y += rh + gap;
+    }
+    ctx.restore();
+  }
+
   function drawStatusStack(p) {
     const adr = Combat.adrenaline(p.adrenaline);
     const x = HUD.statusLeft;
@@ -12775,6 +13483,18 @@ const Game = (() => {
     if (hitMarkers.length > 8) hitMarkers.shift();
   }
 
+  /* 1b. IMPACT PUNCH — a sharp, very short flash on a hit that actually
+     mattered (a kill, a headshot, armour breaking), the "weight behind a
+     landed shot" every action game gives a hit beyond the chevrons on the
+     crosshair. The honest version of hit-stop for an online game: a true
+     freeze-frame would have to pause the simulation step, and this game's
+     simulation is host-authoritative (`online.transport.send`) — stalling
+     draw without stalling sim just desyncs what you see from what's real.
+     This gets the same punch across in pure overlay, nothing upstream of
+     render() ever sees it. */
+  let impactPunch = { t: 0, life: 0 };
+  function addImpactPunch() { impactPunch = { t: 0, life: 0.11 }; }
+
   /* 2. DAMAGE DIRECTION — who is shooting me, and from where? */
   let hurtArcs = [];                        // { ang, t, life }
   function addHurtArc(fromX, fromY) {
@@ -12788,6 +13508,18 @@ const Game = (() => {
     if (hurtArcs.length > 6) hurtArcs.shift();
   }
   const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+
+  /* 2b. BULLET WHIZ — an enemy round passed close enough to be scary without
+     landing. Every modern shooter gives you this on a miss, not just a hit:
+     "someone is shooting AT me" is core tactical information, and before
+     this the only feedback a near-miss gave was none at all — the round
+     just vanished off-screen. Distinct from the hurt arcs above (those mean
+     you were actually hit) so the two don't get confused for each other. */
+  let whizzes = [];                         // { ang, t, life }
+  function addWhiz(ang) {
+    whizzes.push({ ang, t: 0, life: 0.35 });
+    if (whizzes.length > 6) whizzes.shift();
+  }
 
   /* 3. SCREEN SHAKE — weight behind the gun and the explosions */
   let shake = { mag: 0, t: 0 };
@@ -12808,6 +13540,7 @@ const Game = (() => {
   }
   let streakBanner = null;
 
+  let heartbeatCd = 0;
   function updateFeel(dt) {
     for (let i = hitMarkers.length - 1; i >= 0; i--) {
       hitMarkers[i].t += dt;
@@ -12817,8 +13550,28 @@ const Game = (() => {
       hurtArcs[i].t += dt;
       if (hurtArcs[i].t >= hurtArcs[i].life) hurtArcs.splice(i, 1);
     }
+    for (let i = whizzes.length - 1; i >= 0; i--) {
+      whizzes[i].t += dt;
+      if (whizzes[i].t >= whizzes[i].life) whizzes.splice(i, 1);
+    }
+    if (impactPunch.t < impactPunch.life) impactPunch.t += dt;
     if (shake.mag > 0) { shake.t += dt; shake.mag = Math.max(0, shake.mag - dt * 26); }
     if (streakBanner) { streakBanner.t -= dt; if (streakBanner.t <= 0) streakBanner = null; }
+
+    /* 5. HEARTBEAT — the audio half of the vignette below (section 3 in
+       drawFeel): the screen already closes in under 45% HP, and had
+       nothing to go with it. Rate climbs as HP drops, and stops dead the
+       instant you start healing — it's meant to read as "get out of this
+       fight", not to keep punishing you for the fact that you're hurt. */
+    if (player && player.alive && !player.channel && player.hp / player.maxHp < 0.45) {
+      heartbeatCd -= dt;
+      if (heartbeatCd <= 0) {
+        SFX.heartbeat();
+        heartbeatCd = 0.35 + (player.hp / player.maxHp / 0.45) * 0.65;
+      }
+    } else {
+      heartbeatCd = 0;
+    }
   }
 
   /* Drawn in screen space, over everything. */
@@ -12990,7 +13743,8 @@ const Game = (() => {
       const k = 1 - h.t / h.life;
       const gap = 7 + (1 - k) * 5, len = 7;
       ctx.globalAlpha = Math.min(1, k * 1.6);
-      ctx.strokeStyle = h.kind === 'kill' ? '#ff5470' : h.kind === 'head' ? '#ffcf4a' : '#ffffff';
+      ctx.strokeStyle = h.kind === 'kill' ? '#ff5470' : h.kind === 'head' ? '#ffcf4a'
+        : h.kind === 'armor' ? '#9fd8ff' : '#ffffff';
       ctx.lineWidth = h.kind === 'normal' ? 2 : 3; ctx.lineCap = 'round';
       for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
         ctx.beginPath();
@@ -12998,6 +13752,17 @@ const Game = (() => {
         ctx.lineTo(cx + sx * (gap + len), cy + sy * (gap + len));
         ctx.stroke();
       }
+      ctx.globalAlpha = 1;
+    }
+
+    // 1b. the impact punch — a hard ring collapsing inward, there and gone,
+    // on the hits that actually mattered. Separate from the chevrons above
+    // so it reads as weight rather than more information.
+    if (impactPunch.t < impactPunch.life) {
+      const k = 1 - impactPunch.t / impactPunch.life;
+      ctx.globalAlpha = k * 0.8;
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cx, cy, 30 * k, 0, Math.PI * 2); ctx.stroke();
       ctx.globalAlpha = 1;
     }
 
@@ -13014,6 +13779,19 @@ const Game = (() => {
       ctx.arc(cx, cy, r1, h.ang - 0.34, h.ang + 0.34);
       ctx.arc(cx, cy, r0, h.ang + 0.34, h.ang - 0.34, true);
       ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // 2c. near misses — a thin bright snap, not the red wedge a real hit gets
+    for (const w of whizzes) {
+      const k = 1 - w.t / w.life;
+      ctx.globalAlpha = k * 0.8;
+      ctx.strokeStyle = '#eaf2ff'; ctx.lineWidth = 1.6;
+      const r0 = Math.min(W, H) * 0.16, r1 = r0 + 60;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(w.ang) * r0, cy + Math.sin(w.ang) * r0);
+      ctx.lineTo(cx + Math.cos(w.ang) * r1, cy + Math.sin(w.ang) * r1);
+      ctx.stroke();
       ctx.globalAlpha = 1;
     }
 
@@ -13646,7 +14424,7 @@ const Game = (() => {
     ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
     ctx.fillStyle = player.raceKnife ? '#7ff2c1' : '#e9f0ff';
     ctx.fillText(player.raceKnife
-      ? 'FINAL RUNG - ' + raceMelee() + ' kill to win'
+      ? 'FINAL RUNG - one more kill to win'
       : 'RUNG ' + ((player.rung || 0) + 1) + '/' + RACE_RUNGS + '  ·  ' + player.weapon.name,
       W / 2, y - 12);
 
@@ -13738,7 +14516,9 @@ const Game = (() => {
        where walls were and nothing whatever about where *you* were. */
     drawChartBase(ox, oy, size, size, true);
     drawChartGrid(ox, oy, size, size);
+    drawChartCompass(ox, oy, size);
     drawZoneOnChart(ox, oy, sx, sy);
+    drawChartPOIs(ox, oy, sx, sy);
     drawChartLandmarks(ox, oy, sx, sy);
 
     // objectives, in the modes that have them
@@ -13916,6 +14696,45 @@ const Game = (() => {
     ctx.restore();
   }
 
+  /* Points of interest: everywhere else a battle-royale map earns the name --
+     a prison, a bank, a radio tower -- callable out by name the way the three
+     objective landmarks already are. Before this, a map had exactly three
+     named places on it and thirty-odd unlabelled grey blocks, so "drop at the
+     bank" or "loop round the museum" was never a sentence anyone could say;
+     everything that wasn't an objective read as the same undifferentiated
+     building over and over.
+
+     Deliberately a short, curated list rather than every blueprint: the chart
+     stays readable by naming only what is actually distinctive (one-off
+     institutions, unique structures, the handful of required buildings) and
+     leaving the filler -- houses, farms, checkpoints, warehouses -- unnamed.
+     Naming all forty-odd building types would be the same "more detail makes
+     a map worse to navigate" mistake the chart's own design already rejects
+     for interiors and scenery. */
+  const POI_BUILDINGS = new Set([
+    'mansion', 'resort', 'airfield', 'harbor', 'museum', 'bunker-complex',
+    'hangar', 'workshop', 'gas-station',
+    'hospital', 'prison', 'bank', 'bridge-fort', 'fortress', 'arena',
+    'radio-tower', 'mine', 'vault', 'subway', 'command-center', 'church',
+    'library', 'watermill', 'barracks', 'train-station', 'power-plant',
+    'dock', 'market',
+  ]);
+  function drawChartPOIs(ox, oy, sx, sy) {
+    if (!buildings.length) return;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '8px Azeret Mono, ui-monospace, monospace';
+    ctx.fillStyle = 'rgba(196,208,230,0.75)';
+    for (const b of buildings) {
+      // the three objectives already have their own, brighter label above
+      if (b.landmark || !POI_BUILDINGS.has(b.name)) continue;
+      const label = chartLabel(b.name);
+      if (!label) continue;
+      ctx.fillText(label, ox + (b.x + b.w / 2) * sx, oy + (b.y + b.h) * sy + 8);
+    }
+    ctx.restore();
+  }
+
   /* ================= THE CHART =================
      What the minimap and the full map are drawn from, and the one place the
      island's shape is turned into a picture.
@@ -14055,8 +14874,20 @@ const Game = (() => {
        `buildings` holds one record per placement with the bounds already
        computed, which is the thing a chart wants: a block you can recognise
        by its outline and its position, with nothing inside it. */
-    ctx.fillStyle = big ? 'rgba(226,236,250,0.88)' : 'rgba(218,230,250,0.72)';
+    /* Colour carries ownership and importance now, not just a block. Every
+       building used to fill the same pale grey regardless of what it was —
+       your own team's base looked exactly like the shed next to it, and a
+       landmark worth fighting over was only distinguishable once its label
+       (drawn later, full map only) happened to be legible. A tactical chart
+       earns the name by using colour for the one or two things that matter
+       most at a glance: whose base is whose, and which blocks are worth a
+       detour. */
+    const NEUTRAL = big ? 'rgba(226,236,250,0.88)' : 'rgba(218,230,250,0.72)';
+    const LANDMARK_TINT = big ? 'rgba(255,207,74,0.55)' : 'rgba(255,207,74,0.46)';
     for (const b of buildings) {
+      ctx.fillStyle = b.teamBase !== undefined ? hexA(TEAM_COLORS[b.teamBase] || '#8ea0c9', big ? 0.6 : 0.52)
+        : b.landmark ? LANDMARK_TINT
+        : NEUTRAL;
       ctx.fillRect(ox + b.x * sx, oy + b.y * sy,
         Math.max(big ? 2 : 1.5, b.w * sx), Math.max(big ? 2 : 1.5, b.h * sy));
     }
@@ -14086,6 +14917,37 @@ const Game = (() => {
       ctx.fillText(String.fromCharCode(65 + i), ox + i * cw + 3, oy + 3);
       ctx.fillText(String(i + 1), ox + 3, oy + i * ch + 3);
     }
+    ctx.restore();
+  }
+
+  /* A small compass rose. The grid already borrows the rest of a military
+     chart's language — letters and numbers for a position, a scale bar for
+     distance — and every chart that does carries a rose for the same
+     reason: the picture only means something once you know which way it's
+     pointing. The map never rotates with the player, so this is a fixed
+     needle, not a dial that has to be read. Full map only, in the one
+     corner the grid letters and the scale bar both leave alone. */
+  function drawChartCompass(ox, oy, size) {
+    const cx = ox + size - 28, cy = oy + 28;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, 17, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(8,14,26,0.62)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(214,226,246,0.45)'; ctx.lineWidth = 1; ctx.stroke();
+    // north half, pointing up and coloured like the zone edge -- the one
+    // other place on this chart that already means "this way"
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 4); ctx.lineTo(cx + 3.5, cy + 2.5); ctx.lineTo(cx, cy); ctx.lineTo(cx - 3.5, cy + 2.5);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,120,80,0.9)'; ctx.fill();
+    // south half, plain, so the needle reads as a needle rather than a kite
+    ctx.beginPath();
+    ctx.moveTo(cx, cy); ctx.lineTo(cx + 3.5, cy + 2.5); ctx.lineTo(cx, cy + 9); ctx.lineTo(cx - 3.5, cy + 2.5);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(214,226,246,0.55)'; ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = 'bold 9px Azeret Mono, ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('N', cx, cy - 10);
     ctx.restore();
   }
 
@@ -14257,6 +15119,17 @@ const Game = (() => {
       }
       ctx.beginPath(); ctx.arc(ox + a.x * sx, oy + a.y * sy, a.isPlayer ? 3 : 2, 0, Math.PI * 2);
       ctx.fillStyle = a.isPlayer ? '#fff' : teamInk(a.team); ctx.fill();
+    }
+    /* Which way you're facing — the full map has carried this for a while
+       (see drawFullMap's own heading line); the minimap's dot never grew
+       one, so it told you where you were but not which way you'd turn to
+       use that information. */
+    if (player.alive) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(ox + player.x * sx, oy + player.y * sy);
+      ctx.lineTo(ox + player.x * sx + Math.cos(player.angle) * 7, oy + player.y * sy + Math.sin(player.angle) * 7);
+      ctx.stroke();
     }
     if (reveal) {
       ctx.beginPath();
@@ -15494,6 +16367,35 @@ const Game = (() => {
       buildNav();
       return { ms: performance.now() - t0, mapW: MAP_W, mapH: MAP_H, mode };
     },
+    // move the player to an exact spot, for scenarios a real walk would be
+    // slow or unreliable to set up (standing between a door and a crate, say)
+    teleport(x, y) {
+      if (!player) return null;
+      player.x = x; player.y = y;
+      return { x: player.x, y: player.y };
+    },
+    vehiclesList: () => agents.filter(a => a.isVehicle).map(a => ({ x: Math.round(a.x), y: Math.round(a.y), vtype: a.vtype, team: a.team, angle: +a.angle.toFixed(2) })),
+    rawInput: () => ({ up: input.up, down: input.down, left: input.left, right: input.right, crouch: input.crouch, ads: input.ads }),
+    // knock the player down without a real fight, so a self-revive scenario
+    // doesn't need a bot to actually land the hit first
+    knockDownPlayer() {
+      if (!player) return null;
+      knockOut(player, null);
+      return { downed: player.downed, hp: player.hp, bleed: player.bleed };
+    },
+    giveItem(cat, id, n) {
+      if (!player) return null;
+      addItem(cat, id, n == null ? 1 : n);
+      const slot = player.inv[cat];
+      return slot ? { id: slot.id, n: slot.n } : null;
+    },
+    doorsNear(x, y, range) {
+      const r2 = (range || 400) * (range || 400);
+      return structureRects()
+        .filter(s => Structures.isDoor(s) && !(s.secret && !s.found))
+        .map(s => { const c = doorCentre(s); return { x: c.x, y: c.y, open: !!s.open }; })
+        .filter(d => dist2(x, y, d.x, d.y) < r2);
+    },
     state() {
       if (!player) return null;
       const kit = player.inv && Items.CONSUMABLES[player.cls.consumable];
@@ -15507,6 +16409,9 @@ const Game = (() => {
         ammoName: player.weapon.ammoName || null, fuze: player.weapon.fuze || 0,
         antiTank: !!player.weapon.antiTank, mag: player.weapon.mag,
         kit: slot ? slot.n : 0,
+        x: player.x, y: player.y, vx: player.vx, vy: player.vy, downed: !!player.downed, bleed: player.bleed,
+        channel: player.channel ? { label: player.channel.label, t: player.channel.t } : null,
+        crouched: !!player.crouched, sliding: (player.slideT || 0) > 0,
       };
     },
     set(patch) {
@@ -15518,6 +16423,19 @@ const Game = (() => {
       if (patch.x !== undefined || patch.y !== undefined) resolveObstacles(player);
     },
     hit(dmg, type) { if (player) applyDamage(player, dmg, null, type || 'normal', 'body'); },
+    crateDecorGap(buildingName) {
+      const near = (x, y, r) => decor.some(d => dist2(d.x, d.y, x, y) < r * r);
+      const list = crates.filter(c => !c.supply && c.tier !== 'airdrop'
+        && (!buildingName || buildings.some(b => b.name === buildingName
+          && c.x > b.x && c.x < b.x + b.w && c.y > b.y && c.y < b.y + b.h)));
+      const withDecor = list.filter(c => near(c.x, c.y, 90));
+      return { total: list.length, nearDecor: withDecor.length };
+    },
+    obstaclesNear(x, y, r) {
+      const rr = r || 300;
+      return obstacles.filter(o => dist2(o.x + o.w / 2, o.y + o.h / 2, x, y) < rr * rr)
+        .map(o => ({ type: o.type, x: Math.round(o.x), y: Math.round(o.y), w: Math.round(o.w), h: Math.round(o.h), isProp: !!o.isProp }));
+    },
     // swap the loaded specialized ammo without going back to the gunsmith
     setAmmo(name) {
       if (!player) return;
@@ -15531,6 +16449,16 @@ const Game = (() => {
       return fired;
     },
     bullets: () => bullets.length,
+    crateList: () => crates.map(c => ({ x: Math.round(c.x), y: Math.round(c.y), tier: c.tier, rot: +((c.rot || 0).toFixed(2)), look: c.look || null, room: c.room || null, opened: !!c.opened })),
+    grenadesThrown: () => grenades.filter(g => !g.owner || !g.owner.isPlayer).length,
+    botStats: () => {
+      const bots = agents.filter(a => !a.isPlayer && !a.isVehicle && a.alive);
+      return {
+        bots: bots.length,
+        healing: bots.filter(a => (a.healingT || 0) > 0).length,
+        grenadeCd: bots.filter(a => (a.grenadeCd || 0) > 0).length,
+      };
+    },
     // rebuild the player from the current perk — Beefy and Bullet Strap are
     // applied when an agent is made, not every frame
     respawnFresh() {
@@ -15543,6 +16471,7 @@ const Game = (() => {
     },
     buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h,
       teamBase: b.teamBase, landmark: !!b.landmark })),
+    districts: () => ({ bearing: districtBearing, sector: districtSector }),
     // a handful of real points along each road, for anything that wants to
     // look at or stand on one without duplicating the polyline math
     roadSamples() {
@@ -15953,6 +16882,13 @@ const Game = (() => {
       mark: supplyMark(),
     }),
     forceSupplyDrop() { supplyTimer = 0; supplyCount = 0; updateSupplyDrop(0.016); return !!supplyDrop; },
+    // force the clock to zero and run the real win-condition check, so a
+    // mode's timeout resolution can be tested without waiting out a match
+    forceTimeout() {
+      timeLeft = 0;
+      checkWinConditions();
+      return { running, timeLeft };
+    },
     landSupplyNow() { if (supplyDrop) supplyDrop.t = 0; updateSupplyDrop(0.016); return crates.filter(c => c.supply).length; },
     /* Does A* find a route between two arbitrary points? Used to check whether
        long-range pathing fails on distance (the node budget) or on geometry. */
@@ -15979,6 +16915,7 @@ const Game = (() => {
         }
         return {
           kind: v.vtype, driven: !!v.driver, neutral: !!v.neutral,
+          x: Math.round(v.x), y: Math.round(v.y),
           nearestBot: Math.round(nd),
           onWay: near ? rideIsOnTheWay(near, v) : null,
           inBuilding: insideB ? insideB.name : null,

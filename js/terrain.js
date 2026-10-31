@@ -283,7 +283,28 @@ const Terrain = (() => {
   };
 
   const BIOME_IDS = Object.keys(BIOMES);
-  const biomeFor = (seed) => BIOMES[BIOME_IDS[Math.abs((seed || 0) >>> 0) % BIOME_IDS.length]];
+  BIOME_IDS.forEach(id => { BIOMES[id].id = id; });
+  /* Every mode used to roll its climate purely off the map seed, which meant
+     a Domination match and an Arms Race match on the same seed looked
+     identical -- mode had no visual signature of its own. Each mode now
+     leans toward a climate that matches what it's about (a contested
+     temperate island for base-vs-base control, a hostile arid flat for a
+     mode that's about a closing storm, the volcano for the mode that's
+     about escalating violence, jungle cover for a squad trying not to be
+     seen) without making the lean absolute -- it's still the same seed
+     deciding, so a shared seed still produces a shared map. */
+  const MODE_BIOME = {
+    domination: 'temperate',
+    elimination: 'arid',
+    armsrace: 'volcanic',
+    mission: 'tropic',
+  };
+  const biomeFor = (seed, mode) => {
+    const s = Math.abs((seed || 0) >>> 0);
+    const signature = mode && MODE_BIOME[mode];
+    if (signature && (s % 20) < 13) return BIOMES[signature];   // ~65% of the time
+    return BIOMES[BIOME_IDS[s % BIOME_IDS.length]];
+  };
   /* A different shuffle of the seed than the biome uses, so the same island
      does not always get the same sky. */
   function weatherFor(seed, biomeId) {
@@ -292,18 +313,18 @@ const Terrain = (() => {
     return Object.assign({ id: pool[n % pool.length] }, WEATHER[pool[n % pool.length]]);
   }
 
-  function generate(w, h, seed) {
+  function generate(w, h, seed, mode) {
     const rand = rng(seed || 1337);
-    /* The climate this island has. Chosen from the seed, so every client
-       generating the same map agrees on it without anything crossing the
-       wire. */
-    const biome = biomeFor(seed || 1337);
+    /* The climate this island has. Chosen from the seed (and leaned by mode,
+       see MODE_BIOME above), so every client generating the same map for the
+       same match agrees on it without anything crossing the wire. */
+    const biome = biomeFor(seed || 1337, mode);
     const t = {
       w, h, seed: seed || 1337,
       /* Daylight applied once, here, so every drawing call downstream reads
          an already-lifted palette and nothing has to know about it. */
       biome, colors: brightenAll(Object.assign({}, COLORS, biome.colors), LIFT),
-      weather: weatherFor(seed || 1337, BIOME_IDS[Math.abs((seed || 1337) >>> 0) % BIOME_IDS.length]),
+      weather: weatherFor(seed || 1337, biome.id),
       oceanInset: OCEAN_INSET,
       beachInset: BEACH_INSET,
       rivers: [], bridges: [], roads: [], patches: [],

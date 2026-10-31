@@ -255,15 +255,24 @@ const Screens = (() => {
     countUp(document.getElementById('stat-wins'), p.wins);
     countUp(document.getElementById('stat-matches'), p.matches);
     countUp(document.getElementById('stat-kills'), p.kills);
-    // multiplayer status — tells you plainly whether you're online or on bots
+    /* Multiplayer status — tells you plainly whether you're online or on
+       bots. This used to claim "Connecting to {url} when you deploy",
+       which was never true: the Deploy button (see Matchmaking.startQueue)
+       is a local prototype queue that always ends in Game.start(mode)
+       against bots — it never touches a socket. The only real connection
+       is Party's "Deploy Squad" (see party.js / Matchmaking.startNetworked),
+       which only runs once a party is created or joined. A green chip that
+       promised the big Deploy button would try for real players, when it
+       never does, is the kind of thing a player notices was a lie the
+       first time they actually get matched against bots anyway. */
     const chip = document.getElementById('net-chip');
     if (chip) {
       const url = Net.serverUrl();
-      chip.textContent = url ? `🟢 Multiplayer · ${shortHost(url)}` : '⚫ Offline vs bots';
+      chip.textContent = url ? `🟢 Multiplayer ready · ${shortHost(url)}` : '⚫ Offline vs bots';
       chip.className = 'net-chip' + (url ? ' is-online' : '');
       chip.title = url
-        ? `Connecting to ${url} when you deploy. Falls back to bots if it's unreachable.`
-        : 'No multiplayer server configured. See server/README.md, or add ?server=wss://your-host to the URL.';
+        ? `A server is configured at ${url}. Create or join a Party below to play with real people — Deploy on its own always starts a local match against bots.`
+        : 'No multiplayer server configured, so Deploy and Party both play against bots. See server/README.md, or add ?server=wss://your-host to the URL.';
     }
     /* The bar follows where you are in the onboarding: training first, then
        the guided match, then it is just another thing on the menu. */

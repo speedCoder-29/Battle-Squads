@@ -22,6 +22,14 @@ const Controls = (() => {
     { id: 'left',       name: 'Move left',      group: 'Movement', keys: ['KeyA', 'ArrowLeft'] },
     { id: 'right',      name: 'Move right',     group: 'Movement', keys: ['KeyD', 'ArrowRight'] },
     { id: 'dash',       name: 'Dash',           group: 'Movement', keys: ['ShiftLeft', 'ShiftRight'] },
+    /* Not Ctrl, for all its genre precedent: Ctrl+W/A/S/D are a browser's
+       own shortcuts (close tab, select all, save page, bookmark) and
+       Chrome/Edge/Firefox do not let page JS override Ctrl+W specifically
+       — preventDefault() cannot stop it. Binding crouch there means the
+       combination every player would reach for first, forward plus
+       crouch, closes their tab. CapsLock sits in the same reach off a
+       WASD left hand and the browser has no opinion about it at all. */
+    { id: 'crouch',     name: 'Crouch',         group: 'Movement', keys: ['CapsLock'] },
 
     { id: 'reload',     name: 'Reload',         group: 'Combat',   keys: ['KeyR'] },
     /* Two guns, two keys, and the scroll wheel cycles -- which is what every
@@ -54,7 +62,7 @@ const Controls = (() => {
 
   /* Actions the movement code polls every frame rather than acting on once.
      They are the ones where a key going *up* matters as much as going down. */
-  const HELD = new Set(['up', 'down', 'left', 'right', 'scoreboard', 'ping', 'emote']);
+  const HELD = new Set(['up', 'down', 'left', 'right', 'crouch', 'scoreboard', 'ping', 'emote']);
 
   /* ---------- storage ----------
      Only the bindings that differ from stock are saved, so adding an action
@@ -154,8 +162,16 @@ const Controls = (() => {
   const labelFor = (id) => (all()[id] || []).map(label).join(' / ') || '—';
 
   /* Keys the browser will not let a game keep, or that would strand someone
-     in a match with no way out. Refused at the point of binding. */
-  const FORBIDDEN = new Set(['F5', 'F11', 'F12', 'MetaLeft', 'MetaRight']);
+     in a match with no way out. Refused at the point of binding.
+
+     Control joined this list rather than only being avoided in crouch's own
+     default (see that entry's comment): the settings panel lets a player
+     rebind anything, and Ctrl+W/A/S/D are the browser's own shortcuts —
+     close tab, select all, save page, bookmark — which no amount of
+     preventDefault() in this game's own key handler can override. A player
+     who rebinds dash to Ctrl would lose their tab the first time they
+     dashed forward, with no way to know why. */
+  const FORBIDDEN = new Set(['F5', 'F11', 'F12', 'MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight']);
   const isBindable = (code) => !!code && !FORBIDDEN.has(code);
 
   return {

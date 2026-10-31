@@ -211,7 +211,10 @@ const Combat = (() => {
        always does something, and that the best kit in the game multiplies
        your health by about four rather than by nine. */
     const floored = Math.max(dmg, raw * MIN_DAMAGE_THROUGH);
-    return { damage: Math.max(0, isInfantry && type !== 'true' ? floored : dmg), zone, type };
+    /* `raw` rides along so a caller can tell a clean hit from one armour
+       ate most of — applyDamage uses it to give a vest or helmet its own
+       feedback instead of looking identical to an unarmoured hit. */
+    return { damage: Math.max(0, isInfantry && type !== 'true' ? floored : dmg), zone, type, raw };
   }
 
   /* ---------- structures ----------

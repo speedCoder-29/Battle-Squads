@@ -384,7 +384,7 @@ const Structures = (() => {
     }
     return { mode: 'stop', keep: 0 };
   }
-  const blocksSight = (s) => def(s.type).height === 'high' && !s.open;
+  const blocksSight = (s) => !s.lowProfile && def(s.type).height === 'high' && !s.open;
   const blocksMove  = (s) => !def(s.type).passable && !s.open;
   const isDoor      = (s) => !!def(s.type).door;
 
@@ -403,6 +403,24 @@ const Structures = (() => {
     s.maxHp = maxHp(type, th); s.hp = s.maxHp;
     s.toughness = toughness(type, th);
     if (d.door) s.open = false;
+    return s;
+  }
+
+  /* A short, standalone furnishing built the same way a wall is -- a weapon
+     rack, a security desk, a museum display case, a quay wall -- solid cover
+     that was never meant to connect to anything on either end, and drawing
+     it exactly like a wall is what made it read as one. A dead-ended wall
+     slab in the middle of open floor looks like a generation mistake; a
+     waist-high rack with guns on it looks like a weapon rack.
+
+     `lowProfile` tells the renderer to draw it low rather than floor-to-
+     ceiling and tells `blocksSight` to let you see (and shoot) over it,
+     exactly like the sandbags and barricades already do -- it stays solid
+     to walk into, the same as before, only the full-height sightline block
+     is gone along with the floor-to-ceiling look that earned it. */
+  function fixture(type, x, y, length, axis, thickness) {
+    const s = seg(type, x, y, length, axis, thickness);
+    s.lowProfile = true;
     return s;
   }
 
@@ -1939,9 +1957,10 @@ const Structures = (() => {
         }
         yy += ROW;
       }
-      // three quays along the seaward edge, and the crew facilities
+      // three quays along the seaward edge, and the crew facilities -- a
+      // quay rail stands free of everything else, so it is a fixture
       for (let i = 0; i < 3; i++) {
-        out.push(seg('wood', ox + 1240, oy + 360 + i * 200, 5.5, 'h', 0.3));
+        out.push(fixture('wood', ox + 1240, oy + 360 + i * 200, 5.5, 'h', 0.3));
         rooms.push(room('dock', ox + 1250, oy + 372 + i * 200, 200, 120));
       }
       out.push(...shell(ox + 1240, oy + 40, 100, 100, 'wood', 0.2, [{ side: 's', at: 50 }]));
@@ -2387,8 +2406,20 @@ const Structures = (() => {
        Cheap to hold, hard to dig out. */
     tower(ox, oy) {
       const w = 150, h = 150;
+      /* The thinnest building on the map: four walls, a door, and nothing
+         behind the door — a watchtower with no watch post in it. Entering
+         meant finding an empty 150x150 box. A single enclosed room fixes
+         that without changing what the tower is: a small, fast structure
+         with one real reason to go inside. */
       const out = shell(ox, oy, w, h, 'rwall', 0.4, [{ side: 's', at: 45, type: 'rdoor' }]);
-      out.push(seg('sandbag', ox - 50, oy + 170, 5, 'h', 0.5));
+      /* Clear of the door, not 20px past it. At oy+170 this sandbag line's
+         own padded footprint reached back almost to the wall — the nav grid
+         (and a body width besides) had nowhere to stand between stepping
+         out of the door and walking into cover, which pathfinding reads as
+         no exit at all. conn.js caught it the moment the room behind this
+         door became something worth reaching. */
+      out.push(seg('sandbag', ox - 50, oy + 230, 5, 'h', 0.5));
+      out.rooms = [room('watchPost', ox + 14, oy + 14, w - 28, h - 28)];
       return out;
     },
 
@@ -2667,10 +2698,20 @@ const Structures = (() => {
        room. Standing in it puts every contact on your minimap. */
     'command-center'(ox, oy) {
       const w = 720, h = 560;
+      /* A comms annex off the south face — the one wall with no door on it,
+         and the one thing a command centre this important was missing: any
+         silhouette to say so from outside. Every other rich, centre-ring
+         landmark on the map has its own shape (obj-citadel's rampart over
+         the gate, bunker-complex's twin surface heads); this was a flat
+         rectangle like any mid-tier office block. */
+      const comms = annex('metal', WALL_T.exterior, { x: ox, y: oy, w, h },
+        { side: 's', at: 420, len: 140, depth: 110, doors: [{ side: 's', at: 55, type: 'rdoor' }] });
       const out = shell(ox, oy, w, h, 'metal', 0.5, [
         { side: 'n', at: 300, type: 'rdoor', len: 2.5 },
         { side: 'e', at: 240, type: 'door' }, { side: 'w', at: 300 },
+        comms.openMain,
       ]);
+      out.push(...comms.parts);
       // offices along the north and the west
       const north = roomGrid('metal', ox + 14, oy + 14, w - 28, 150, 4, 1, { access: 's' });
       out.push(...north.parts);
@@ -2695,7 +2736,9 @@ const Structures = (() => {
         room('controlRoom', ox + 220, oy + 268, w - 460, h - 298),
         room('armoury',     ox + w - 200, oy + 268, 175, h - 298),
         room('storeroom',   ox + 30, oy + 268, 150, h - 298),
+        room('radioRoom',   comms.wing.x + 10, comms.wing.y + 10, comms.wing.w - 20, comms.wing.h - 20),
       ];
+      out.shape = [{ x: ox, y: oy, w, h }, comms.wing];
       return out;
     },
 
@@ -2718,8 +2761,12 @@ const Structures = (() => {
       const v2 = seg('rwall', ox + 300, oy + 270, 2, 'h', 0.5); v2.underground = true; out.push(v2);
       const v3 = seg('rwall', ox + 280, oy + 250, 1.6, 'v', 0.5); v3.underground = true; out.push(v3);
       const v4 = seg('rwall', ox + 320, oy + 250, 1.6, 'v', 0.5); v4.underground = true; out.push(v4);
-      out.push(seg('desk', ox + 220, oy + 380, 2.2, 'h', 0.2));
-      out.push(seg('locker', ox + 120, oy + 320, 2.2, 'h', 0.25));
+      /* Furniture, not wall material -- 'desk' and 'locker' aren't in
+         WALL_TYPES, so seg() was silently falling back to plain wood and
+         drawing both as unexplained wall slabs (see the same bug in
+         subway's ticket desk). They're props. */
+      out.push(prop('desk', ox + 220, oy + 380, 60, 1.0));
+      out.push(prop('locker', ox + 120, oy + 320, 50, 1.0));
       return out;
     },
 
@@ -2730,12 +2777,18 @@ const Structures = (() => {
         { side: 'n', at: 220 }, { side: 'n', at: 580 },
         { side: 's', at: 240 }, { side: 's', at: 620 },
       ]);
-      // platform edges and rail barriers
-      out.push(seg('metal', ox + 60, oy + 140, 7.2, 'h', 0.35));
-      out.push(seg('metal', ox + 60, oy + 220, 7.2, 'h', 0.35));
+      // platform edges and rail barriers -- waist-high, so a platform reads
+      // as a platform rather than a second pair of walls across the room
+      out.push(fixture('metal', ox + 60, oy + 140, 7.2, 'h', 0.35));
+      out.push(fixture('metal', ox + 60, oy + 220, 7.2, 'h', 0.35));
       out.push(seg('window', ox + 260, oy + 70, 3.4, 'h', 0.2));
       out.push(seg('window', ox + 520, oy + 70, 3.4, 'h', 0.2));
-      out.push(seg('desk', ox + 400, oy + 280, 2.4, 'h', 0.2));
+      /* The ticket desk: furniture, not a wall. `seg('desk', ...)` built this
+         as a wall segment in a material called 'desk' -- which does not
+         exist in WALL_TYPES, so it silently fell back to plain wood and drew
+         as an unexplained wood slab in the middle of the platform. A desk is
+         a prop, the same as the crate and ammo box beside it. */
+      out.push(prop('desk', ox + 400, oy + 280, 60, 1.0));
       out.push(prop('crate', ox + 160, oy + 180, 28, 1.0));
       out.push(prop('ammoBox', ox + 620, oy + 180, 28, 1.0));
       // emergency exit corridors into the surrounding terrain
@@ -2859,6 +2912,14 @@ const Structures = (() => {
     },
 
     /* fortress: multi-layer defense, reinforced strongpoint, heavy to assault */
+    /* A corner bastion and a real strongroom. The bastion puts fortress in
+       the same visual language as keep (corner towers round a hold) without
+       keep's full four — one is enough to read as a fortress rather than a
+       fenced square. The strongroom used to be two wall segments sharing a
+       corner, which is two-thirds of a room and no room at all: nothing
+       closed the other two sides, so it never held a loot table of its own
+       (see vault's actual hidden chamber, built the same way this one now
+       is, for the pattern). */
     fortress(ox, oy) {
       const w = 500, h = 500;
       const out = [];
@@ -2871,13 +2932,15 @@ const Structures = (() => {
       out.push(...shell(ox, oy, w, h, 'rwall', 0.5, [
         { side: 'n', at: 180, type: 'rdoor' }, { side: 'e', at: 160, type: 'rdoor' },
       ]));
-      // inner strongroom
-      out.push(seg('rwall', ox + 160, oy + 80, 3.6, 'h', 0.4));
-      out.push(seg('rwall', ox + 160, oy + 80, 3.6, 'v', 0.4));
-      out.push(seg('rdoor', ox + 280, oy + 80, 1.5, 'h'));
+      // a single corner bastion, not keep's four
+      out.push(...shell(ox + w - 110, oy - 20, 110, 110, 'rwall', 0.45, [{ side: 'w', at: 50, type: 'rdoor' }]));
+      // inner strongroom: four walls now, not an open L
+      out.push(...shell(ox + 160, oy + 80, 130, 100, 'rwall', 0.4, [{ side: 'e', at: 50, type: 'rdoor' }]));
       // firing positions
       out.push(seg('sandbag', ox + 60, oy + 240, 3, 'h', 0.5));
       out.push(seg('sandbag', ox + 420, oy + 240, 3, 'h', 0.5));
+      out.rooms = [room('strongroom', ox + 172, oy + 92, 106, 76)];
+      out.shape = [{ x: ox, y: oy, w, h }, { x: ox + w - 110, y: oy - 20, w: 110, h: 110 }];
       return out;
     },
 
@@ -2886,8 +2949,9 @@ const Structures = (() => {
       const out = [];
       // tower foundation
       out.push(...shell(ox, oy, 120, 120, 'rwall', 0.35, [{ side: 's', at: 40, type: 'rdoor' }]));
-      // antenna tower (visual only, not functional)
-      out.push(seg('metal', ox + 60, oy - 100, 1, 'v', 0.3));  // mast
+      // antenna tower (visual only, not functional) -- a mast, built as a
+      // fixture so it doesn't block sight like a slab of wall would
+      out.push(fixture('metal', ox + 60, oy - 100, 1, 'v', 0.3));  // mast
       // perimeter wire
       out.push(seg('wire', ox - 80, oy - 80, 6, 'h', 0.4));
       out.push(seg('wire', ox - 80, oy - 80, 6, 'v', 0.4));
@@ -3048,14 +3112,16 @@ const Structures = (() => {
       /* Display walls between the galleries, stopped short of the
          concourse below them. They used to run 6m from y+80, which reached
          y+320 — straight across the middle of the building, which is where
-         the concourse now runs. */
-      out.push(seg('wood', ox + 180, oy + 80, 4, 'v', 0.3));
-      out.push(seg('wood', ox + 380, oy + 80, 4, 'v', 0.3));
-      out.push(seg('wood', ox + 580, oy + 140, 5, 'v', 0.3));
+         the concourse now runs. Furniture, not architecture — a gallery
+         partition does not rise to the ceiling or tie into another wall,
+         so it is built and drawn as a fixture rather than a wall stub. */
+      out.push(fixture('wood', ox + 180, oy + 80, 4, 'v', 0.3));
+      out.push(fixture('wood', ox + 380, oy + 80, 4, 'v', 0.3));
+      out.push(fixture('wood', ox + 580, oy + 140, 5, 'v', 0.3));
       // a display case set against the concourse's north side, not across it
-      out.push(seg('wood', ox + 280, oy + 232, 3.2, 'h', 0.25));
+      out.push(fixture('wood', ox + 280, oy + 232, 3.2, 'h', 0.25));
       // security desk
-      out.push(seg('metal', ox + 100, oy + 200, 2.2, 'h', 0.3));
+      out.push(fixture('metal', ox + 100, oy + 200, 2.2, 'h', 0.3));
       /* The display hallway is the prize — a gold crate down the long east
          wing — and the main exhibit is deliberately empty, so the room that
          looks most important is the one you shouldn't linger in. */
@@ -3114,10 +3180,11 @@ const Structures = (() => {
       const out = shell(ox, oy, w, h, 'rwall', 0.55, [
         { side: 's', at: 150, type: 'rdoor', len: 1.5 },
       ]);
-      // weapon racks (metal storage) and firing ports
-      out.push(seg('metal', ox + 100, oy + 80, 1.8, 'h', 0.4));
-      out.push(seg('metal', ox + 220, oy + 100, 1.8, 'h', 0.4));
-      out.push(seg('metal', ox + 340, oy + 110, 1.8, 'h', 0.4));
+      // weapon racks (metal storage) and firing ports -- furniture, so built
+      // as fixtures: they stand free in the room, not tied into a wall
+      out.push(fixture('metal', ox + 100, oy + 80, 1.8, 'h', 0.4));
+      out.push(fixture('metal', ox + 220, oy + 100, 1.8, 'h', 0.4));
+      out.push(fixture('metal', ox + 340, oy + 110, 1.8, 'h', 0.4));
       out.push(seg('window', ox + 60, oy + 40, 1.2, 'h', 0.12));
       // ammo vault (ultra-secure)
       out.push(seg('rwall', ox + 320, oy + 200, 2.2, 'h', 0.5));
@@ -3201,9 +3268,13 @@ const Structures = (() => {
       for (let i = 0; i < 3; i++) {
         out.push(seg('wood', ox + 150 + i * 200, oy + 80, 1.6, 'v', 0.3));
       }
-      // station office
-      out.push(seg('wood', ox + 650, oy + 200, 2.6, 'h', 0.35));
-      out.push(seg('wood', ox + 650, oy + 200, 2.6, 'v', 0.35));
+      /* The station office: four walls now, not the open L it used to be
+         (two segments sharing a corner, nothing closing the other two
+         sides, no room ever declared for it). A building this size with
+         no out.rooms at all read as a platform with furniture-shaped wall
+         stubs standing on it rather than a station. */
+      out.push(...shell(ox + 630, oy + 140, 140, 150, 'wood', 0.35, [{ side: 'w', at: 60, type: 'door' }]));
+      out.rooms = [room('office', ox + 642, oy + 152, 116, 126)];
       return out;
     },
 
@@ -3818,7 +3889,7 @@ const Structures = (() => {
     BUILDING_SCALE, scaleFor, STYLE, styleOf, shadeStyle, ROOM_STYLE, roomStyleOf, BUILDING_EFFECTS, effectOf, secretDoor, FIND_SECRET, hallway, partition, roomGrid, floorPlan, courtyardPlan, ROOM_SIZE, tunnel, upper, flagMast, columnGrid, splitLong, WALL_T, ZONE, zoneOf, BAY,
     PURPOSE, purposeOf, RINGS, GRADE_LOOT, basement, DECOR, decorFor,
     ROOM_LOOT, ROOM_BUILDINGS, room,
-    def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, shell, annex,
+    def, maxHp, toughness, ballistics, blocksSight, blocksMove, isDoor, seg, fixture, shell, annex,
     /* place a named building and tag every piece with it. `rooms` rides along
        on the returned array — blueprints that don't declare any simply don't
        have the property, so every older blueprint is untouched. */

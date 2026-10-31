@@ -77,8 +77,15 @@ const Nav = (() => {
      between them would be. Cover you can walk past no longer seals the
      corridor it stands in, and a wall still can't be walked through: padded by
      PAD, even the thinnest one covers more ground than the 45px between
-     samples, so there is nowhere for it to hide. */
-  function build(w, h, rects, costAt) {
+     samples, so there is nowhere for it to hide.
+
+     `pad` overrides PAD for callers whose agent isn't player-sized — a grid
+     built for a tank should call a gap closed well before a pedestrian
+     would, so the pathfinder routes it around a building instead of into a
+     doorway it cannot physically fit through. Defaults to PAD, so every
+     existing caller is unaffected. */
+  function build(w, h, rects, costAt, pad) {
+    const P = pad === undefined ? PAD : pad;
     const cols = Math.ceil(w / CELL), rows = Math.ceil(h / CELL);
     const blocked = new Uint8Array(cols * rows);
     const eastWall = new Uint8Array(cols * rows);    // move to (cx+1, cy) blocked
@@ -98,11 +105,11 @@ const Nav = (() => {
     };
 
     for (const r of rects) {
-      const x0 = Math.max(0, Math.floor((r.x - PAD) / CELL) - 1);
-      const x1 = Math.min(cols - 1, Math.floor((r.x + r.w + PAD) / CELL) + 1);
-      const y0 = Math.max(0, Math.floor((r.y - PAD) / CELL) - 1);
-      const y1 = Math.min(rows - 1, Math.floor((r.y + r.h + PAD) / CELL) + 1);
-      const l = r.x - PAD, t = r.y - PAD, ri = r.x + r.w + PAD, b = r.y + r.h + PAD;
+      const x0 = Math.max(0, Math.floor((r.x - P) / CELL) - 1);
+      const x1 = Math.min(cols - 1, Math.floor((r.x + r.w + P) / CELL) + 1);
+      const y0 = Math.max(0, Math.floor((r.y - P) / CELL) - 1);
+      const y1 = Math.min(rows - 1, Math.floor((r.y + r.h + P) / CELL) + 1);
+      const l = r.x - P, t = r.y - P, ri = r.x + r.w + P, b = r.y + r.h + P;
       const hits = (px, py) => px >= l && px <= ri && py >= t && py <= b;
       for (let cy = y0; cy <= y1; cy++) {
         for (let cx = x0; cx <= x1; cx++) {
@@ -118,7 +125,7 @@ const Nav = (() => {
     /* Now the moves. A step from one cell to the next is only allowed if the
        line between their centres is clear of everything — checked once here
        rather than every time A* considers the move. */
-    const grid = { cols, rows, w, h, blocked, eastWall, southWall, seWall, neWall, cost, solids };
+    const grid = { cols, rows, w, h, pad: P, blocked, eastWall, southWall, seWall, neWall, cost, solids };
     const shut = (i) => { eastWall[i] = southWall[i] = seWall[i] = neWall[i] = 1; };
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < cols; cx++) {

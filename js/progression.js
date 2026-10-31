@@ -163,12 +163,41 @@ const Progression = (() => {
     if (profile.bpTier >= BP_TIERS.length) profile.bpXp = Math.min(profile.bpXp, BP_XP_PER_TIER);
   }
 
+  /* Six of the twelve tiers used to grant nothing at all: Recruit Banner,
+     Blue Camo, Emblem, Flame Trail, Elite Title and Prestige Charm all
+     popped the "Tier X: name!" toast and then did not touch the profile —
+     the reward was real on screen for one second and gone forever. Credits,
+     gems and the two weapon unlocks already worked; this fills in the rest
+     by reusing the systems that already own cosmetics rather than
+     inventing a parallel one for a single tier each. */
   function grantTierReward(profile, tier) {
     const name = (BP_TIERS[tier - 1].name || '').toLowerCase();
-    if (name.includes('credits')) profile.credits += parseInt(name) || 0;
-    if (name.includes('gems')) profile.gems += parseInt(name) || 0;
-    if (name.includes('shotgun') && !profile.unlockedWeapons.includes('spas-12')) profile.unlockedWeapons.push('spas-12');
-    if (name.includes('marksman') && !profile.unlockedWeapons.includes('mk-14-ebr')) profile.unlockedWeapons.push('mk-14-ebr');
+    if (name.includes('credits')) { profile.credits += parseInt(name) || 0; return; }
+    if (name.includes('gems')) { profile.gems += parseInt(name) || 0; return; }
+    if (name.includes('shotgun') && !profile.unlockedWeapons.includes('spas-12')) { profile.unlockedWeapons.push('spas-12'); return; }
+    if (name.includes('marksman') && !profile.unlockedWeapons.includes('mk-14-ebr')) { profile.unlockedWeapons.push('mk-14-ebr'); return; }
+    // a skin is owned exactly the way a shop purchase would own it
+    if (name.includes('camo')) {
+      const skinId = 'midnight';
+      if (!(profile.skins || []).includes(skinId)) profile.skins = (profile.skins || []).concat(skinId);
+      return;
+    }
+    // a banner is owned exactly the way a shop purchase would own it
+    if (name.includes('banner') && typeof Shop !== 'undefined') {
+      const bannerId = 'bn-wolves';
+      profile.owned = profile.owned || [];
+      if (!profile.owned.includes(bannerId)) profile.owned.push(bannerId);
+      return;
+    }
+    /* Emblem, Flame Trail, Elite Title, Prestige Charm: there is no shop
+       category or equip slot for any of these yet (see Shop.CATEGORIES) —
+       building four full cosmetic systems, each with its own UI, is a
+       bigger job than this fix. Banked here so claiming one is recorded
+       rather than silently discarded; a display/equip slot reading
+       `profile.cosmetics` is the natural next step if these should be worn
+       rather than just collected. */
+    profile.cosmetics = profile.cosmetics || [];
+    profile.cosmetics.push({ tier, name: BP_TIERS[tier - 1].name, icon: BP_TIERS[tier - 1].icon });
   }
 
   return {

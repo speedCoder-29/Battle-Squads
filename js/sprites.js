@@ -52,6 +52,11 @@ const Sprites = (() => {
     wood: '#9a7542', woodDark: '#6b5231', woodLight: '#c49060',
     /* vegetation: saturated greens for visibility */
     leaf: '#5ab947', leafDark: '#2d7a1a', leafLight: '#7cd347',
+    /* moss/lichen: the fleck that makes a rock look like it sits somewhere
+       rather than everywhere -- how much of it shows is biome weather, not
+       chance, so the same boulder is bone-dry in the Basin and furred green
+       on the Jungle Coast. */
+    moss: '#5e7a3e',
     /* stone: neutral grays with subtle warmth */
     stone: '#9ca5b5', stoneDark: '#6a7382', stoneLight: '#b8c2d2',
     /* metal: cool, gunmetal appearance */
@@ -70,11 +75,87 @@ const Sprites = (() => {
        a shadow actually is. */
     dark: 'rgba(22, 30, 48, 0.38)',
   };
+  const BASE_P = Object.assign({}, P);
+
+  /* ---------- a palette per climate ----------
+     The ground already changes with the biome -- grass, sand and water all
+     roll their own colours in terrain.js -- but every prop standing on that
+     ground was drawing from the one fixed palette above, so a boulder on the
+     Ashfields and a boulder on the Jungle Coast were the identical grey. Only
+     the materials that are actually *of* the place are overridden: living
+     wood, foliage, bare stone, loose sand. Manufactured things -- a crate's
+     metal band, a tent's canvas, a warning stripe -- stay the same colour
+     anywhere, because a crate does not know what climate it washed up in. */
+  const BIOME_PALETTES = {
+    arid: {       // Arid Basin: sun-bleached and dust-dry
+      leaf: '#93a84f', leafDark: '#657328', leafLight: '#b0c467',
+      moss: '#9c8a4e',
+      stone: '#c3b28c', stoneDark: '#8f7e5c', stoneLight: '#dbcba4',
+      wood: '#b28c54', woodDark: '#7c5e36', woodLight: '#d3ae78',
+      sand: '#edd27a', sandDark: '#c3a558',
+      rust: '#c96a3e',
+    },
+    tundra: {     // Frozen Flats: cold, blue-leaning, frost over everything
+      leaf: '#4f8072', leafDark: '#2e5248', leafLight: '#78aa98',
+      moss: '#8fa8b0',
+      stone: '#aebccb', stoneDark: '#717f8e', stoneLight: '#d2e3ee',
+      wood: '#7c6c59', woodDark: '#4f4336', woodLight: '#9d8c76',
+      sand: '#e9eff2', sandDark: '#c4cfd6',
+      metal: '#7f93ab', metalDark: '#4c5c70', metalLight: '#aebdd0',
+    },
+    tropic: {     // Jungle Coast: saturated and overgrown
+      leaf: '#2f9e3a', leafDark: '#146b1e', leafLight: '#5cc85a',
+      moss: '#357a2e',
+      stone: '#7f9684', stoneDark: '#506458', stoneLight: '#9fbaa1',
+      wood: '#7a5a38', woodDark: '#4a3420', woodLight: '#a2804e',
+      sand: '#f0dca0', sandDark: '#cdb476',
+      rust: '#a8512e', rustDark: '#5e2a14',
+    },
+    volcanic: {   // Ashfields: scorched, ashen, almost no green left
+      leaf: '#6e6b3a', leafDark: '#454326', leafLight: '#8c8a52',
+      moss: '#5a5648',
+      stone: '#5a5650', stoneDark: '#343229', stoneLight: '#78746a',
+      wood: '#4a3c30', woodDark: '#281f17', woodLight: '#6b5844',
+      sand: '#8a8278', sandDark: '#625c52',
+      rust: '#8a4530', rustDark: '#451d10',
+    },
+  };
+  /* Swap the live palette to match the match's climate. Called once, right
+     after worldgen rolls the biome -- not per-sprite -- so every prop reads
+     it the same way `lit()` reads `curRot`: ambient state the draw calls
+     trust rather than a parameter every one of them has to thread through. */
+  function setBiome(id) {
+    Object.assign(P, BASE_P, BIOME_PALETTES[id] || {});
+  }
+
+  /* blend two '#rrggbb' colours -- t=0 is c1, t=1 is c2 */
+  function mix(c1, c2, t) {
+    const a = parseInt(c1.slice(1), 16), b = parseInt(c2.slice(1), 16);
+    const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+    const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+    const r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), bl = Math.round(ab + (bb - ab) * t);
+    return `rgb(${r},${g},${bl})`;
+  }
 
   /* helper: filled path with a darker outline, the look of the whole set */
   function shape(ctx, fill, stroke, lw) {
     ctx.fillStyle = fill; ctx.fill();
     if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
+  }
+  /* helper: a scatter of small flecks for grain/grit/lichen -- the texture a
+     flat fill cannot carry on its own. Positioned and sized off `v` and the
+     fleck's own index, so the same prop always grows the same texture but no
+     two props share one. */
+  function speckle(ctx, r, v, n, color, alpha) {
+    ctx.globalAlpha = alpha === undefined ? 0.3 : alpha;
+    ctx.fillStyle = color;
+    for (let i = 0; i < n; i++) {
+      const a = ((v * (19 + i * 37)) % 1) * Math.PI * 2;
+      const rr = Math.sqrt((v * (11 + i * 53)) % 1) * r * 0.82;
+      const sz = r * (0.035 + ((v * (7 + i * 29)) % 1) * 0.03);
+      ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, sz, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   }
   function circle(ctx, x, y, r, fill, stroke, lw) {
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); shape(ctx, fill, stroke, lw);
@@ -91,33 +172,62 @@ const Sprites = (() => {
     shape(ctx, fill, stroke, lw, r);
   }
 
+  /* ---------- individuality ----------
+     Every tree on the map used to be the same tree: same clump offsets, same
+     crown proportions, every time, with only the caller's random rotation
+     telling two of them apart. That hides the repeat from some angles but
+     not from a glance at a treeline, and it does nothing at all for a prop
+     like the stump below, whose rings are concentric circles — a shape that
+     looks identical at every rotation, so a hundred stumps were a hundred
+     copies of one.
+
+     `hash01` turns a prop's own world position into a stable 0..1 value, the
+     same way every time the same spot is drawn, without storing anything on
+     the prop itself. Natural shapes below use it to flex their own
+     proportions — a clump a little bigger here, a frond count one short
+     there, rings off-centre a different way each time — so a map planted
+     with the same handful of prop kinds still reads as individually grown
+     rather than stamped. */
+  function hash01(x, y) {
+    let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
   /* ---------- the sprites ----------
-     Signature is always (ctx, r) with the transform already applied. */
+     Signature is always (ctx, r, v), with the transform already applied and
+     v a stable 0..1 roll for this prop's own position — unused by anything
+     that has no reason to vary (furniture of the same model looks the same
+     model to model; it's the grown things that shouldn't). */
   const DRAW = {
     /* A tree from above. The shadowed mass sits away from the sun — down and
        right — with the lit crown up and left over it, and the trunk showing
        through the middle where the canopy parts. Two offset clumps keep the
        outline from being a plain circle without costing another fill. */
-    tree(ctx, r) {
+    tree(ctx, r, v) {
+      const v2 = (v * 7) % 1, v3 = (v * 13) % 1;
       // the silhouette turns with the prop...
-      circle(ctx, -r * 0.46, r * 0.34, r * 0.26, P.leafDark, null);       // clump, breaks the circle
-      circle(ctx, r * 0.10, -r * 0.40, r * 0.24, P.leafDark, null);
+      circle(ctx, -r * (0.38 + v * 0.14), r * (0.28 + v2 * 0.14), r * (0.22 + v2 * 0.10), P.leafDark, null);   // clump, breaks the circle
+      circle(ctx, r * (0.04 + v3 * 0.14), -r * (0.34 + v * 0.12), r * (0.20 + v3 * 0.10), P.leafDark, null);
       // ...the light does not
       lit(ctx, () => {
-        circle(ctx, r * 0.17, r * 0.16, r * 0.80, P.leafDark, null);      // mass in shade
-        circle(ctx, LX * r * 0.30, LY * r * 0.30, r * 0.72, P.leaf, P.leafDark, 2.5);
-        circle(ctx, LX * r * 0.78, LY * r * 0.80, r * 0.30, P.leafLight, null);  // lit crown
+        circle(ctx, r * 0.17, r * 0.16, r * (0.76 + v3 * 0.08), P.leafDark, null);      // mass in shade
+        circle(ctx, LX * r * 0.30, LY * r * 0.30, r * (0.68 + v2 * 0.08), P.leaf, P.leafDark, 2.5);
+        circle(ctx, LX * r * 0.78, LY * r * 0.80, r * (0.26 + v * 0.08), P.leafLight, null);  // lit crown
+        speckle(ctx, r * 0.7, v, 6, P.leafLight, 0.22);   // dappled light through the gaps
         circle(ctx, 0, 0, r * 0.15, P.woodDark, null);                    // trunk through the gap
       });
     },
     /* palm: a starburst of fronds */
-    palm(ctx, r) {
+    palm(ctx, r, v) {
+      const n = 6 + Math.floor(v * 3);              // 6, 7 or 8 fronds
+      const flen = 0.46 + ((v * 7) % 1) * 0.10;      // a shorter or fuller crown
       circle(ctx, 0, 0, r * 0.22, P.woodDark, null);
-      for (let i = 0; i < 7; i++) {
-        const a = (i / 7) * Math.PI * 2;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
         ctx.save(); ctx.rotate(a);
         ctx.beginPath();
-        ctx.ellipse(r * 0.52, 0, r * 0.50, r * 0.20, 0, 0, Math.PI * 2);
+        ctx.ellipse(r * flen, 0, r * flen * 0.96, r * 0.20, 0, 0, Math.PI * 2);
         shape(ctx, i % 2 ? P.leaf : P.leafDark, P.leafDark, 1.5);
         ctx.restore();
       }
@@ -127,22 +237,34 @@ const Sprites = (() => {
       });
     },
     /* low scrub: a cluster of small blobs */
-    bush(ctx, r) {
-      circle(ctx, -r * 0.30, r * 0.10, r * 0.52, P.leafDark, null);
-      circle(ctx, r * 0.28, r * 0.16, r * 0.46, P.leafDark, null);
+    bush(ctx, r, v) {
+      const v2 = (v * 7) % 1;
+      circle(ctx, -r * (0.24 + v * 0.10), r * (0.06 + v2 * 0.08), r * (0.44 + v2 * 0.12), P.leafDark, null);
+      circle(ctx, r * (0.22 + v2 * 0.10), r * (0.10 + v * 0.10), r * (0.38 + v * 0.12), P.leafDark, null);
       lit(ctx, () => {
-        circle(ctx, LX * r * 0.12, LY * r * 0.12, r * 0.60, P.leaf, P.leafDark, 2);
-        circle(ctx, LX * r * 0.62, LY * r * 0.70, r * 0.22, P.leafLight, null);
+        circle(ctx, LX * r * 0.12, LY * r * 0.12, r * (0.54 + v * 0.10), P.leaf, P.leafDark, 2);
+        circle(ctx, LX * r * 0.62, LY * r * 0.70, r * (0.16 + v2 * 0.10), P.leafLight, null);
+        speckle(ctx, r * 0.6, v, 4, P.leafLight, 0.20);
       });
     },
     /* boulder: irregular polygon with strong shading for tactical clarity */
-    rock(ctx, r) {
+    rock(ctx, r, v) {
+      // most boulders are plain stone; some carry a patch of lichen, and how
+      // much is a climate question -- lush on the Jungle Coast, nearly none
+      // on the sun-blasted Basin or the ashfields.
+      const weathered = mix(P.stone, P.moss, ((v * 31) % 1) * 0.32);
       ctx.beginPath();
       const pts = [[-0.9, -0.2], [-0.55, -0.8], [0.2, -0.95], [0.85, -0.4],
                    [0.9, 0.35], [0.35, 0.9], [-0.45, 0.8], [-0.9, 0.3]];
-      pts.forEach(([px, py], i) => (i ? ctx.lineTo(px * r, py * r) : ctx.moveTo(px * r, py * r)));
+      // each vertex gets its own stable nudge, so no two boulders share an
+      // outline -- a fixed octagon rotated is still a fixed octagon
+      pts.forEach(([px, py], i) => {
+        const j = 0.86 + (((v * (i * 5 + 3)) % 1)) * 0.26;
+        const x = px * r * j, y = py * r * j;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
       ctx.closePath();
-      shape(ctx, P.stone, P.stoneDark, 3);  // thicker outline for visibility
+      shape(ctx, weathered, P.stoneDark, 3);  // thicker outline for visibility
       lit(ctx, () => {
         // the sunlit face, up and to the left
         ctx.beginPath();
@@ -156,9 +278,18 @@ const Sprites = (() => {
         ctx.closePath();
         shape(ctx, P.stoneDark, null);
       });
+      // a crack, because a weathered face is never perfectly smooth
+      ctx.globalAlpha = 0.45; ctx.strokeStyle = P.stoneDark; ctx.lineWidth = 1.3;
+      const ca = (v * 47) % 1 * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ca) * r * 0.12, Math.sin(ca) * r * 0.12);
+      ctx.lineTo(Math.cos(ca + 0.5) * r * 0.78, Math.sin(ca + 0.5) * r * 0.78);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      speckle(ctx, r * 0.8, v, 5, P.stoneDark, 0.22);
     },
     /* wooden crate: planks and a cross brace */
-    crate(ctx, r) {
+    crate(ctx, r, v) {
       box(ctx, -r, -r, r * 2, r * 2, P.wood, P.woodDark, 2.5, 3);
       ctx.strokeStyle = P.woodDark; ctx.lineWidth = 1.6;
       ctx.beginPath();
@@ -172,10 +303,143 @@ const Sprites = (() => {
       ctx.beginPath();
       ctx.moveTo(-r * 0.86, r * 0.86); ctx.lineTo(-r * 0.86, -r * 0.86); ctx.lineTo(r * 0.86, -r * 0.86);
       ctx.stroke();
+      speckle(ctx, r * 0.85, v, 3, P.woodDark, 0.18);  // grain fleck
     },
+
+    /* ---------- loot crates, by tier ----------
+       Every tier used to be the same flat rounded square with a different
+       fill colour and an emoji dropped on top -- a box wearing a sticker,
+       not a sprite. The tier still has to read at a glance across a room,
+       but now it reads from the crate's own shape and material rather than
+       from a glyph: a reinforced case, a gilded strongbox, a proper chest.
+       Colour still carries the tier (silver, gold), it just isn't the only
+       thing carrying it any more. */
+
+    /* silver: a reinforced case, not a fancier box -- corner brackets and a
+       centre latch, the language a padlocked container already speaks */
+    crateSilver(ctx, r, v) {
+      box(ctx, -r, -r, r * 2, r * 2, P.metal, P.metalDark, 2.5, 4);
+      /* Inset, not flush with the box's own border -- drawn on the edge
+         these landed exactly on top of the stroke already there and never
+         showed up at all. A bracket has to sit inside the case to read as
+         one. */
+      ctx.strokeStyle = P.metalLight; ctx.lineWidth = 2.2;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        ctx.beginPath();
+        ctx.moveTo(sx * r * 0.82, sy * r * 0.5); ctx.lineTo(sx * r * 0.82, sy * r * 0.82); ctx.lineTo(sx * r * 0.5, sy * r * 0.82);
+        ctx.stroke();
+      }
+      lit(ctx, () => {
+        box(ctx, -r * 0.86, -r * 0.86, r * 1.72, r * 0.5, P.metalLight, null, 0, 2);
+        box(ctx, -r * 0.18, -r * 0.12, r * 0.36, r * 0.24, P.stoneLight, P.metalDark, 1.5, 2);  // latch
+      });
+      speckle(ctx, r * 0.85, v, 4, P.metalDark, 0.2);
+    },
+    /* gold: the wood crate's own shape, trimmed in gilt so it reads as the
+       one worth crossing the room for -- fixed colour, not biome-tinted,
+       because gold should look like gold on every island */
+    crateGold(ctx, r, v) {
+      const GOLD = '#e8bb3c', GOLD_DARK = '#8a6418', GOLD_LIGHT = '#ffe488';
+      box(ctx, -r, -r, r * 2, r * 2, P.woodDark, GOLD_DARK, 2.5, 3);
+      // inset from the box's own border, the same fix crateSilver needed --
+      // flush with the edge, this stroke landed on top of that one and vanished
+      ctx.strokeStyle = GOLD; ctx.lineWidth = 2.6;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        ctx.beginPath();
+        ctx.moveTo(sx * r * 0.84, sy * r * 0.46); ctx.lineTo(sx * r * 0.84, sy * r * 0.84); ctx.lineTo(sx * r * 0.46, sy * r * 0.84);
+        ctx.stroke();
+      }
+      ctx.fillStyle = GOLD_DARK; ctx.fillRect(-r * 0.14, -r, r * 0.28, r * 2);   // banded clasp strip
+      lit(ctx, () => {
+        ctx.fillStyle = GOLD; ctx.fillRect(-r * 0.12, -r * 0.98, r * 0.24, r * 1.96);
+        circle(ctx, 0, 0, r * 0.22, GOLD_LIGHT, GOLD_DARK, 1.5);                 // the lock
+      });
+      speckle(ctx, r * 0.8, v, 3, GOLD_DARK, 0.15);
+    },
+    /* chest: the biggest container in the game and the only one with a lid
+       drawn as a lid -- a domed top, strapped in the same gilt the gold
+       crate wears, because a chest is what a gold crate is trying to be */
+    lootChest(ctx, r, v) {
+      box(ctx, -r, -r * 0.62, r * 2, r * 1.5, P.woodDark, '#3a2916', 2.5, 4);
+      lit(ctx, () => box(ctx, -r * 0.9, -r * 0.5, r * 1.8, r * 0.5, P.woodLight, null, 0, 3));
+      ctx.beginPath(); ctx.ellipse(0, -r * 0.62, r * 0.92, r * 0.5, 0, Math.PI, 0, false);
+      shape(ctx, P.wood, '#3a2916', 2.5);
+      lit(ctx, () => {
+        ctx.beginPath(); ctx.ellipse(-r * 0.1, -r * 0.75, r * 0.55, r * 0.28, 0, Math.PI, 0, false);
+        shape(ctx, P.woodLight, null);
+      });
+      const GOLD = '#e8bb3c', GOLD_DARK = '#8a6418';
+      for (const sx of [-0.55, 0.55]) { ctx.fillStyle = GOLD; ctx.fillRect(sx * r - r * 0.07, -r * 1.1, r * 0.14, r * 2); }
+      box(ctx, -r * 0.2, -r * 0.14, r * 0.4, r * 0.32, GOLD, GOLD_DARK, 1.5, 3);
+      circle(ctx, 0, 0, r * 0.12, GOLD_DARK, null);
+      speckle(ctx, r * 0.9, v, 4, '#3a2916', 0.15);
+    },
+    /* airdrop: a military crate marked the way something dropped from a
+       plane actually is -- hazard stripes and strap buckles, olive rather
+       than the warm woods everything else on the ground uses */
+    crateAirdrop(ctx, r, v) {
+      box(ctx, -r, -r, r * 2, r * 2, '#5a6248', '#363c29', 2.5, 3);
+      lit(ctx, () => box(ctx, -r * 0.86, -r * 0.86, r * 1.72, r * 0.5, '#707a59', null, 0, 2));
+      ctx.save();
+      ctx.beginPath(); ctx.rect(-r * 0.92, -r * 0.22, r * 1.84, r * 0.44); ctx.clip();
+      ctx.strokeStyle = '#e8c23c'; ctx.lineWidth = r * 0.22;
+      for (let i = -4; i <= 4; i++) {
+        ctx.beginPath(); ctx.moveTo(i * r * 0.4 - r, -r); ctx.lineTo(i * r * 0.4 + r, r); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.strokeStyle = '#2c3022'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(-r * 0.92, -r * 0.22, r * 1.84, r * 0.44);
+      for (const sy of [-0.74, 0.74]) { ctx.fillStyle = '#2c3022'; ctx.fillRect(-r * 0.86, sy * r - r * 0.07, r * 1.72, r * 0.14); }
+      speckle(ctx, r * 0.85, v, 4, '#363c29', 0.2);
+    },
+
+    /* dropped loot pouch: what a stray consumable actually sits in on the
+       ground -- an open canvas sack with the item's own icon drawn into its
+       mouth, rather than a coin floating over a dark disc. The disc used to
+       be the whole sprite: a flat circle that could have been standing in
+       for anything, with no material of its own to read at a glance the way
+       a crate's wood or a chest's gilt does. */
+    dropPouch(ctx, r, v) {
+      // burlap, not uniform-cloth blue -- a sack reads as a sack against
+      // grass partly because it's a different material from everything else
+      // standing on the field, the way the crate's wood and the chest's gilt
+      // each claim their own colour.
+      const SACK = '#8a7850', SACK_DARK = '#564a2e', SACK_LIGHT = '#c2ac78';
+      // two overlapping blobs rather than one perfect oval -- a dropped sack
+      // slumps unevenly, the way bush() avoids a circle for the same reason.
+      // A first version drew the body, its highlight and its mouth as three
+      // ellipses centred on each other, which is literally a target: body,
+      // rim, bullseye. Nothing here is concentric with anything else now.
+      ctx.beginPath();
+      ctx.ellipse(r * 0.18, r * 0.14, r * 0.62, r * 0.56, 0, 0, Math.PI * 2);
+      shape(ctx, SACK_DARK, null, 0);
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.2, r * 0.08, r * 0.78, r * 0.6, 0, 0, Math.PI * 2);
+      shape(ctx, SACK, SACK_DARK, 2);
+      lit(ctx, () => {
+        ctx.beginPath();
+        ctx.ellipse(-r * 0.4, -r * 0.1, r * 0.46, r * 0.34, 0, 0, Math.PI * 2);
+        shape(ctx, SACK_LIGHT, null, 0);
+      });
+      // the neck, cinched and knotted shut above the body -- a separate
+      // shape rather than a ring inset into it, so it reads as tied off
+      // rather than as a hole
+      ctx.beginPath();
+      ctx.ellipse(r * 0.12, -r * 0.4, r * 0.24, r * 0.18, 0.4, 0, Math.PI * 2);
+      shape(ctx, SACK_DARK, null, 0);
+      // the drawstring, trailing loose off to one side
+      ctx.strokeStyle = SACK_DARK; ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(r * 0.3, -r * 0.42); ctx.quadraticCurveTo(r * 0.52, -r * 0.22, r * 0.38, r * 0.02);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+      speckle(ctx, r * 0.85, v, 4, SACK_DARK, 0.18);
+    },
+
     /* oil drum: survev-style explosive hazard, immediately recognizable */
-    barrel(ctx, r) {
+    barrel(ctx, r, v) {
       circle(ctx, 0, 0, r, P.rust, P.rustDark, 3);  // outer rim, thicker
+      speckle(ctx, r * 0.95, v, 4, P.rustDark, 0.3);  // corrosion pitting
       circle(ctx, 0, 0, r * 0.68, P.metal, P.metalDark, 2);  // band
       circle(ctx, 0, 0, r * 0.25, P.metalDark, null);  // center cap
       circle(ctx, -r * 0.35, -r * 0.35, r * 0.20, P.metalLight, null);  // highlight
@@ -201,11 +465,13 @@ const Sprites = (() => {
       circle(ctx, 0, 0, r * 0.32, '#f6f1e6', P.hotDark, 1.5);
     },
     /* broken masonry */
-    rubble(ctx, r) {
-      circle(ctx, -r * 0.35, r * 0.2, r * 0.44, P.stoneDark, null);
-      box(ctx, -r * 0.1, -r * 0.7, r * 0.85, r * 0.6, '#9a5f4a', '#6d3f2f', 2, 2);
-      box(ctx, -r * 0.85, -r * 0.25, r * 0.7, r * 0.5, '#8c5744', '#6d3f2f', 2, 2);
-      circle(ctx, r * 0.45, r * 0.45, r * 0.3, P.stone, P.stoneDark, 1.5);
+    rubble(ctx, r, v) {
+      const v2 = (v * 7) % 1, v3 = (v * 13) % 1;
+      circle(ctx, -r * (0.28 + v * 0.12), r * (0.14 + v2 * 0.10), r * (0.36 + v2 * 0.12), P.stoneDark, null);
+      box(ctx, -r * (0.04 + v * 0.10), -r * 0.7, r * (0.72 + v3 * 0.18), r * 0.6, '#9a5f4a', '#6d3f2f', 2, 2);
+      box(ctx, -r * (0.76 + v2 * 0.14), -r * 0.25, r * (0.58 + v * 0.18), r * 0.5, '#8c5744', '#6d3f2f', 2, 2);
+      circle(ctx, r * (0.36 + v3 * 0.14), r * 0.45, r * (0.22 + v * 0.12), P.stone, P.stoneDark, 1.5);
+      speckle(ctx, r * 0.9, v, 6, P.stoneDark, 0.25);  // grit and chip
     },
     /* radio mast seen from above */
     antenna(ctx, r) {
@@ -235,16 +501,24 @@ const Sprites = (() => {
       ctx.strokeStyle = P.clothDark; ctx.lineWidth = 2; ctx.stroke();
     },
     /* sandbag pile */
-    sandpile(ctx, r) {
-      for (let i = 0; i < 3; i++) {
-        ctx.save(); ctx.translate((i - 1) * r * 0.5, (i % 2) * r * 0.25 - r * 0.1);
+    sandpile(ctx, r, v) {
+      const n = 2 + Math.floor(v * 3);    // 2 to 4 bags -- not every pile is the same size
+      for (let i = 0; i < n; i++) {
+        ctx.save(); ctx.translate((i - (n - 1) / 2) * r * 0.5, (i % 2) * r * 0.25 - r * 0.1);
         ctx.beginPath(); ctx.ellipse(0, 0, r * 0.52, r * 0.34, 0.2, 0, Math.PI * 2);
         shape(ctx, i % 2 ? P.sand : P.sandDark, P.sandDark, 1.8);
+        // wind ripples, the texture a dune actually has rather than a plain fill
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1;
+        for (let k = -1; k <= 1; k++) {
+          ctx.beginPath();
+          ctx.ellipse(0, k * r * 0.1, r * (0.44 - Math.abs(k) * 0.08), r * 0.2, 0.2, 0, Math.PI * 2);
+          ctx.stroke();
+        }
         ctx.restore();
       }
     },
     /* shipping container */
-    container(ctx, r) {
+    container(ctx, r, v) {
       box(ctx, -r * 1.3, -r * 0.8, r * 2.6, r * 1.6, '#3f7ea8', '#28536f', 2.5, 2);
       ctx.strokeStyle = '#28536f'; ctx.lineWidth = 1.4;
       for (let i = -3; i <= 3; i++) {
@@ -255,6 +529,12 @@ const Sprites = (() => {
       ctx.strokeStyle = 'rgba(190, 224, 245, 0.30)'; ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(-r * 1.24, -r * 0.72); ctx.lineTo(r * 1.24, -r * 0.72); ctx.stroke();
+      // a weathered one streaks rust down from a seam -- not every box is new
+      if (v > 0.5) {
+        ctx.strokeStyle = 'rgba(140, 80, 50, 0.35)'; ctx.lineWidth = 3;
+        const sx = (((v * 7) % 1) - 0.5) * r * 2.2;
+        ctx.beginPath(); ctx.moveTo(sx, -r * 0.7); ctx.lineTo(sx + r * 0.08, r * 0.75); ctx.stroke();
+      }
     },
     /* ---------- interior furniture ---------- */
     table(ctx, r) {
@@ -436,10 +716,31 @@ const Sprites = (() => {
     },
 
     /* bare stump */
-    stump(ctx, r) {
-      circle(ctx, 0, 0, r * 0.8, P.wood, P.woodDark, 2.5);
-      circle(ctx, 0, 0, r * 0.5, P.woodLight, P.woodDark, 1.5);
-      circle(ctx, 0, 0, r * 0.18, P.woodDark, null);
+    stump(ctx, r, v) {
+      /* A ring pattern reads as identical at any rotation, so this was the
+         one sprite that rotating its prop did nothing at all for -- a
+         hundred stumps really were a hundred copies of one. Off-centring the
+         grain, the way a real cut trunk's rings never land dead centre,
+         gives it an outline that actually changes from instance to
+         instance. */
+      const ox = (v - 0.5) * r * 0.16, oy = (((v * 7) % 1) - 0.5) * r * 0.16;
+      circle(ctx, 0, 0, r * (0.76 + v * 0.08), P.wood, P.woodDark, 2.5);
+      circle(ctx, ox, oy, r * (0.44 + ((v * 7) % 1) * 0.10), P.woodLight, P.woodDark, 1.5);
+      // a third ring, faint, so the grain reads as rings rather than a target
+      ctx.globalAlpha = 0.35; ctx.strokeStyle = P.woodDark; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(ox * 0.6, oy * 0.6, r * (0.60 + ((v * 13) % 1) * 0.08), 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      circle(ctx, ox * 1.5, oy * 1.5, r * 0.16, P.woodDark, null);
+      // radial checks where the cut dried and split
+      ctx.strokeStyle = P.woodDark; ctx.globalAlpha = 0.4; ctx.lineWidth = 1.2;
+      for (let i = 0; i < 3; i++) {
+        const a = ((v * (29 + i * 41)) % 1) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(ox + Math.cos(a) * r * 0.1, oy + Math.sin(a) * r * 0.1);
+        ctx.lineTo(ox + Math.cos(a) * r * 0.7, oy + Math.sin(a) * r * 0.7);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     },
   };
 
@@ -462,6 +763,11 @@ const Sprites = (() => {
     bush:      { r: 46, shadow: 8 },                  // 2.3m — wide enough to lie up in
     rock:      { r: 34, shadow: 10 },                 // 1.7m boulder
     crate:     { r: 21, shadow: 6 },                  // 1.05m
+    crateSilver: { r: 21, shadow: 6 },
+    crateGold:   { r: 21, shadow: 6 },
+    lootChest:   { r: 27, shadow: 8 },
+    crateAirdrop:{ r: 23, shadow: 7 },
+    dropPouch: { r: 15, shadow: 5 },                  // a loose consumable's own sack
     barrel:    { r: 13, shadow: 5 },                  // 0.65m drum
     pallet:    { r: 24, shadow: 3 },                  // 1.2m
     tyre:      { r: 15, shadow: 3 },                  // 0.75m
@@ -524,10 +830,10 @@ const Sprites = (() => {
     curRot = rot || 0;              // remembered so lit() can undo it
     if (curRot) ctx.rotate(curRot);
     ctx.lineJoin = 'round';
-    fn(ctx, m.r * (scale || 1));
+    fn(ctx, m.r * (scale || 1), hash01(x, y));
     ctx.restore();
     curRot = 0;
   }
 
-  return { DRAW, META, PROP_BOX, P, kinds, has, draw, circle, box };
+  return { DRAW, META, PROP_BOX, P, kinds, has, draw, circle, box, setBiome };
 })();

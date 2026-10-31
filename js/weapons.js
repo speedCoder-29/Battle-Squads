@@ -226,9 +226,9 @@ const Weapons = (() => {
     ['DEagle','Pistol','35',3.2,'7','2.3s',3.97,0.65,'0.15s',1.8,3,'Black','Semi-Automatic','12%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','D,S,Rd','A,W,M','Rc,F,H',58,14,'Hand cannon: three shots, and it hits like a DMR',6],
     ['Makarov PM','Pistol','17',6.5,'8','1.6s',4.76,0.45,'0.13s',2,2,'Black','Semi-Automatic','12%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','M,F,W','Rd,H,Rc','D,S,A',48,10,'Fastest trigger of the pistols, snappiest draw',5],
     ['Colt Python','Pistol','27',4,'6','2s',1.98,0.5,'0.14s',2.1,2,'Black','Semi-Automatic','15%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','H,A,Rc','F,D,S','M,Rd,W',56,12,'Revolver accuracy - the pin-point sidearm',3],
-    ['M4','Carbine','13',11,'30','3.1s',3.17,0.18,'0.24s',1,7,'Purple','Automatic','9%','None','Scope, Suppressor','AP, Tracer, HP','Medic','A,Rc,H','M,Rd,W','D,F,S',54,22,'The all-rounder: an M16 that trades reach for handling',4],
-    ['AKS-74U','Carbine','13.5',11,'30','2.4s',4.76,0.24,'0.22s',1.35,6,'Purple','Automatic','10%','None','Scope, Suppressor','AP, Tracer, HP','Medic','D,H,W','F,M,Rd','A,Rc,S',48,19,'Cut-down AK: quickest handling, wanders when you run',7.5],
-    ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',60,25,'Bullpup: wide from the hip but rock-steady on the move',0.5],
+    ['M4','Carbine','13',11,'30','3.1s',3.17,0.18,'0.24s',1,7,'Purple','Automatic','9%','None','Scope, Suppressor, Laser Sight','AP, Tracer, HP','Medic','A,Rc,H','M,Rd,W','D,F,S',54,22,'The all-rounder: an M16 that trades reach for handling',4],
+    ['AKS-74U','Carbine','13.5',11,'30','2.4s',4.76,0.24,'0.22s',1.35,6,'Purple','Automatic','10%','None','Scope, Suppressor, Laser Sight','AP, Tracer, HP','Medic','D,H,W','F,M,Rd','A,Rc,S',48,19,'Cut-down AK: quickest handling, wanders when you run',7.5],
+    ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor, Laser Sight','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',60,25,'Bullpup: wide from the hip but rock-steady on the move',0.5],
     ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','Fuze, Anti-Tank','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',24,20,'Lobbed HE round - arcs into cover',3],
     ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','Fuze, Anti-Tank','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
     /* 60 damage at 4 rounds a second was 240 DPS — the highest on the roster
@@ -419,6 +419,20 @@ const Weapons = (() => {
       buffs: ['+100% Magazine'],
       debuffs: ['+50% Reload', '+50% Weight', '+50% Handling'],
       mods: { magMult: 2, reloadMult: 1.50, weightMult: 1.50, handlingMult: 1.50 },
+    },
+    /* The Carbine's own attachment. Every other class got something that
+       says what the class is about — AR gets a Grenade Launcher, Shotgun
+       gets Sawed-Off and Double Barrel, Sniper and LMG get a Bipod, Pistol
+       gets a Flare Launcher — and Carbine (Medic's weapon) had only the
+       baseline Scope/Suppressor pair every class starts with, nothing of
+       its own. A laser fits the fantasy: Medic fights at a sprint, in and
+       out of a revive, and a tighter hipfire cone is worth more there than
+       a scope most Medics never stop to use — at the cost of a beam
+       anybody downrange can spot you by. */
+    'Laser Sight': {
+      name: 'Laser Sight', icon: '🔴',
+      buffs: ['-30% Hipfire Spread'], debuffs: ['Visible beam gives away your position at range'],
+      mods: { accuracyMult: 0.70 },
     },
   };
 
