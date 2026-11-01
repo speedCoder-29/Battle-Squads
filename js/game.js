@@ -199,7 +199,7 @@ const Game = (() => {
   let lastDt = 0.016;                 // the frame delta, for anything render() animates
   let timeLeft = MATCH_SECONDS;
 
-  let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [];
+  let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [], funnyFx = [];
   let grenades = [], deployables = [], smokes = [], crates = [], drops = [], airstrikes = [];
   let supplyDrop = null, supplyTimer = 0, supplyCount = 0;
   /* ---------------- the closing zone ----------------
@@ -3840,7 +3840,7 @@ const Game = (() => {
        garrison, hides the objective and sites the boat -- all of which need
        agents on the map, and buildMap runs before there are any. */
     if (mode === 'mission') setUpMission();
-    bullets = []; fx = []; dmgNums = [];
+    bullets = []; fx = []; dmgNums = []; funnyFx = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
     supplyDrop = null; supplyCount = 0; supplyTimer = SUPPLY_FIRST;
@@ -9357,6 +9357,7 @@ const Game = (() => {
     // fx + damage numbers
     for (let i = fx.length - 1; i >= 0; i--) { const f = fx[i]; f.x += f.vx * dt; f.y += f.vy * dt; f.life -= dt; if (f.life <= 0) fx.splice(i, 1); }
     for (let i = dmgNums.length - 1; i >= 0; i--) { const d = dmgNums[i]; d.y -= 30 * dt; d.life -= dt; if (d.life <= 0) dmgNums.splice(i, 1); }
+    for (let i = funnyFx.length - 1; i >= 0; i--) { const f = funnyFx[i]; f.y -= 45 * dt; f.life -= dt; if (f.life <= 0) funnyFx.splice(i, 1); }
 
     /* Nothing may reach the camera as a non-number.
 
@@ -9821,6 +9822,10 @@ const Game = (() => {
     a.standT = 0;
     spawnFx(a.x, a.y, teamInk(a.team), 14);
     if (owner) { owner.kills++; if (owner.isPlayer) { matchStats.kills++; SFX.kill(); } }
+    if (DB.getSettings().funnyEffects) {
+      spawnFunnyFx(a.x, a.y - a.r - 10, zone === 'head' ? 'BONKED!' : FUNNY_QUIPS[Math.floor(Math.random() * FUNNY_QUIPS.length)], zone === 'head');
+      if ((owner && owner.isPlayer) || a.isPlayer) SFX.funny();
+    }
     /* Arms Race: the kill is the promotion, and the promotion off the last
        rung is the match. Checked before the feed so the banner reads right. */
     const wonRace = mode === 'armsrace' && raceAdvance(owner, a);
@@ -10426,6 +10431,14 @@ const Game = (() => {
     }
   }
 
+  /* The Funny Effects setting's whole visual half: a goofy word pops out
+     over a kill, bounces up, and fades — on top of whatever the real kill
+     feed and streak banners already show, never instead of them. */
+  const FUNNY_QUIPS = ['YEETED!', 'SKILL ISSUE', 'GET REKT', 'L + RATIO', 'TOUCH GRASS', 'GG EZ', 'OOF', 'NOOB DESTROYED', 'BOOM ROASTED', 'ZERO IQ PLAY'];
+  function spawnFunnyFx(x, y, text, big) {
+    funnyFx.push({ x, y, text, big, life: 1.1, total: 1.1, rot: rand(-0.22, 0.22) });
+  }
+
   /* ---------------- HUD ---------------- */
   /* While driving, the bottom HUD describes the vehicle rather than the
      player: its gun is the one that fires, its magazine is the one that runs
@@ -10971,6 +10984,25 @@ const Game = (() => {
       ctx.font = `bold ${d.zone === 'head' ? 22 : d.zone === 'limb' ? 13 : 16}px ` + NUM_FONT;
       ctx.textAlign = 'center';
       ctx.fillText(d.zone === 'head' ? d.val + '!' : d.val, d.x, d.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // Funny Effects: goofy kill quips, popping in with a little bounce
+    for (const f of funnyFx) {
+      const age = f.total - f.life;
+      const scale = age < 0.15 ? (age / 0.15) * 1.25 : f.life < 0.3 ? Math.max(0, f.life / 0.3) : 1;
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.rotate(f.rot);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = clamp(f.life * 2, 0, 1);
+      ctx.font = `bold ${f.big ? 26 : 18}px ` + NUM_FONT;
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText(f.text, 0, 0);
+      ctx.fillStyle = f.big ? '#ff4bd6' : '#ffe14a';
+      ctx.fillText(f.text, 0, 0);
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
 

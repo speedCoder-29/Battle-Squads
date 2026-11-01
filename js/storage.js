@@ -169,6 +169,11 @@ const DB = (() => {
          and it hides a sliver of floor behind each wall, so it can be turned
          off for a flat, strictly top-down world. */
       flatWorld: false,
+      /* Purely cosmetic nonsense — goofy kill quips and a cartoon honk
+         layered on top of the real kill feedback. Off by default: a
+         squad that takes its K/D seriously shouldn't have "BONKED!" pop
+         up over a teammate's corpse unless they asked for it. */
+      funnyEffects: false,
     }, read(KEY_SETTINGS, {})),
     saveSettings: (s) => write(KEY_SETTINGS, s),
     freshProfile,

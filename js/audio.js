@@ -160,5 +160,10 @@ const SFX = (() => {
     win:   () => { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => tone(f, 0.2, 'triangle'), i * 120)); },
     lose:  () => { [400, 320, 240].forEach((f, i) => setTimeout(() => tone(f, 0.25, 'sawtooth'), i * 160)); },
     reward:() => { [660, 880].forEach((f, i) => setTimeout(() => tone(f, 0.12, 'triangle'), i * 90)); },
+    /* The Funny Effects setting's one sound: a cartoon "boop-wheee" honk
+       layered on top of the real kill sound, not instead of it. Never
+       positional, like kill() — it only plays for the kill or death that
+       actually involves the local player. */
+    funny: () => { tone(300, 0.08, 'square', 900); setTimeout(() => tone(1200, 0.14, 'sine', 240), 60); },
   };
 })();

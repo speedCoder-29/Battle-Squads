@@ -2296,10 +2296,15 @@ const Structures = (() => {
       const up = upper('controlRoom', ox + 60, oy + h + 56, w - 120, 240,
         { wall: 'metal', rooms: ['controlRoom', 'radioRoom', 'storeroom'], stairAt: 120 });
       out.push(...up.parts);
-      // the cable vault underneath -- real relay stations keep their battery
-      // racks below ground, out of the weather and off the main floor
-      const vault = basement('controlRoom', ox + 80, oy + h + 340, 300, 180,
-        { wall: 'metal', thickness: WALL_T.interior, hatchAt: 150 });
+      /* The cable vault, underneath -- real relay stations keep their battery
+         racks below ground, out of the weather and off the main floor. Next
+         to the control room's footprint rather than further below it, and
+         sized to the smallest room the engine allows: A is the smallest of
+         the objective buildings, and this is also a mission-mode core
+         candidate, where the ring layout is tuned against how big the core
+         actually measures -- the less this adds to that, the better. */
+      const vault = basement('controlRoom', ox + 600, oy + h + 56, 150, 120,
+        { wall: 'metal', thickness: WALL_T.interior, hatchAt: 75 });
       out.push(...vault.parts);
       out.push(seg('wire', ox - 80, oy - 60, 6, 'h', 0.4));
       out.rooms = [...plan.rooms, ...up.rooms, vault.room];
@@ -2334,10 +2339,12 @@ const Structures = (() => {
       const up = upper('controlRoom', ox + 120, oy + h + 60, 560, 230,
         { wall: 'metal', rooms: ['controlRoom', 'office', 'storeroom'], stairAt: 90 });
       out.push(...up.parts);
-      // the pump gallery below the floor -- every refinery this size runs its
-      // piping underground rather than through the open plant
-      const pump = basement('storeroom', ox + 100, oy + h + 330, 320, 190,
-        { wall: 'metal', thickness: WALL_T.interior, hatchAt: 160 });
+      // the pump gallery -- every refinery this size runs its piping
+      // underground, boxed in beside the control room rather than stacked
+      // further below it, and kept inside the plant's own footprint width
+      // (B is a mission-mode core candidate too)
+      const pump = basement('storeroom', ox + 700, oy + h + 60, 270, 170,
+        { wall: 'metal', thickness: WALL_T.interior, hatchAt: 135 });
       out.push(...pump.parts);
       out.rooms = [
         room('workbay', ox + 40, oy + 40, w * 0.68, h - 80),
@@ -2378,9 +2385,11 @@ const Structures = (() => {
          a cellar off the strongroom rather than out on a corridor, because it
          was the most protected space the fort had. Same here: a second
          armoury, buried, behind its own hatch rather than the rampart's
-         stair. */
-      const dungeon = basement('armoury', ox + 120, oy + h + 322, 300, 190,
-        { wall: 'rwall', thickness: WALL_T.fortified, hatchAt: 150 });
+         stair -- beside the rampart's own footprint, not further below it,
+         and inside the keep's own footprint width (C is a mission-mode core
+         candidate too). */
+      const dungeon = basement('armoury', ox + 740, oy + h + 62, 220, 150,
+        { wall: 'rwall', thickness: WALL_T.fortified, hatchAt: 110 });
       out.push(...dungeon.parts);
       out.push(seg('wire', ox - 90, oy - 70, 10, 'h', 0.4));
       out.push(seg('wire', ox - 90, oy - 70, 8, 'v', 0.4));
@@ -2413,8 +2422,9 @@ const Structures = (() => {
       /* Every star fort of this shape buried its powder magazine under a
          bastion rather than leaving it on the terreplein -- the most
          protected room in the place, under the thing that is hardest to
-         reach in the first place. */
-      const mag = basement('armoury', ox + 120, oy + h + 310, 300, 190,
+         reach in the first place. Beside the ops deck's own footprint, not
+         stacked further below it. */
+      const mag = basement('armoury', ox + 750, oy + h + 60, 300, 190,
         { wall: 'rwall', thickness: WALL_T.fortified, hatchAt: 150 });
       out.push(...mag.parts);
       out.push(seg('wire', ox - 90, oy - 70, 9, 'h', 0.4));

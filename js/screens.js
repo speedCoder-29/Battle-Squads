@@ -1018,6 +1018,7 @@ const Screens = (() => {
     document.getElementById('set-dmgnum').checked = s.dmgNumbers;
     // stored as the opt-out, shown as the feature: checked means raised
     document.getElementById('set-depth').checked = !s.flatWorld;
+    document.getElementById('set-funny').checked = s.funnyEffects;
     // sight options
     document.getElementById('set-fov').value = s.fov;
     document.getElementById('val-fov').textContent = s.fov;
@@ -1202,6 +1203,7 @@ const Screens = (() => {
     s.quality = document.getElementById('set-quality').value;
     s.dmgNumbers = document.getElementById('set-dmgnum').checked;
     s.flatWorld = !document.getElementById('set-depth').checked;
+    s.funnyEffects = document.getElementById('set-funny').checked;
     s.fov = +document.getElementById('set-fov').value;
     s.teamColors = document.getElementById('set-teamcolors').value;
     s.foeColor = document.getElementById('set-foecolor').value;
