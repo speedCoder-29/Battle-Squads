@@ -321,31 +321,65 @@ const Game = (() => {
   /* Objectives live inside the landmark buildings, so capturing one means
      holding a factory floor or a keep rather than standing in a field. If a
      landmark somehow failed to place, we fall back to open ground. */
-  /* Where the three points go, as a fraction of the map.
-
-     An equilateral triangle, which is the arrangement the mode is built on:
-     equal sides mean the walk from A to B is the walk from C to B, so neither
-     home flag is closer to the middle than the other. The old anchors were
-     (0.24,0.70) (0.50,0.44) (0.77,0.30) -- a scalene sprawl where A->B was
-     0.40 of the map and A->C was 0.53, so one side had a shorter rotation
-     than the other all match. A and C sit level, B is the far point. */
+  /* Where the points go, as a fraction of the map. Two squads keep the hand-
+     tuned triangle below: equal sides mean the walk from A to B is the walk
+     from C to B, so neither home flag is closer to the middle than the
+     other. The old anchors were (0.24,0.70) (0.50,0.44) (0.77,0.30) -- a
+     scalene sprawl where A->B was 0.40 of the map and A->C was 0.53, so one
+     side had a shorter rotation than the other all match. A and C sit level,
+     B is the far point. */
   const OBJ_TRIANGLE = [
     { u: 0.27, v: 0.69 },    // A -- home flag, west
     { u: 0.50, v: 0.29 },    // B -- the middle, north
     { u: 0.73, v: 0.69 },    // C -- home flag, east
   ];
 
+  /* How many capture points a domination match needs: one home flag per
+     squad, plus one contested point shared by all of them -- which is
+     exactly the shape the 2-squad triangle above already is (A, C home;
+     B contested). Every other mode keeps the fixed three: elimination and
+     arms race don't have objectives, they just use the landmark buildings as
+     rich-loot POIs, and scaling those with team count was never the ask.
+     Capped at the number of purpose-built objective buildings on hand --
+     past that a map would be mostly flags, and extra squads double up on
+     whichever home flag is nearest their spawn instead of getting their own. */
+  function objectiveCount() {
+    if (mode !== 'domination') return 3;
+    return clamp(nTeams + 1, 3, LANDMARKS.length);
+  }
+
+  /* n-1 home flags spread across the south of the map, one contested point
+     at the top -- the 2-squad triangle above, generalised to however many
+     squads are actually in the match. n===3 returns that exact triangle
+     rather than running the formula, so a 2-squad game is byte-identical to
+     before this existed. */
+  function objectiveLayout(n) {
+    if (n === 3) return OBJ_TRIANGLE;
+    const homes = n - 1;
+    const spread = Math.min(0.72, 0.16 + homes * 0.07);
+    const pts = [];
+    for (let i = 0; i < homes; i++) {
+      const t = homes === 1 ? 0.5 : i / (homes - 1);
+      pts.push({ u: 0.5 - spread / 2 + spread * t, v: 0.69 });
+    }
+    pts.push({ u: 0.5, v: 0.29 });       // the contested point, always last
+    return pts;
+  }
+
   function objectiveAnchors() {
-    const names = ['A', 'B', 'C'];
-    if (landmarks.length >= 3) {
-      return landmarks.slice(0, 3).map((l, i) => {
+    const n = objectiveCount();
+    const layout = objectiveLayout(n);
+    const names = Array.from({ length: n }, (_, i) => String.fromCharCode(65 + i));
+    const contestedIdx = n === 3 ? 1 : n - 1;
+    if (landmarks.length >= n) {
+      return landmarks.slice(0, n).map((l, i) => {
         const r = Math.max(150, Math.min(l.w, l.h) * 0.30);
         const p = spotInsideBuilding(l, r);
         return { name: names[i], x: p.x, y: p.y, r, building: l.name, inside: true };
       });
     }
-    return OBJ_TRIANGLE.map((a, i) =>
-      ({ name: names[i], x: MAP_W * a.u, y: MAP_H * a.v, r: i === 1 ? 175 : 165 }));
+    return layout.map((a, i) =>
+      ({ name: names[i], x: MAP_W * a.u, y: MAP_H * a.v, r: i === contestedIdx ? 175 : 165 }));
   }
   let objectiveSpotsCache = [];
   const objectiveSpots = () => objectiveSpotsCache;
@@ -358,18 +392,22 @@ const Game = (() => {
      One of each, placed first so they get the room they need, spread across
      the map. In domination these are also where the objectives go: capturing
      means holding a building, not standing in a field. */
-  /* The three capture points are purpose-built now rather than whichever
-     large building happened to be placed first. Each is a different problem —
-     a tower you fight up, an open floor you fight across, and a walled keep
-     you fight into — so holding A does not feel like holding C. */
-  const LANDMARKS = ['obj-relay', 'obj-refinery', 'obj-citadel'];
+  /* The capture points are purpose-built rather than whichever large building
+     happened to be placed first. Each is a different problem -- a tower you
+     fight up, an open floor you fight across, a walled keep you fight into, a
+     ring fort with no single gate, and a maze with no long sightline -- so
+     holding one never feels like holding another. A 2-squad match only ever
+     needs the first three; the rest come in as the lobby's squad count grows. */
+  const LANDMARKS = ['obj-relay', 'obj-refinery', 'obj-citadel', 'obj-bastion', 'obj-outpost'];
 
   function placeLandmarks() {
-    // the same triangle the objectives use, so the buildings *are* the points
-    const anchors = OBJ_TRIANGLE.map(a => ({ x: MAP_W * a.u, y: MAP_H * a.v }));
+    const n = objectiveCount();
+    const anchors = objectiveLayout(n).map(a => ({ x: MAP_W * a.u, y: MAP_H * a.v }));
     landmarks = [];
-    LANDMARKS.forEach((name, i) => {
-      const anchor = anchors[i % anchors.length];
+    for (let i = 0; i < n; i++) {
+      const name = LANDMARKS[i % LANDMARKS.length];
+      const anchor = anchors[i];
+      search:
       for (let ring = 0; ring <= 30; ring++) {
         for (let k = 0; k < 12; k++) {
           const ang = (k / 12) * Math.PI * 2 + ring;
@@ -385,14 +423,22 @@ const Game = (() => {
           obstacles.push(...parts);
           invalidateRects();
           const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms, shape: parts.shape };
+          /* bb is the bounding box of every part the blueprint returned,
+             basement and upper floor included -- those are modelled as
+             separate rects offset below the ground floor's own footprint, so
+             a building with either is taller in `bb` than the room you can
+             actually see from outside. flagAt is the ground floor's own
+             centre, set by objectiveShell; carrying it through is what lets
+             spotInsideBuilding aim at the room under the flag mast instead
+             of drifting toward whichever sub-level happens to be large. */
+          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms, shape: parts.shape, flagAt: parts.flagAt || null };
           landmarks.push(rec);
           buildings.push(rec);
           furnish(name, bb, parts.rooms);
-          return;
+          break search;
         }
       }
-    });
+    }
   }
   let landmarks = [];
 
@@ -401,7 +447,11 @@ const Game = (() => {
      buildings have spines and inner rooms, so the geometric centre is often
      solid brick. */
   function spotInsideBuilding(l, r) {
-    const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+    // the ground floor's own centre when the blueprint knows it (see
+    // placeLandmarks); only falls back to the full, multi-level bbox for a
+    // landmark that never declared one
+    const cx = l.flagAt ? l.flagAt.x : l.x + l.w / 2;
+    const cy = l.flagAt ? l.flagAt.y : l.y + l.h / 2;
     const clear = (x, y) => {
       if (pointInObstacle(x, y)) return false;
       // keep the disc inside the building's footprint
@@ -868,6 +918,8 @@ const Game = (() => {
     'obj-relay':    { props: ['desk', 'locker', 'ammoBox', 'crate', 'shelf'], n: 18, loot: 0, floor: '#4a5260' },
     'obj-refinery': { props: ['barrel', 'pallet', 'crate', 'tyre', 'shelf'], n: 24, loot: 0, floor: '#544e46' },
     'obj-citadel':  { props: ['ammoBox', 'locker', 'crate', 'shelf', 'barrel'], n: 22, loot: 0, floor: '#4c4a52' },
+    'obj-bastion':  { props: ['ammoBox', 'sandpile', 'locker', 'crate', 'shelf'], n: 20, loot: 0, floor: '#50544a' },
+    'obj-outpost':  { props: ['crate', 'shelf', 'locker', 'ammoBox', 'pallet'], n: 20, loot: 0, floor: '#6b5f45' },
     'bunker-complex': { props: ['ammoBox', 'crate', 'locker', 'barrel'], n: 14, loot: 0, floor: '#3e4147' },
     watermill:  { props: ['pallet', 'barrel', 'shelf', 'crate', 'rubble'], n: 20, loot: 0, floor: '#6f6350' },
     /* The table's buildings. `loot` is ignored for these — their rooms say

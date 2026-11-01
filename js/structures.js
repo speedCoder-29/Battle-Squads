@@ -1433,9 +1433,28 @@ const Structures = (() => {
        C · Citadel        — the hard one: a walled courtyard with a keep in the
            middle, reinforced throughout, and its upper floor over the gate.
 
+     A map with more than two squads on it needs more than three points to
+     fight over, so there are two more in reserve for when the match calls
+     for them:
+
+       D · Bastion   — a ring fort with a door on every face and nothing but
+           the tower in the middle to fight for. No single gate to hold, so
+           four approaches all converge on the same high ground.
+       E · Outpost   — no wide room anywhere in it: a maze of small rooms
+           behind a staggered corridor, won one doorway at a time.
+
+     Every one of them is now three levels deep rather than two: ground floor,
+     the upstairs each already had (the maze doesn't -- a second storey would
+     just be another corridor), and a buried room under a hatch, the way a
+     real fort keeps its magazine under a bastion rather than out on the open
+     terreplein. The capture disc stays on the ground floor regardless -- the
+     cellar is somewhere to retreat to or get flanked from, not the point
+     itself.
+
      Each carries a mast by its door so you can see which point you are looking
-     at from outside, and each declares a flagAt for the generator to put the
-     capture disc on. */
+     at from outside, and each declares a flagAt (the ground floor's own
+     centre, not the building's full bounding box) for the generator to put
+     the capture disc on. */
   function objectiveShell(out, ox, oy, w, h, label, doors, wallType, th) {
     out.push(...shell(ox, oy, w, h, wallType, th, doors));
     out.push(flagMast(ox + w / 2, oy - 42, label));
@@ -2277,8 +2296,13 @@ const Structures = (() => {
       const up = upper('controlRoom', ox + 60, oy + h + 56, w - 120, 240,
         { wall: 'metal', rooms: ['controlRoom', 'radioRoom', 'storeroom'], stairAt: 120 });
       out.push(...up.parts);
+      // the cable vault underneath -- real relay stations keep their battery
+      // racks below ground, out of the weather and off the main floor
+      const vault = basement('controlRoom', ox + 80, oy + h + 340, 300, 180,
+        { wall: 'metal', thickness: WALL_T.interior, hatchAt: 150 });
+      out.push(...vault.parts);
       out.push(seg('wire', ox - 80, oy - 60, 6, 'h', 0.4));
-      out.rooms = [...plan.rooms, ...up.rooms];
+      out.rooms = [...plan.rooms, ...up.rooms, vault.room];
       return out;
     },
 
@@ -2310,9 +2334,14 @@ const Structures = (() => {
       const up = upper('controlRoom', ox + 120, oy + h + 60, 560, 230,
         { wall: 'metal', rooms: ['controlRoom', 'office', 'storeroom'], stairAt: 90 });
       out.push(...up.parts);
+      // the pump gallery below the floor -- every refinery this size runs its
+      // piping underground rather than through the open plant
+      const pump = basement('storeroom', ox + 100, oy + h + 330, 320, 190,
+        { wall: 'metal', thickness: WALL_T.interior, hatchAt: 160 });
+      out.push(...pump.parts);
       out.rooms = [
         room('workbay', ox + 40, oy + 40, w * 0.68, h - 80),
-        ...side.rooms, ...up.rooms,
+        ...side.rooms, ...up.rooms, pump.room,
       ];
       return out;
     },
@@ -2345,9 +2374,81 @@ const Structures = (() => {
       const up = upper('opsRoom', ox + 100, oy + h + 62, 620, 220,
         { wall: 'rwall', thickness: WALL_T.fortified, rooms: ['opsRoom', 'armoury', 'bunkroom'], stairAt: 100 });
       out.push(...up.parts);
+      /* The dungeon under the keep -- real star forts kept their magazine as
+         a cellar off the strongroom rather than out on a corridor, because it
+         was the most protected space the fort had. Same here: a second
+         armoury, buried, behind its own hatch rather than the rampart's
+         stair. */
+      const dungeon = basement('armoury', ox + 120, oy + h + 322, 300, 190,
+        { wall: 'rwall', thickness: WALL_T.fortified, hatchAt: 150 });
+      out.push(...dungeon.parts);
       out.push(seg('wire', ox - 90, oy - 70, 10, 'h', 0.4));
       out.push(seg('wire', ox - 90, oy - 70, 8, 'v', 0.4));
-      out.rooms = [...plan.rooms, ...up.rooms];
+      out.rooms = [...plan.rooms, ...up.rooms, dungeon.room];
+      return out;
+    },
+
+    /* D · the bastion. A ring fort, not a keep: four equal faces, a door in
+       each, and the only firing position is the tower in the middle -- so
+       unlike the citadel there is no single gate to hold, just four
+       approaches that all converge on the same high ground. */
+    'obj-bastion'(ox, oy) {
+      const w = 820, h = 820;
+      const out = [];
+      const plan = courtyardPlan('rwall', ox, oy, w, h, {
+        north: ['guardRoom'], south: ['guardRoom'],
+        west: ['armoury'], east: ['armoury'],
+        core: 'opsRoom', depth: 190, corridor: 92, thickness: 0.45,
+      });
+      objectiveShell(out, ox, oy, w, h, 'D', [
+        { side: 'n', at: 380, type: 'rdoor' },
+        { side: 's', at: 380, type: 'rdoor' },
+        { side: 'w', at: 380, type: 'rdoor' },
+        { side: 'e', at: 380, type: 'rdoor' },
+      ], 'rwall', WALL_T.fortified);
+      out.push(...plan.parts);
+      const up = upper('opsRoom', ox + 110, oy + h + 60, w - 220, 210,
+        { wall: 'rwall', thickness: WALL_T.fortified, rooms: ['opsRoom', 'armoury', 'opsRoom'], stairAt: (w - 220) / 2 });
+      out.push(...up.parts);
+      /* Every star fort of this shape buried its powder magazine under a
+         bastion rather than leaving it on the terreplein -- the most
+         protected room in the place, under the thing that is hardest to
+         reach in the first place. */
+      const mag = basement('armoury', ox + 120, oy + h + 310, 300, 190,
+        { wall: 'rwall', thickness: WALL_T.fortified, hatchAt: 150 });
+      out.push(...mag.parts);
+      out.push(seg('wire', ox - 90, oy - 70, 9, 'h', 0.4));
+      out.push(seg('wire', ox + w + 20, oy + h + 10, 9, 'h', 0.4));
+      out.rooms = [...plan.rooms, ...up.rooms, mag.room];
+      return out;
+    },
+
+    /* E · the outpost. No wide room anywhere in it -- a maze of small
+       bunkrooms and offices behind a staggered corridor, so holding E is
+       won room by room rather than from the doorway. */
+    'obj-outpost'(ox, oy) {
+      const w = 720, h = 560;
+      const out = [];
+      const plan = floorPlan('wood', ox, oy, w, h, {
+        corridor: { axis: 'h', at: 0.48, width: 100 },
+        a: ['bunkroom', 'storeroom', 'guardRoom', 'armoury'],
+        b: ['office', 'radioRoom', 'storeroom'],
+        fillA: 'storeroom', fillB: 'office', thickness: 0.35, chicane: true,
+      });
+      objectiveShell(out, ox, oy, w, h, 'E', [
+        { side: 'w', at: h * 0.48 - 30, type: 'rdoor' },
+        { side: 'n', at: 160 },
+        { side: 's', at: 480 },
+      ], 'wood', WALL_T.exterior);
+      out.push(...plan.parts);
+      // a dug-in cache under the floor -- the one thing an improvised outpost
+      // has in common with a real FOB: nothing above ground is trusted to
+      // hold the good stuff
+      const dugout = basement('storeroom', ox + 60, oy + h + 50, 260, 170,
+        { wall: 'wood', thickness: WALL_T.interior, hatchAt: 120 });
+      out.push(...dugout.parts);
+      out.push(seg('wire', ox - 70, oy - 50, 8, 'h', 0.4));
+      out.rooms = [...plan.rooms, dugout.room];
       return out;
     },
 
@@ -3454,6 +3555,8 @@ const Structures = (() => {
     'obj-relay':    { ...S_INDUSTRIAL, floor: '#4a5260', roof: ['#5f6b7d', '#3d4652'], trim: '#4bb7d8' },
     'obj-refinery': { ...S_INDUSTRIAL, floor: '#544e46', roof: ['#7a6a55', '#4e4438'], trim: '#e0913a' },
     'obj-citadel':  { ...S_INDUSTRIAL, floor: '#4c4a52', roof: ['#63616b', '#403f47'], trim: '#c4536b' },
+    'obj-bastion':  { ...S_MILITARY, floor: '#50544a', roof: ['#5f664f', '#3f4435'], trim: '#8fae4a' },
+    'obj-outpost':  { ...S_RESIDENTIAL, floor: '#6b5f45', roof: ['#8a7550', '#5e4e34'], trim: '#b8873a' },
     'bunker-complex': { ...S_INDUSTRIAL, floor: '#3e4147', roof: ['#575e63', '#3b4145'], trim: '#7d8a72' },
     watermill:   { ...S_RESIDENTIAL, floor: '#6f6350', roof: ['#5a7a6a', '#3c5548'], trim: '#2e4238' },
 
@@ -3721,6 +3824,8 @@ const Structures = (() => {
     'obj-relay':    { grade: 'rich', ring: 'mid' },
     'obj-refinery': { grade: 'rich', ring: 'inner' },
     'obj-citadel':  { grade: 'rich', ring: 'mid' },
+    'obj-bastion':  { grade: 'rich', ring: 'mid' },
+    'obj-outpost':  { grade: 'rich', ring: 'mid' },
 
     /* ---- one per team, at their spawn ---- */
     base:         { grade: 'medium', ring: 'spawn' },
@@ -3771,6 +3876,8 @@ const Structures = (() => {
        between two literals that can only ever go one way, so it was an
        elaborate way of writing 'sandpile'. */
     'obj-citadel':  ['sandpile', 'ammoBox', 'crate', 'rubble', 'barrel'],
+    'obj-bastion':  ['sandpile', 'sandpile', 'ammoBox', 'crate', 'post'],
+    'obj-outpost':  ['crate', 'pallet', 'ammoBox', 'tyre', 'rubble'],
     /* ---- residential: gardens, washing lines, firewood ---- */
     house:        ['bush', 'bush', 'bin', 'plant', 'stump'],
     mansion:      ['plant', 'plant', 'bush', 'bench', 'bush'],
