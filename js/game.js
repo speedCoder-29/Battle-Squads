@@ -205,6 +205,9 @@ const Game = (() => {
 
   let agents = [], bullets = [], obstacles = [], objectives = [], fx = [], dmgNums = [], funnyFx = [];
   let grenades = [], deployables = [], smokes = [], crates = [], drops = [], airstrikes = [];
+  // objective name -> its emplacement, so a capture can find and re-crew it
+  // without scanning deployables (see fortifyObjective/claimObjectiveTurret)
+  let objTurrets = {};
   let supplyDrop = null, supplyTimer = 0, supplyCount = 0;
   /* ---------------- the closing zone ----------------
      Elimination's pacing, and the only thing on the board that makes people
@@ -352,30 +355,40 @@ const Game = (() => {
     return clamp(nTeams + 1, 3, LANDMARKS.length);
   }
 
-  /* n-1 home flags and one contested point, as vertices of a regular n-gon
-     around the map's centre -- the 2-squad triangle above, generalised to
-     however many squads are actually in the match. n===3 returns that exact
-     triangle rather than running the formula, so a 2-squad game is
-     byte-identical to before this existed.
+  /* n-1 home flags on a circle, one contested point dead in the middle of
+     it. n===3 still returns the exact hand-tuned triangle rather than
+     running the formula, so a 2-squad game is byte-identical to before any
+     of this existed -- a triangle's own two corners already sit the same
+     distance from its top point, so there was nothing to fix there.
 
-     This replaced a version that strung the home flags along one line in
-     the southern half of the map: fine for two of them (that's just the
-     triangle's own two corners), but at four or five it packed every home
-     flag within a third of the map's width of its neighbour while the
-     northern half held nothing but the one contested point. A regular
-     polygon's vertices are the most spread out n points on a circle can
-     be -- which is exactly "evenly distributed" and "not too close
-     together" at once, for any n, without hand-tuning a new shape per
-     squad count. */
+     Three and four home flags are a different shape. The previous version
+     here put every objective, contested included, on one shared circle --
+     which spaced the home flags evenly from EACH OTHER, but a point on a
+     circle is not equidistant from every other point on that same circle
+     except in the one case of exactly two of them 120 degrees apart (the
+     triangle). With three or four home flags around the ring as well, each
+     one's angle to the contested point is different, so the walk from a
+     home flag to the point everyone is actually fighting over came out
+     anywhere from 3260px to 5430px depending on which flag you'd drawn --
+     the match was only ever fair by coincidence.
+
+     Equidistant-from-every-home has exactly one shape: put the thing they
+     all have to be equidistant from at the CENTRE of their circle. Every
+     home flag is then radius R from the contested point by construction,
+     not by luck of the angle -- and spawnPoint() pushes each squad's camp
+     straight out past its own home flag along that same radius, so the
+     walk to the middle comes out equal for every squad too, not just the
+     flags themselves. */
   function objectiveLayout(n) {
     if (n === 3) return OBJ_TRIANGLE;
     const R = 0.26;                     // matches the triangle's own spread
+    const homes = n - 1;
     const pts = [];
-    for (let k = 1; k < n; k++) {
-      const ang = (-90 + k * 360 / n) * Math.PI / 180;
+    for (let k = 0; k < homes; k++) {
+      const ang = (-90 + k * 360 / homes) * Math.PI / 180;
       pts.push({ u: 0.5 + R * Math.cos(ang), v: 0.5 + R * Math.sin(ang) });
     }
-    pts.push({ u: 0.5, v: 0.5 - R });    // contested, always last, due north
+    pts.push({ u: 0.5, v: 0.5 });        // contested, always last, dead centre
     return pts;
   }
 
@@ -558,6 +571,69 @@ const Game = (() => {
     // bulldoze() would take the whole placement with it and delete the very
     // building the objective is supposed to be inside.
     for (let r = 70; r <= 220 && pointInObstacle(o.x, o.y); r += 50) carveOut(o.x, o.y, r);
+  }
+
+  /* Give a capture point something to fight over besides open floor: a
+     sandbag nest at each of the four compass points around it, tangent to
+     the ring rather than radial -- a wall pointing straight at the middle
+     is a spike nobody can stand behind, a wall tangent to the circle is
+     cover against whoever's coming from that direction, with the diagonals
+     left open so the room still has more than one way in. Skipped wherever
+     something's already there (a landmark's own walls, its furniture) rather
+     than bulldozing it -- four sandbag runs are set dressing, not a
+     requirement worth clearing a room for. */
+  const OBJ_WALL_LEN = 3;       // metres
+  function fortifyObjective(o) {
+    const r = Math.max(90, o.r * 0.6);
+    const spots = [
+      { ang: -Math.PI / 2, axis: 'h' },   // north: wall runs east-west
+      { ang: 0,            axis: 'v' },   // east: wall runs north-south
+      { ang: Math.PI / 2,  axis: 'h' },   // south
+      { ang: Math.PI,      axis: 'v' },   // west
+    ];
+    for (const s of spots) {
+      const cx = o.x + Math.cos(s.ang) * r, cy = o.y + Math.sin(s.ang) * r;
+      const wall = s.axis === 'h'
+        ? Structures.seg('sandbag', cx - (OBJ_WALL_LEN * PX_PER_M) / 2, cy, OBJ_WALL_LEN, 'h', 0.3)
+        : Structures.seg('sandbag', cx, cy - (OBJ_WALL_LEN * PX_PER_M) / 2, OBJ_WALL_LEN, 'v', 0.3);
+      if (obstacles.some(ob => padOverlap(wall, ob, 14))) continue;
+      obstacles.push(wall); genAdd(wall);
+    }
+    /* An emplacement waiting for a crew: present from the first second of
+       the match (there's something to see from across the room even before
+       anyone's taken the point), inert until somebody actually holds it --
+       see claimObjectiveTurret(), called the moment updateObjectives()
+       hands the point to a team. Offset off the exact centre so it doesn't
+       sit inside the planted standard's own drawing (see the "objectives"
+       render pass), closer to the entrance side than dead centre so it
+       reads as guarding the room rather than blocking it. */
+    const tx = o.x + Math.cos(Math.PI * 0.35) * r * 0.55;
+    const ty = o.y + Math.sin(Math.PI * 0.35) * r * 0.55;
+    const dp = {
+      type: 'sentry', x: tx, y: ty, team: -1, owner: null, objective: o.name,
+      item: OBJ_TURRET_ITEM, hp: OBJ_TURRET_ITEM.hp, maxHp: OBJ_TURRET_ITEM.hp,
+      life: Infinity, angle: Math.random() * Math.PI * 2, cd: 0,
+    };
+    deployables.push(dp);
+    objTurrets[o.name] = dp;
+    invalidateRects();
+  }
+  /* Tuned a notch under the player-deployed Engineer sentry (13dmg @ 6.5rof,
+     js/items.js) -- this one never expires and is handed out for free on
+     every capture rather than earned and placed, so a straight copy of the
+     numbers would make holding a point too strong relative to taking one. */
+  const OBJ_TURRET_ITEM = { name: 'Objective Turret', range: 820, damage: 10, rof: 5, hp: 260 };
+  /* The point just changed hands -- repair the crew-served gun that comes
+     with it and hand it to the new owner, same as recapturing resupplies
+     everything else at the point. Still there if it survived, rebuilt in
+     place if an attacker had already put it down; either way the team that
+     just took the room gets a working gun, not whatever state the fight
+     left it in. */
+  function claimObjectiveTurret(obj, team) {
+    const dp = objTurrets[obj.name];
+    if (!dp) return;
+    dp.team = team; dp.hp = dp.maxHp;
+    if (!deployables.includes(dp)) deployables.push(dp);
   }
 
   /* Remove individual wall pieces overlapping a disc, without the whole-
@@ -2893,6 +2969,12 @@ const Game = (() => {
   /* How far out along the ring each squad deploys, as a multiple of the ring
      radius. Filled in by alignSpawnRing(); 1 for everybody is the old layout. */
   let spawnBands = null;
+  /* The Domination equivalent for a team with its own home flag: how far
+     behind it a squad camps, in pixels rather than a ring-radius multiple
+     because a home flag doesn't sit on a ring to begin with. Filled in by
+     alignHomeSpawns(); null (or missing an entry) falls back to the old
+     flat HOME_BACK_DEFAULT. */
+  let homeBack = null;
   /* Which position on the spawn ring a team actually occupies.
 
      Team 0 was always the one at the top of the ring, every map, every
@@ -3035,6 +3117,103 @@ const Game = (() => {
     }
   }
 
+  /* Even out the walk to the objectives for a home-flag squad -- the same
+     idea as alignSpawnRing() just above, solved on how far BEHIND the flag
+     a squad camps rather than how far out on a ring, because a home flag
+     doesn't have a ring to begin with.
+
+     Needed because the home flag and the contested point are each placed by
+     their own search dodging whatever terrain and other buildings happen to
+     be in the way -- the contested point alone was measured drifting up to
+     1800px off the map's true centre chasing a river or a required building
+     out of its way. A fixed push-back behind the flag just inherits
+     whatever that search happened to leave each squad with; this measures
+     the walk against the objectives as they actually ended up and solves
+     for a push-back that evens it out, the same blended "nearest point plus
+     the average of the set" metric alignSpawnRing() uses. */
+  /* The search range the bisection in alignHomeSpawns() is allowed to pick
+     from. 1700 was the first guess and it was too tight -- on some maps the
+     flag and contested point search each drift far enough that pulling the
+     nearer squad's camp out to match the furthest took more push-back than
+     that allowed, and the solver pinned against the ceiling rather than
+     actually converging (measured: two of four squads stuck at the cap on
+     one real map). A squad whose home flag already sits near the map's edge
+     hits SPAWN_INSET -- the hard limit, not this one -- well before 3200,
+     at which point more push-back buys it nothing either; the solver still
+     picks the best clamped answer it can in that case, it just can't always
+     fully equalise the walk when the map itself is what's in the way. */
+  const HOME_BACK_DEFAULT = 760, HOME_BACK_MIN = 400, HOME_BACK_MAX = 3200;
+  function alignHomeSpawns() {
+    homeBack = null;
+    if (mode !== 'domination' || !objectives.length || nTeams < 2) return;
+    const homes = [];
+    for (let t = 0; t < nTeams; t++) homes.push(homeFlag(t));
+    if (homes.some(h => !h)) return;     // no home flag for every squad -- the ring handles it instead
+    /* The point this is actually solving for a fair walk to -- not a blend
+       across every objective the way alignSpawnRing() needs (there, no
+       squad owns any of the three, so "the walk to the set" is the whole
+       question). Here each squad's "nearest" objective is always its own
+       home flag -- trivially close by construction and barely varies --
+       so a nearest+average blend mostly measures how evenly spread the
+       OTHER squads' home flags are, which nobody but the generator cares
+       about. The fight worth equalising the walk to is the one everybody
+       is actually walking to: the contested point. */
+    const n = objectives.length;
+    const contested = objectives[n === 3 ? 1 : n - 1];
+    if (!contested) return;
+    /* Matches spawnPoint()'s own math exactly, clamp included -- solving
+       against the unclamped point was a real bug, not just an approximation:
+       a squad whose home flag already sits close to the map edge hit
+       SPAWN_INSET well before it reached the back distance the solver
+       picked for it, so the walk it was actually given was nothing like the
+       one the bisection thought it was converging on. */
+    const at = (t, back) => {
+      const home = homes[t];
+      // away from the contested point itself, same as spawnPoint() -- see
+      // the comment there for why that's not the same as away from centre
+      const dx = home.x - contested.x, dy = home.y - contested.y, d = Math.hypot(dx, dy) || 1;
+      return {
+        x: clamp(home.x + (dx / d) * back, SPAWN_INSET, MAP_W - SPAWN_INSET),
+        y: clamp(home.y + (dy / d) * back, SPAWN_INSET, MAP_H - SPAWN_INSET),
+      };
+    };
+    const walk = (t, back) => {
+      const a = at(t, back);
+      return Math.hypot(a.x - contested.x, a.y - contested.y);
+    };
+    /* The target is the LARGEST natural walk, not the median alignSpawnRing()
+       uses for its ring bands. That solver can pull a squad in as easily as
+       push one out, so splitting the difference at the median shares the
+       correction between both directions. This one only has an "out": back
+       can't go negative, so a squad already standing closer to the fight
+       than the target can never be pulled back to meet it, whatever the
+       bisection below picks. Aiming at the largest walk instead means every
+       squad is being asked to match the one that's already hardest to
+       equalise, which is always achievable (mapping edges aside) by
+       standing further back -- never short. */
+    const base = [];
+    for (let t = 0; t < nTeams; t++) base.push(walk(t, HOME_BACK_DEFAULT));
+    const target = Math.max(...base);
+    homeBack = [];
+    for (let t = 0; t < nTeams; t++) {
+      let lo = HOME_BACK_MIN, hi = HOME_BACK_MAX;
+      const wLo = walk(t, lo), wHi = walk(t, hi);
+      let back;
+      if (target <= Math.min(wLo, wHi)) back = wLo < wHi ? lo : hi;
+      else if (target >= Math.max(wLo, wHi)) back = wLo > wHi ? lo : hi;
+      else {
+        const rising = wHi > wLo;
+        for (let i = 0; i < 20; i++) {
+          const mid = (lo + hi) / 2;
+          const w = walk(t, mid);
+          if ((w < target) === rising) lo = mid; else hi = mid;
+        }
+        back = (lo + hi) / 2;
+      }
+      homeBack.push(back);
+    }
+  }
+
   /* `arc` slides the spawn along the squad's own stretch of the ring, as a
      fraction of the half-sector between it and its neighbours: 0 is the middle
      of the squad's arc, ±1 is as far as it may go without crowding the next
@@ -3083,6 +3262,16 @@ const Game = (() => {
     return spots[homeIdx[slotOf(team) % homeIdx.length]] || null;
   }
 
+  /* The point every home flag is somebody's "away from". Same rule homeFlag()
+     uses to skip it. */
+  function contestedFlag() {
+    if (mode !== 'domination') return null;
+    const spots = objectiveAnchors();
+    if (spots.length < 3) return null;
+    const n = spots.length;
+    return spots[n === 3 ? 1 : n - 1] || null;
+  }
+
   function spawnPoint(team, arc) {
     const cx = MAP_W / 2, cy = MAP_H / 2;
     /* Two-sided Domination deploys *behind its own flag*, not on a bearing
@@ -3093,9 +3282,23 @@ const Game = (() => {
        in, with B on the horizon. */
     const home = homeFlag(team);
     if (home) {
-      const dx = home.x - cx, dy = home.y - cy;
+      /* Away from the actual contested point, not away from the map's
+         abstract centre -- the two used to be assumed the same, which broke
+         down as soon as the contested objective's own placement search
+         could drift it away from true centre (and for the 2-squad triangle,
+         it never was centre to begin with). Pushing away from centre also
+         wasn't just a cosmetic miss: when centre and contested disagreed,
+         more push-back did not reliably mean more distance from the fight,
+         which is exactly the knob alignHomeSpawns() below needs to be able
+         to turn. */
+      const away = contestedFlag() || { x: cx, y: cy };
+      const dx = home.x - away.x, dy = home.y - away.y;
       const d = Math.hypot(dx, dy) || 1;
-      const back = 760 + (arc || 0) * 90;
+      // alignHomeSpawns() solves this once objectives exist for real, so the
+      // walk to them is even across squads instead of inheriting whatever
+      // the home flag's and the contested point's own placement search
+      // happened to leave each squad with
+      const back = (homeBack ? homeBack[team] : HOME_BACK_DEFAULT) + (arc || 0) * 90;
       // a little across the approach as well as behind it, so eight people do
       // not arrive in a single file
       const px = -dy / d, py = dx / d;
@@ -3839,6 +4042,16 @@ const Game = (() => {
     mode = selectedMode;
     coached = !!(opts && opts.coached);
     matchBiome = (opts && opts.biome && opts.biome !== 'random') ? opts.biome : null;
+    /* Cleared here rather than left for alignSpawnRing()/alignHomeSpawns()
+       to clear, because those don't run until after setupTeams() has
+       already called spawnPoint() for every team's first deployment --
+       between those two points a leftover array from the PREVIOUS match
+       is still truthy. That used to be harmless when every match had the
+       same team count; it stopped being harmless the moment that count
+       became adjustable. A squad that didn't exist last match reads
+       past the end of last match's array -- undefined, not a fallback --
+       and every spawn built from it comes out NaN. */
+    spawnBands = null; homeBack = null;
     Screens.show('game');
     if (!canvas) {
       canvas = document.getElementById('game-canvas');
@@ -3896,6 +4109,7 @@ const Game = (() => {
     if (mode === 'mission') setUpMission();
     bullets = []; fx = []; dmgNums = []; funnyFx = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
+    objTurrets = {};
     deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
     supplyDrop = null; supplyCount = 0; supplyTimer = SUPPLY_FIRST;
     rideStat = { look: 0, noHull: 0, inCombat: 0, notOnWay: 0, want: 0, walk: 0, noPath: 0, board: 0, dropStuck: 0, dropGone: 0, unreachable: 0, dropForMate: 0 };
@@ -3911,7 +4125,9 @@ const Game = (() => {
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
     for (const o of objectives) clearObjectiveSite(o);
+    if (mode === 'domination') for (const o of objectives) fortifyObjective(o);
     alignSpawnRing();      // each squad's radius, solved for an even walk
+    alignHomeSpawns();     // ...and the home-flag equivalent, solved on push-back instead
     /* Supply is capped to the lobby before it is spread across it: there is no
        point evening out access to nineteen vehicles nobody needed. */
     /* Chests first: they demote into gold, and gold is capped after, so the
@@ -6702,7 +6918,7 @@ const Game = (() => {
       } else if (dp.type === 'flag') {
         for (const a of agents) if (a.alive && a.team === dp.team && near2(a, dp, dp.item.radius)) a.adrenaline = Math.max(a.adrenaline, 25);
       } else if (dp.type === 'sentry') {
-        updateSentry(dp, dt);
+        if (dp.team >= 0) updateSentry(dp, dt);   // team < 0: an objective turret nobody's holding yet
       }
     }
   }
@@ -9378,7 +9594,11 @@ const Game = (() => {
 
         for (let k = deployables.length - 1; k >= 0; k--) {
           const dp = deployables[k];
-          if (dp.type !== 'sentry' || dp.team === b.team) continue;
+          // team < 0 is an objective turret nobody's captured yet (or, online,
+          // one this client never hears capture events for) -- uncrewed, it
+          // doesn't return fire, and it shouldn't silently eat rounds aimed
+          // at whoever's standing behind it either
+          if (dp.type !== 'sentry' || dp.team < 0 || dp.team === b.team) continue;
           if (dist2(dp.x, dp.y, b.x, b.y) < 18 * 18) {
             if (!b.splash) { if (!online) dp.hp -= b.dmg; spawnFx(b.x, b.y, '#35e0ff', 4); }
             // online the sentry list is the room's; it will report the wreck
@@ -10153,6 +10373,7 @@ const Game = (() => {
           obj.progress += 45 * dt * Math.min(counts[t], 2);
           if (obj.progress >= 100) {
             obj.progress = 0; obj.capTeam = -1; obj.owner = t;
+            claimObjectiveTurret(obj, t);
             // player capture credit
             const playerNear = dist2(player.x, player.y, obj.x, obj.y) < obj.r * obj.r;
             if (t === 0 && playerNear) { matchStats.captures++; }
@@ -11082,6 +11303,7 @@ const Game = (() => {
 
     drawBuildingShadows();   // the roofs' own shadows, under them
     perfMark('roofs', drawRoofs);   // roofs hide interiors until you step inside
+    if (mode === 'domination') drawObjectiveBeacons();   // after the roof, so it's never hidden by one
     drawSmokes();   // smoke sits above units to obscure them
 
     /* Sightline shadows, before any of the interface goes on.
@@ -12282,6 +12504,69 @@ const Game = (() => {
     }
   }
 
+  /* A second, taller flag for every Domination objective, drawn after the
+     roofs rather than with the building's own furniture (see
+     drawObjectiveFlags() above) -- the mast planted inside a room is the
+     right size for someone standing in it and the wrong one for everybody
+     else, since a roof sits on top of it the instant you step back outside.
+     This one is sized to read from across the map: who holds a point, and
+     whether it's being taken off them, without needing to walk over and
+     check. Objectives were otherwise the one thing on the map with no
+     actual image standing for them once you couldn't see the capture ring
+     itself -- a letter on the HUD, not a landmark. */
+  function drawObjectiveBeacons() {
+    for (const obj of objectives) {
+      const held = obj.owner >= 0;
+      const col = held ? TEAM_COLORS[obj.owner] : '#aab6cc';
+      const contested = obj.progress > 0 && obj.capTeam >= 0;
+      const take = contested ? TEAM_COLORS[obj.capTeam] : null;
+      const topY = obj.y - 150;
+      // the mast, tall enough to clear any roof on the map
+      ctx.strokeStyle = 'rgba(20,22,28,0.8)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(obj.x, obj.y - 20); ctx.lineTo(obj.x, topY); ctx.stroke();
+      ctx.strokeStyle = '#8f9bb0'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(obj.x, obj.y - 20); ctx.lineTo(obj.x, topY); ctx.stroke();
+      // the banner: rippling, in the holder's colour, with an attacker's
+      // colour climbing up it from the base as they take the point
+      const wave = Math.sin(performance.now() / 300 + obj.x * 0.01) * 6;
+      const bw = 64, bh = 40;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(obj.x + 3, topY);
+      ctx.quadraticCurveTo(obj.x + bw * 0.6, topY + bh * 0.28 + wave, obj.x + bw, topY + bh * 0.42);
+      ctx.lineTo(obj.x + bw, topY + bh);
+      ctx.quadraticCurveTo(obj.x + bw * 0.6, topY + bh * 0.72 + wave, obj.x + 3, topY + bh * 0.58);
+      ctx.closePath();
+      ctx.fillStyle = hexA(col, 0.96); ctx.fill();
+      if (take) {
+        ctx.clip();
+        ctx.globalAlpha = 0.55 + (obj.progress / 100) * 0.4;
+        ctx.fillStyle = take;
+        ctx.fillRect(obj.x, topY + bh * (1 - obj.progress / 100), bw + 3, bh);
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.beginPath();
+      ctx.moveTo(obj.x + 3, topY);
+      ctx.quadraticCurveTo(obj.x + bw * 0.6, topY + bh * 0.28 + wave, obj.x + bw, topY + bh * 0.42);
+      ctx.lineTo(obj.x + bw, topY + bh);
+      ctx.quadraticCurveTo(obj.x + bw * 0.6, topY + bh * 0.72 + wave, obj.x + 3, topY + bh * 0.58);
+      ctx.closePath(); ctx.stroke();
+      // the letter, big enough to read at a glance from well outside the building
+      ctx.fillStyle = '#11141c'; ctx.font = 'bold 20px Outfit, Segoe UI, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(obj.name, obj.x + bw * 0.42, topY + bh * 0.45);
+      // a neutral or contested point pulses, so it draws the eye without
+      // needing to be read -- a held one is calm, it doesn't need to shout
+      if (!held || contested) {
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 260);
+        ctx.beginPath(); ctx.arc(obj.x, topY + bh / 2, 8 + pulse * 5, 0, Math.PI * 2);
+        ctx.strokeStyle = hexA(take || col, 0.5 + pulse * 0.3); ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
+  }
+
   function drawUpperFloors() {
     for (const r of upperFloors) {
       if (!rectOnScreen(r)) continue;
@@ -13024,18 +13309,25 @@ const Game = (() => {
       if (dp.type === 'wall') {
         drawStructure(dp.rect);
       } else if (dp.type === 'sentry') {
+        // an objective turret nobody's captured yet: present, but dead grey
+        // rather than a side's colour, and no range ring -- it isn't aiming
+        // at anything to be warned about
+        const manned = dp.team >= 0;
+        const col = manned ? TEAM_COLORS[dp.team] : '#5a6272';
         ctx.save();
         ctx.translate(dp.x, dp.y); ctx.rotate(dp.angle);
-        ctx.fillStyle = '#e9f0ff'; ctx.fillRect(0, -3, 26, 6);          // barrel
+        ctx.fillStyle = manned ? '#e9f0ff' : '#8e97a8'; ctx.fillRect(0, -3, 26, 6);          // barrel
         ctx.restore();
         ctx.beginPath(); ctx.arc(dp.x, dp.y, 13, 0, Math.PI * 2);
         ctx.fillStyle = '#243044'; ctx.fill();
-        ctx.lineWidth = 2.5; ctx.strokeStyle = TEAM_COLORS[dp.team]; ctx.stroke();
-        ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.range, 0, Math.PI * 2);
-        ctx.strokeStyle = hexA(TEAM_COLORS[dp.team], 0.08); ctx.lineWidth = 1; ctx.stroke();
+        ctx.lineWidth = 2.5; ctx.strokeStyle = col; ctx.stroke();
+        if (manned) {
+          ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.range, 0, Math.PI * 2);
+          ctx.strokeStyle = hexA(col, 0.08); ctx.lineWidth = 1; ctx.stroke();
+        }
         const hw = 30;
         ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw, 4);
-        ctx.fillStyle = '#35e0ff'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw * clamp(dp.hp / dp.maxHp, 0, 1), 4);
+        ctx.fillStyle = manned ? '#35e0ff' : '#5a6272'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw * clamp(dp.hp / dp.maxHp, 0, 1), 4);
       } else if (dp.type === 'mine') {
         ctx.beginPath(); ctx.arc(dp.x, dp.y, 8, 0, Math.PI * 2);
         ctx.fillStyle = dp.arm > 0 ? '#7a8699' : '#ff4b5c'; ctx.fill();
@@ -16629,6 +16921,11 @@ const Game = (() => {
     },
     buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h,
       teamBase: b.teamBase, landmark: !!b.landmark })),
+    // every agent's actual position and side, for anything measuring spawn
+    // fairness or spacing that the curated per-mode summaries don't cover
+    agentsList: () => agents.map(a => ({ team: a.team, x: a.x, y: a.y, alive: a.alive, isPlayer: !!a.isPlayer, isVehicle: !!a.isVehicle })),
+    homeBack: () => homeBack,
+    deployablesList: () => deployables.map(d => ({ type: d.type, x: Math.round(d.x), y: Math.round(d.y), team: d.team, hp: d.hp, maxHp: d.maxHp, objective: d.objective || null })),
     districts: () => ({ bearing: districtBearing, sector: districtSector }),
     // a handful of real points along each road, for anything that wants to
     // look at or stand on one without duplicating the polyline math
