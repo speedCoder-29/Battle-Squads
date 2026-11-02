@@ -84,9 +84,12 @@ const Matchmaking = (() => {
            the island is generated, then you are shown the job and the map
            while the boat closes. Every other mode just deploys. */
         const inbound = mode === 'mission';
+        // the home page's map card -- biome and size -- only ever applies to
+        // a match you build yourself, which this queue always is
+        const setup = Screens.matchSetup ? Screens.matchSetup() : {};
         Loading.run(inbound ? 'Inbound' : 'Deploying', [
           [inbound ? 'Crossing to the island' : 'Generating the island', 0.25, () => {}],
-          ['Placing structures and loot', 0.6, () => Game.start(mode)],
+          ['Placing structures and loot', 0.6, () => Game.start(mode, undefined, { biome: setup.biome, mapSize: setup.mapSize })],
           [inbound ? 'Mission briefing' : 'Briefing the squads', 0.9, () => {
             if (!inbound) return;
             /* Not swallowed. A silent catch here hid a broken briefing

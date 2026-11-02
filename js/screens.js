@@ -448,7 +448,8 @@ const Screens = (() => {
     const card = document.querySelector('.mode-card.is-selected');
     const mode = (card && card.dataset.mode) || 'domination';
     const base = Game.setupFor ? Game.setupFor(mode) : { teams: 4, perTeam: 4 };
-    return Object.assign({}, base, p.matchSetup || {});
+    // 'random' biome and 'medium' size are the defaults nobody has to pick
+    return Object.assign({ biome: 'random', mapSize: 'medium' }, base, p.matchSetup || {});
   }
   function renderSetup() {
     const lim = (Game.TEAM_LIMITS) || { teams: [2, 20], perTeam: [1, 8] };
@@ -480,6 +481,7 @@ const Screens = (() => {
       const [lo, hi] = lim[key];
       b.disabled = (cur[key] + d) < lo || (cur[key] + d) > hi;
     });
+    renderMapPicker();
   }
 
   function bumpSetup(key, delta) {
@@ -493,6 +495,63 @@ const Screens = (() => {
     DB.saveProfile(p);
     renderSetup();
     SFX.click();
+  }
+
+  /* ---- which island you get ----
+     A climate and a board size, same storage and the same "menu picks, Game
+     clamps" split as the squad steppers above. Built from Terrain.BIOMES
+     rather than hardcoded in the HTML, so a biome added there shows up here
+     for free instead of silently being unreachable from the menu. */
+  const BIOME_ICON = { temperate: '🌳', arid: '🏜️', tundra: '❄️', tropic: '🌴', volcanic: '🌋' };
+  const MAP_SIZE_LABEL = { small: 'Small', medium: 'Medium', large: 'Large' };
+  function setMapChoice(key, value) {
+    const p = DB.getProfile();
+    const cur = matchSetup();
+    p.matchSetup = Object.assign({}, p.matchSetup, { teams: cur.teams, perTeam: cur.perTeam, biome: cur.biome, mapSize: cur.mapSize });
+    p.matchSetup[key] = value;
+    DB.saveProfile(p);
+    renderMapPicker();
+    SFX.click();
+  }
+  function renderMapPicker() {
+    const cur = matchSetup();
+    const biomeHost = document.getElementById('mappick-biome');
+    if (biomeHost) {
+      if (!biomeHost.dataset.built) {
+        biomeHost.dataset.built = '1';
+        const ids = (typeof Terrain !== 'undefined' && Terrain.BIOME_IDS) || [];
+        const opts = [{ id: 'random', name: 'Random', icon: '🎲' }]
+          .concat(ids.map(id => ({ id, name: Terrain.BIOMES[id].name, icon: BIOME_ICON[id] || '🗺️' })));
+        biomeHost.innerHTML = opts.map(o =>
+          `<button class="mappick__btn" data-biome="${o.id}" title="${o.name}">`
+          + `<span class="mappick__icon">${o.icon}</span><span>${o.name}</span></button>`).join('');
+        biomeHost.querySelectorAll('.mappick__btn').forEach(b =>
+          b.addEventListener('click', () => setMapChoice('biome', b.dataset.biome)));
+      }
+      biomeHost.querySelectorAll('.mappick__btn').forEach(b =>
+        b.classList.toggle('is-selected', b.dataset.biome === cur.biome));
+    }
+    const sizeHost = document.getElementById('mappick-size');
+    if (sizeHost) {
+      if (!sizeHost.dataset.built) {
+        sizeHost.dataset.built = '1';
+        sizeHost.innerHTML = Object.keys(MAP_SIZE_LABEL).map(s =>
+          `<button class="mappick__btn" data-size="${s}">${MAP_SIZE_LABEL[s]}</button>`).join('');
+        sizeHost.querySelectorAll('.mappick__btn').forEach(b =>
+          b.addEventListener('click', () => setMapChoice('mapSize', b.dataset.size)));
+      }
+      sizeHost.querySelectorAll('.mappick__btn').forEach(b =>
+        b.classList.toggle('is-selected', b.dataset.size === cur.mapSize));
+    }
+    /* Biome and size only ever apply to the map you build yourself. An online
+       room is somebody's host building theirs -- picking a size here and then
+       joining a room would just be a choice that quietly never did anything,
+       which is worse than not offering it. Online read the hint rather than
+       a dynamic state, same reasoning as hiding the picker outright would
+       have, but without making the controls disappear out from under
+       whoever is mid-pick when a party updates. */
+    const hint = document.getElementById('mappick-hint');
+    if (hint) hint.hidden = !(typeof P2P !== 'undefined' && P2P.isActive && P2P.isActive());
   }
 
   /* ---- what is out on the map ----
@@ -1576,5 +1635,9 @@ const Screens = (() => {
     openHowTo, startTutorial, startGuided, startTour,
     /* the base tour drives the real tabs rather than mocking them up */
     setView,
+    // the clamped {teams, perTeam, biome, mapSize} a match should actually
+    // use -- matchmaking.js and party.js both read this rather than reaching
+    // into the profile themselves, so there's one place that applies defaults
+    matchSetup,
   };
 })();

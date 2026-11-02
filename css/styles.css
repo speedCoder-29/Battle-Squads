@@ -1059,6 +1059,20 @@ p  { text-wrap: pretty; }
 }
 .stepper__btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
 .stepper__btn:disabled { opacity: 0.3; cursor: default; }
+.setupbar__row--wide { flex-basis: 100%; }
+.setupbar__hint { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+.mappick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mappick__btn {
+  display: flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.05);
+  color: var(--muted); font-size: 11px; font-weight: 600; transition: 0.15s;
+}
+.mappick__icon { font-size: 13px; }
+.mappick__btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+.mappick__btn.is-selected {
+  border-color: var(--accent); color: var(--text);
+  background: rgba(255,157,46,0.16);
+}
 
 
 /* ---------- scoreboard with many squads ----------

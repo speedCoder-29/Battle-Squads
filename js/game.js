@@ -49,6 +49,10 @@ const Game = (() => {
      `coached` is set by start()'s options and cleared by every other start, so
      no later match can inherit it. */
   let coached = false;
+  /* The climate the player picked on the home page's map card, or null for
+     the normal seed-rolled lean (see Terrain.biomeFor). Set by start()'s
+     options and cleared by every other start, same as `coached`. */
+  let matchBiome = null;
   const COACH_SETUP = { teams: 2, perTeam: 3 };
   const COACH_SCORE_CAP = 400;
   const COACH_SECONDS = 5 * 60;
@@ -348,21 +352,30 @@ const Game = (() => {
     return clamp(nTeams + 1, 3, LANDMARKS.length);
   }
 
-  /* n-1 home flags spread across the south of the map, one contested point
-     at the top -- the 2-squad triangle above, generalised to however many
-     squads are actually in the match. n===3 returns that exact triangle
-     rather than running the formula, so a 2-squad game is byte-identical to
-     before this existed. */
+  /* n-1 home flags and one contested point, as vertices of a regular n-gon
+     around the map's centre -- the 2-squad triangle above, generalised to
+     however many squads are actually in the match. n===3 returns that exact
+     triangle rather than running the formula, so a 2-squad game is
+     byte-identical to before this existed.
+
+     This replaced a version that strung the home flags along one line in
+     the southern half of the map: fine for two of them (that's just the
+     triangle's own two corners), but at four or five it packed every home
+     flag within a third of the map's width of its neighbour while the
+     northern half held nothing but the one contested point. A regular
+     polygon's vertices are the most spread out n points on a circle can
+     be -- which is exactly "evenly distributed" and "not too close
+     together" at once, for any n, without hand-tuning a new shape per
+     squad count. */
   function objectiveLayout(n) {
     if (n === 3) return OBJ_TRIANGLE;
-    const homes = n - 1;
-    const spread = Math.min(0.72, 0.16 + homes * 0.07);
+    const R = 0.26;                     // matches the triangle's own spread
     const pts = [];
-    for (let i = 0; i < homes; i++) {
-      const t = homes === 1 ? 0.5 : i / (homes - 1);
-      pts.push({ u: 0.5 - spread / 2 + spread * t, v: 0.69 });
+    for (let k = 1; k < n; k++) {
+      const ang = (-90 + k * 360 / n) * Math.PI / 180;
+      pts.push({ u: 0.5 + R * Math.cos(ang), v: 0.5 + R * Math.sin(ang) });
     }
-    pts.push({ u: 0.5, v: 0.29 });       // the contested point, always last
+    pts.push({ u: 0.5, v: 0.5 - R });    // contested, always last, due north
     return pts;
   }
 
@@ -400,6 +413,30 @@ const Game = (() => {
      needs the first three; the rest come in as the lobby's squad count grows. */
   const LANDMARKS = ['obj-relay', 'obj-refinery', 'obj-citadel', 'obj-bastion', 'obj-outpost'];
 
+  /* Try to stand `name` (already tagged with placement id `pid`) at exactly
+     (x, y). Returns the landmark record on success, null on any rejection --
+     occupied ground, water, off the map, or crowding a landmark already
+     placed -- so the caller is free to just try somewhere else. */
+  function tryPlaceLandmark(name, pid, x, y) {
+    const parts = placeBuilding(name, x, y);
+    if (!parts.length) return null;
+    const bb = boundsOf(parts);
+    if (landmarks.some(l => padOverlap(bb, l, 260))) return null;
+    for (const p of parts) { p.placement = pid; p.landmark = true; genAdd(p); }
+    obstacles.push(...parts);
+    invalidateRects();
+    const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+    /* bb is the bounding box of every part the blueprint returned, basement
+       and upper floor included -- those are modelled as separate rects
+       offset below the ground floor's own footprint, so a building with
+       either is taller in `bb` than the room you can actually see from
+       outside. flagAt is the ground floor's own centre, set by
+       objectiveShell; carrying it through is what lets spotInsideBuilding
+       aim at the room under the flag mast instead of drifting toward
+       whichever sub-level happens to be large. */
+    return { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms, shape: parts.shape, flagAt: parts.flagAt || null };
+  }
+
   function placeLandmarks() {
     const n = objectiveCount();
     const anchors = objectiveLayout(n).map(a => ({ x: MAP_W * a.u, y: MAP_H * a.v }));
@@ -407,37 +444,36 @@ const Game = (() => {
     for (let i = 0; i < n; i++) {
       const name = LANDMARKS[i % LANDMARKS.length];
       const anchor = anchors[i];
-      search:
-      for (let ring = 0; ring <= 30; ring++) {
-        for (let k = 0; k < 12; k++) {
+      const pid = 'L' + i;
+      let rec = null;
+      for (let ring = 0; ring <= 30 && !rec; ring++) {
+        for (let k = 0; k < 12 && !rec; k++) {
           const ang = (k / 12) * Math.PI * 2 + ring;
           const d = ring * 140;
-          const x = anchor.x + Math.cos(ang) * d - 300;
-          const y = anchor.y + Math.sin(ang) * d - 250;
-          const parts = placeBuilding(name, x, y);
-          if (!parts.length) continue;
-          const bb = boundsOf(parts);
-          if (landmarks.some(l => padOverlap(bb, l, 260))) continue;
-          const pid = 'L' + i;
-          for (const p of parts) { p.placement = pid; p.landmark = true; genAdd(p); }
-          obstacles.push(...parts);
-          invalidateRects();
-          const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-          /* bb is the bounding box of every part the blueprint returned,
-             basement and upper floor included -- those are modelled as
-             separate rects offset below the ground floor's own footprint, so
-             a building with either is taller in `bb` than the room you can
-             actually see from outside. flagAt is the ground floor's own
-             centre, set by objectiveShell; carrying it through is what lets
-             spotInsideBuilding aim at the room under the flag mast instead
-             of drifting toward whichever sub-level happens to be large. */
-          const rec = { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms, shape: parts.shape, flagAt: parts.flagAt || null };
-          landmarks.push(rec);
-          buildings.push(rec);
-          furnish(name, bb, parts.rooms);
-          break search;
+          rec = tryPlaceLandmark(name, pid, anchor.x + Math.cos(ang) * d - 300, anchor.y + Math.sin(ang) * d - 250);
         }
       }
+      /* The spiral above searches ~4200px out from this objective's own
+         anchor before giving up -- plenty of room on an open map, not
+         always enough on a crowded or oddly-shaped island. The alternative
+         used to be objectiveAnchors() quietly handing out a capture point
+         in open ground with no walls around it at all, the moment one
+         landmark came up short. A coarse scan of the rest of the map is
+         slower, but it only ever runs on the rare anchor the spiral
+         couldn't place, and it means an objective ends up inside the
+         building it's meant to be rather than next to it. */
+      if (!rec) {
+        const step = 500;
+        for (let y = 500; y < MAP_H - 500 && !rec; y += step) {
+          for (let x = 500; x < MAP_W - 500 && !rec; x += step) {
+            rec = tryPlaceLandmark(name, pid, x, y);
+          }
+        }
+      }
+      if (!rec) continue;    // every square inch of this map is already spoken for
+      landmarks.push(rec);
+      buildings.push(rec);
+      furnish(name, { x: rec.x, y: rec.y, w: rec.w, h: rec.h }, rec.rooms);
     }
   }
   let landmarks = [];
@@ -685,7 +721,7 @@ const Game = (() => {
       return r;
     };
     for (const k in genProf) delete genProf[k];
-    terrain = gp('terrain', () => Terrain.generate(MAP_W, MAP_H, worldSeed, mode));
+    terrain = gp('terrain', () => Terrain.generate(MAP_W, MAP_H, worldSeed, mode, matchBiome));
     Sprites.setBiome(terrain.biome && terrain.biome.id);  // the props' palette follows the ground's
     assignDistricts();          // where this map's quarters sit, before anything asks ringSpot
     invalidateChart();          // the traced coastline belongs to this island
@@ -3005,12 +3041,17 @@ const Game = (() => {
      squad along. Used by the respawn search below — the jitter alone was far
      too small a search space for "somewhere else on our side" to mean
      anything. */
-  /* Which capture point is a side's home flag, in two-sided Domination.
-     Team 0 owns A, team 1 owns C, and B belongs to nobody -- that is the
-     arrangement the whole mode rests on. Returns null in any other shape,
-     where there is no such thing as a home flag. */
+  /* Which capture point is a side's home flag. Originally two-sided only --
+     team 0 owns A, team 1 owns C, and B belongs to nobody -- generalised to
+     however many squads objectiveLayout() actually gave a home flag to: one
+     each, for up to `homes` squads, picked by the same seeded slot order the
+     ring spawn already uses so it doesn't favour team 0 match after match.
+     Past that count there are more squads than home flags, and handing two
+     of them the same flag means spawning them on top of each other -- so
+     those fall through to the generic ring instead, same as before this
+     existed. */
   function homeFlag(team) {
-    if (mode !== 'domination' || nTeams !== 2) return null;
+    if (mode !== 'domination') return null;
     /* objectiveAnchors(), not objectiveSpots(). The cache objectiveSpots()
        reads is only filled at the very end of buildMapInner -- placeObjectives()
        is deliberately last, so every wall on the map exists before a capture
@@ -3032,7 +3073,14 @@ const Game = (() => {
        never empty, at this call site or any other. */
     const spots = objectiveAnchors();
     if (spots.length < 3) return null;
-    return spots[slotOf(team) === 0 ? 0 : 2] || null;
+    // every spot but the contested one -- same rule objectiveAnchors()
+    // itself uses, so this can never pick B as somebody's "home"
+    const n = spots.length;
+    const contestedIdx = n === 3 ? 1 : n - 1;
+    const homeIdx = [];
+    for (let i = 0; i < n; i++) if (i !== contestedIdx) homeIdx.push(i);
+    if (nTeams > homeIdx.length) return null;
+    return spots[homeIdx[slotOf(team) % homeIdx.length]] || null;
   }
 
   function spawnPoint(team, arc) {
@@ -3783,9 +3831,14 @@ const Game = (() => {
   }
 
   /* ---------------- start / stop ---------------- */
+  /* How much bigger or smaller than the mode's own board a player's map-size
+     pick makes it. Applied to both axes, so a "Large" match keeps the same
+     square (or near-square) shape as the default rather than stretching it. */
+  const MAP_SIZE_MULT = { small: 0.75, medium: 1, large: 1.3 };
   function start(selectedMode, seed, opts) {
     mode = selectedMode;
     coached = !!(opts && opts.coached);
+    matchBiome = (opts && opts.biome && opts.biome !== 'random') ? opts.biome : null;
     Screens.show('game');
     if (!canvas) {
       canvas = document.getElementById('game-canvas');
@@ -3804,7 +3857,8 @@ const Game = (() => {
        kill is a rung, so time spent walking is time spent losing -- and the
        domination map is too big to keep bumping into people on. */
     const size = MAP_SIZES[mode] || MAP_SIZES.elimination;
-    MAP_W = size.w; MAP_H = size.h;
+    const sizeMult = MAP_SIZE_MULT[opts && opts.mapSize] || 1;
+    MAP_W = Math.round(size.w * sizeMult); MAP_H = Math.round(size.h * sizeMult);
     worldSeed = (seed >>> 0) || ((Math.random() * 0xffffffff) >>> 0);
     /* A guided match holds the bots at a gentle level whatever the settings
        say: it is somebody's first real game, and level 9 teaches nothing
@@ -4629,6 +4683,8 @@ const Game = (() => {
     const left = addItem(best.cat, best.id, best.n);
     hudMsg(`Picked up ${it.name} ×${best.n - left}`);
     SFX.click();
+    spawnFx(best.x, best.y, '#8fd8ff', 10);
+    if (DB.getSettings().funnyEffects) spawnFunnyFx(player.x, player.y - player.r - 10, 'FINDERS KEEPERS', false);
     return true;
   }
   function equipWeapon(a, w) {
@@ -5835,8 +5891,9 @@ const Game = (() => {
     } else if (mid && Math.random() < 0.6) {
       a.vest = Math.min(2, (a.vest || 0) + 1);
     }
-    // the same puff of light the player's crate gives, so you can see it happen
-    spawnFx(c.x, c.y, '#ffd257', 8);
+    // the same puff of light the player's crate gives, so you can see it happen —
+    // and now genuinely the same colour, not just the same shape
+    spawnFx(c.x, c.y, Items.CRATE_STYLE[c.tier].color, rich ? 16 : 8);
     botLootCount++;
   }
   let botLootCount = 0;
@@ -5894,6 +5951,7 @@ const Game = (() => {
     updateWeaponHud();
     hudMsg(`${vehicleDef(v).name} — WASD drive · mouse aim · E to get out`);
     SFX.click();
+    spawnFx(v.x, v.y, '#cfd8ee', 6);
   }
 
   /* `thrown` is the blast that killed the vehicle: you come out hurt and to
@@ -6059,6 +6117,8 @@ const Game = (() => {
         resolveObstacles(player);
         hudMsg('Through the ' + name);
         SFX.click();
+        spawnFx(v.to.x, v.to.y, '#cfd8ee', 8);
+        if (DB.getSettings().funnyEffects) spawnFunnyFx(v.to.x, v.to.y - player.r - 10, 'PARKOUR!', false);
       },
     };
     return true;
@@ -6183,7 +6243,10 @@ const Game = (() => {
     if (bestAmmo) {
       bestAmmo.supply -= player.weapon.mag;
       refillAll(player);
-      updateWeaponHud(); hudMsg('Resupplied'); SFX.reload(); return;
+      updateWeaponHud(); hudMsg('Resupplied'); SFX.reload();
+      spawnFx(bestAmmo.x, bestAmmo.y, '#ffd36a', 10);
+      if (DB.getSettings().funnyEffects) spawnFunnyFx(player.x, player.y - player.r - 10, 'LOCKED & LOADED', false);
+      return;
     }
     hudMsg('Nothing to interact with');
   }
@@ -6503,6 +6566,17 @@ const Game = (() => {
       return;
     }
     c.opened = true;
+    /* A burst in the crate's own colour (Items.CRATE_STYLE), same as a class
+       tool firing off — opening one of these used to be silent and flat, a
+       pure stat change with nothing to see. The rarer the box, the bigger
+       the pop: a gold crate or a chest gets the ring a sweep gadget gets. */
+    const style = Items.CRATE_STYLE[c.tier];
+    const rich = c.tier === 'gold' || c.tier === 'chest' || c.tier === 'airdrop';
+    spawnFx(c.x, c.y, style.color, rich ? 24 : 12);
+    if (rich) toolRings.push({ x: c.x, y: c.y, r: 10, max: 70, color: style.color, t: 0 });
+    if (DB.getSettings().funnyEffects) {
+      spawnFunnyFx(c.x, c.y - 30, rich ? 'JACKPOT!' : 'LOOT!', rich);
+    }
     /* A chest pays out several times over; a locker you have rifled through
        pays out once and quietly. */
     const pay = Items.payoutFor(c.tier);

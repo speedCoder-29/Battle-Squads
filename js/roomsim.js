@@ -504,12 +504,21 @@
   let nextId = 1;
 
   class Room {
-    constructor(id, mode) {
+    constructor(id, mode, opts) {
       deps();                       // make sure the shared tables are resolved
       this.id = id;
       this.mode = mode || 'domination';
       this.map = MAP_SIZES[this.mode] || MAP_SIZES.domination;
-      this.teams = TEAM_COUNT[this.mode] || 4;
+      /* Whoever hosts picks squads from the same menu an offline match reads
+         (see matchSetup in screens.js). Bounds match game.js's own
+         TEAM_LIMITS, duplicated rather than imported -- this module runs
+         standalone on a Node server too, where game.js's UI code was never
+         loaded (see deps() above). Without an override this still falls
+         back to each mode's fixed default, exactly as before a host could
+         choose anything. capacity below already caps the room regardless. */
+      this.teams = (opts && opts.teams)
+        ? Math.max(2, Math.min(20, opts.teams | 0))
+        : TEAM_COUNT[this.mode] || 4;
       this.capacity = Math.min(ROOM_MAX, this.teams * SQUAD_MAX);
       /* Every client generates its own copy of the world, so they all need the
          same seed to end up with the same map. The room owns it and hands it
@@ -1302,15 +1311,46 @@
       this.pushLobby();
     }
 
+    /* Which capture point is this team's home flag, mirroring homeFlag() in
+       game.js -- every objective but the contested one (the last of three,
+       or the last of however many objectiveLayout() handed out past that),
+       one per team for up to `homes` of them. Null past that, or outside
+       Domination, same as the offline sim: more squads than home flags
+       means sharing one is worse than not having the concept at all. */
+    homeFlag(team) {
+      if (this.mode !== 'domination' || this.objectives.length < 3) return null;
+      const n = this.objectives.length;
+      const contestedIdx = n === 3 ? 1 : n - 1;
+      const homeIdx = [];
+      for (let i = 0; i < n; i++) if (i !== contestedIdx) homeIdx.push(i);
+      if (this.teams > homeIdx.length) return null;
+      return this.objectives[homeIdx[team % homeIdx.length]] || null;
+    }
+
     /* Each team gets its own quarter of the map, and nobody spawns inside a
        building — spread the jitter wider on each retry so a crowded corner
        still finds somewhere to put you. */
     spawnPoint(team) {
       const cx = this.map.w / 2, cy = this.map.h / 2;
-      const rx = this.map.w / 2 - 240, ry = this.map.h / 2 - 240;
-      // squads are spaced evenly around the island, however many there are
-      const ang = -Math.PI / 2 + (team / this.teams) * Math.PI * 2;
-      const bx = cx + Math.cos(ang) * rx, by = cy + Math.sin(ang) * ry;
+      /* Domination deploys behind its own flag, the same as the offline
+         sim -- landing behind A looking toward B is the whole "hold your
+         ground, fight for the middle" shape of the mode, and a generic ring
+         around the map centre has none of that even when it happens to be
+         facing the right way. */
+      const home = this.homeFlag(team);
+      let bx, by;
+      if (home) {
+        const dx = home.x - cx, dy = home.y - cy;
+        const d = Math.hypot(dx, dy) || 1;
+        const back = 760;
+        bx = home.x + (dx / d) * back;
+        by = home.y + (dy / d) * back;
+      } else {
+        const rx = this.map.w / 2 - 240, ry = this.map.h / 2 - 240;
+        // squads are spaced evenly around the island, however many there are
+        const ang = -Math.PI / 2 + (team / this.teams) * Math.PI * 2;
+        bx = cx + Math.cos(ang) * rx; by = cy + Math.sin(ang) * ry;
+      }
       let last = { x: bx, y: by };
       for (let i = 0; i < 40; i++) {
         const spread = 70 + i * 18;

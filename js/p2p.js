@@ -263,7 +263,7 @@ const P2P = (() => {
        anyone who still had it joined a room the host had forgotten about. */
     if (host || guest) stop();
     resetBus();
-    const room = new RoomSim.Room('p2p-' + code, (opts && opts.mode) || 'domination');
+    const room = new RoomSim.Room('p2p-' + code, (opts && opts.mode) || 'domination', opts);
     // A shared code should give a reproducible world, and the host must build
     // the same one it hands out — so the room's seed comes from the code.
     if (code) {

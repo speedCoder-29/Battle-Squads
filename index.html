@@ -337,8 +337,10 @@
           <button class="btn btn--ghost" id="btn-range">Enter Range</button>
         </div>
 
-        <!-- How big a match you want. Applies to games you start yourself;
-             online, the host's room decides. -->
+        <!-- How big a match you want, and which island. Squads/per-squad also
+             set the room's team count when you host online; the map itself
+             (biome, size) only ever applies to a game you build yourself --
+             joining or hosting online plays whatever the room's seed rolls. -->
         <div class="setupbar" id="setupbar">
           <div class="setupbar__row">
             <span class="setupbar__k">Squads</span>
@@ -357,6 +359,15 @@
             </div>
           </div>
           <span class="setupbar__total" id="setup-total">16 in the match · you + 15 bots</span>
+          <div class="setupbar__row setupbar__row--wide">
+            <span class="setupbar__k">Map</span>
+            <div class="mappick" id="mappick-biome"></div>
+          </div>
+          <div class="setupbar__row setupbar__row--wide">
+            <span class="setupbar__k">Size</span>
+            <div class="mappick" id="mappick-size"></div>
+          </div>
+          <span class="setupbar__hint" id="mappick-hint" hidden>Map choice applies offline — an online room plays whatever its host built.</span>
         </div>
 
         <!-- ===== PARTY ===== -->

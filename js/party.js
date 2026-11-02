@@ -182,6 +182,12 @@ const Party = (() => {
       perk: p.perk || 'none',
       skin: p.weaponSkins ? p.weaponSkins[p.weapon] : 'default',
       mode: Screens.getSelectedMode(),
+      /* Only read by whoever is about to host (see p2pHost/p2pLocal below) --
+         a joining peer's own squad-count pick means nothing, the room they're
+         joining already has one. Clamped the same way Game.setupFor clamps
+         it offline; RoomSim.Room clamps again regardless, so a stale or
+         tampered value here can't hand out more teams than the room allows. */
+      teams: (Screens.matchSetup ? Screens.matchSetup().teams : undefined),
     };
   }
 

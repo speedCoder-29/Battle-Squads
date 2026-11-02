@@ -299,7 +299,10 @@ const Terrain = (() => {
     armsrace: 'volcanic',
     mission: 'tropic',
   };
-  const biomeFor = (seed, mode) => {
+  const biomeFor = (seed, mode, forceBiome) => {
+    // an explicit pick -- the home page's map picker -- wins outright, before
+    // the seed or the mode's own lean get a say
+    if (forceBiome && BIOMES[forceBiome]) return BIOMES[forceBiome];
     const s = Math.abs((seed || 0) >>> 0);
     const signature = mode && MODE_BIOME[mode];
     if (signature && (s % 20) < 13) return BIOMES[signature];   // ~65% of the time
@@ -313,12 +316,15 @@ const Terrain = (() => {
     return Object.assign({ id: pool[n % pool.length] }, WEATHER[pool[n % pool.length]]);
   }
 
-  function generate(w, h, seed, mode) {
+  function generate(w, h, seed, mode, forceBiome) {
     const rand = rng(seed || 1337);
     /* The climate this island has. Chosen from the seed (and leaned by mode,
        see MODE_BIOME above), so every client generating the same map for the
-       same match agrees on it without anything crossing the wire. */
-    const biome = biomeFor(seed || 1337, mode);
+       same match agrees on it without anything crossing the wire -- unless
+       the player picked one explicitly, which every client agrees on simply
+       because it's the same choice, not because of anything derived from the
+       seed. */
+    const biome = biomeFor(seed || 1337, mode, forceBiome);
     const t = {
       w, h, seed: seed || 1337,
       /* Daylight applied once, here, so every drawing call downstream reads
