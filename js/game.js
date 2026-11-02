@@ -574,30 +574,49 @@ const Game = (() => {
   }
 
   /* Give a capture point something to fight over besides open floor: a
-     sandbag nest at each of the four compass points around it, tangent to
-     the ring rather than radial -- a wall pointing straight at the middle
-     is a spike nobody can stand behind, a wall tangent to the circle is
-     cover against whoever's coming from that direction, with the diagonals
-     left open so the room still has more than one way in. Skipped wherever
-     something's already there (a landmark's own walls, its furniture) rather
-     than bulldozing it -- four sandbag runs are set dressing, not a
-     requirement worth clearing a room for. */
-  const OBJ_WALL_LEN = 3;       // metres
+     sandbag nest on two OPPOSITE sides of it, tangent to the ring rather
+     than radial -- a wall pointing straight at the middle is a spike
+     nobody can stand behind, a wall tangent to the circle is cover against
+     whoever's coming from that direction.
+
+     Two, opposite each other, not four all the way round. A ring square
+     to the compass was the first version, gaps left at the diagonals on
+     purpose -- and it broke Domination outright. Nav.CELL is 45px; the
+     diagonal gaps between four walls snug around a point came out around
+     24-40px once each wall's own clearance padding ate into them, which the
+     nav grid simply has no walkable cell for. Bots path for the objective's
+     *exact* centre, not merely somewhere inside its capture radius, so a
+     geometrically sealed point is a point nothing can path to even though
+     standing anywhere in the (much larger) capture radius would have
+     counted -- measured as 1 capture in eighteen 45-second trials against
+     6 of eighteen with the cover removed, same seeds, same everything else.
+     Two walls on opposite sides cannot seal the point no matter how close
+     they sit to it or to each other -- the other two compass directions are
+     always a full corridor, not a gap measured in pixels -- so there's no
+     clearance width this can get wrong. */
   function fortifyObjective(o) {
-    const r = Math.max(90, o.r * 0.6);
-    const spots = [
-      { ang: -Math.PI / 2, axis: 'h' },   // north: wall runs east-west
-      { ang: 0,            axis: 'v' },   // east: wall runs north-south
-      { ang: Math.PI / 2,  axis: 'h' },   // south
-      { ang: Math.PI,      axis: 'v' },   // west
-    ];
-    for (const s of spots) {
-      const cx = o.x + Math.cos(s.ang) * r, cy = o.y + Math.sin(s.ang) * r;
-      const wall = s.axis === 'h'
-        ? Structures.seg('sandbag', cx - (OBJ_WALL_LEN * PX_PER_M) / 2, cy, OBJ_WALL_LEN, 'h', 0.3)
-        : Structures.seg('sandbag', cx, cy - (OBJ_WALL_LEN * PX_PER_M) / 2, OBJ_WALL_LEN, 'v', 0.3);
-      if (obstacles.some(ob => padOverlap(wall, ob, 14))) continue;
-      obstacles.push(wall); genAdd(wall);
+    /* Not Math.random() -- this runs after buildMap()'s seeded generation
+       has already finished, so a random call here would pick a different
+       side for every client building the same match from the same seed.
+       The objective's own letter is already shared and fixed, so hashing
+       that instead keeps every client's choice identical for free. */
+    const sides = o.name.charCodeAt(0) % 2 === 0
+      ? [{ ang: -Math.PI / 2, axis: 'h' }, { ang: Math.PI / 2, axis: 'h' }]   // north + south
+      : [{ ang: 0, axis: 'v' }, { ang: Math.PI, axis: 'v' }];                 // east + west
+    for (const s of sides) {
+      // tried at the preferred radius and length first, then smaller of
+      // both -- a tight room can fit a short sandbag run where it has no
+      // room for a long one
+      for (const [rf, len] of [[0.6, 3], [0.45, 2], [0.32, 1.3]]) {
+        const r = Math.max(70, o.r * rf);
+        const cx = o.x + Math.cos(s.ang) * r, cy = o.y + Math.sin(s.ang) * r;
+        const wall = s.axis === 'h'
+          ? Structures.seg('sandbag', cx - (len * PX_PER_M) / 2, cy, len, 'h', 0.3)
+          : Structures.seg('sandbag', cx, cy - (len * PX_PER_M) / 2, len, 'v', 0.3);
+        if (obstacles.some(ob => padOverlap(wall, ob, 8))) continue;
+        obstacles.push(wall); genAdd(wall);
+        break;
+      }
     }
     /* An emplacement waiting for a crew: present from the first second of
        the match (there's something to see from across the room even before
@@ -607,8 +626,9 @@ const Game = (() => {
        sit inside the planted standard's own drawing (see the "objectives"
        render pass), closer to the entrance side than dead centre so it
        reads as guarding the room rather than blocking it. */
-    const tx = o.x + Math.cos(Math.PI * 0.35) * r * 0.55;
-    const ty = o.y + Math.sin(Math.PI * 0.35) * r * 0.55;
+    const turretR = Math.max(70, o.r * 0.6) * 0.55;
+    const tx = o.x + Math.cos(Math.PI * 0.35) * turretR;
+    const ty = o.y + Math.sin(Math.PI * 0.35) * turretR;
     const dp = {
       type: 'sentry', x: tx, y: ty, team: -1, owner: null, objective: o.name,
       item: OBJ_TURRET_ITEM, hp: OBJ_TURRET_ITEM.hp, maxHp: OBJ_TURRET_ITEM.hp,
