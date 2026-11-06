@@ -2076,33 +2076,126 @@ const Game = (() => {
 
      Placed first, before the landmarks, because their positions are fixed by
      the spawn ring and everything else can move out of the way. */
+  /* Record a placed team base and furnish it -- shared by the spiral search
+     below and its sweep fallback, so both tag the building the same way. */
+  function commitTeamBase(t, parts) {
+    const bb = boundsOf(parts);
+    const pid = 'tb' + t;
+    for (const part of parts) { part.placement = pid; part.teamBase = t; genAdd(part); }
+    obstacles.push(...parts);
+    invalidateRects();
+    const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
+    const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms, shape: parts.shape };
+    buildings.push(rec);
+    requiredPlacements.push(bb);
+    furnish('base', bb, parts.rooms);
+    return true;
+  }
+  /* The spiral starts from this team's own spawn point and gives up after
+     200 steps -- fine when the board has room near every spawn, but a small
+     board carrying more squads than it was tuned for (elimination/arms-race
+     on the shared 5200 board, pushed past their own default team count) can
+     spiral out 200 times and still land on nothing but earlier teams' bases
+     and water, leaving that team with no base at all: no home-colour marker,
+     no walls bots will defend as theirs. Measured: elimination at its own
+     default-adjacent team count (4) lost a base in 3 of 10 seeds. A required
+     building gets a deterministic lattice fallback (see sweepFor) when its
+     own search comes up empty; a team's base is no less required. */
+  function sweepForBase(t) {
+    const sz = placedSize('base');
+    const lo = Terrain.BEACH_INSET;
+    for (const pad of [60, 34, 16]) {
+      const jx = (pad % 3) * (SWEEP_STEP / 3), jy = (pad % 2) * (SWEEP_STEP / 2);
+      for (let y = lo + jy; y < MAP_H - lo - sz.h; y += SWEEP_STEP) {
+        for (let x = lo + jx; x < MAP_W - lo - sz.w; x += SWEEP_STEP) {
+          const parts = placeBuilding('base', x, y, pad);
+          if (!parts.length) continue;
+          const bb = boundsOf(parts);
+          if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(pad, 30)))) continue;
+          return commitTeamBase(t, parts);
+        }
+      }
+    }
+    return false;
+  }
+  /* Every team's spiral starts from its own spawn point and runs in a fixed
+     0..nTeams-1 order, so on a crowded board the same one or two
+     highest-numbered teams lose the race for their own corner's ground to
+     whichever team got processed first and happened to spiral across the
+     boundary -- measured on elimination's own default of 6 squads: the
+     warning below fired on every one of 10 seeds, and only ever named team
+     4 or team 5, never 0-3. A fixed processing order turns a tight board
+     into a fixed loser instead of an occasional one. Shuffling it, seeded
+     so it still reproduces, spreads that risk evenly across every team
+     instead of always the same two -- the same reasoning `shuffle()` above
+     already exists for. */
   function placeTeamBases() {
-    for (let t = 0; t < nTeams; t++) {
+    for (const t of shuffle([...Array(nTeams).keys()])) {
       const sp = spawnPoint(t);
       let done = false;
       for (let tries = 0; tries < 200 && !done; tries++) {
-        // spiral outward from the spawn until the base fits
+        // spiral outward from the spawn until the base fits, easing the
+        // clearance as the near ground runs out -- the same graduated
+        // tiers placeRequiredBuildings leans on for the same reason
         const d = tries * 9;
         const a2 = tries * 0.7;
         const x = clamp(sp.x + Math.cos(a2) * d - 330, Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
         const y = clamp(sp.y + Math.sin(a2) * d - 220, Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
-        const parts = placeBuilding('base', x, y);
+        const pad = tries < 80 ? 120 : tries < 150 ? 84 : 54;
+        const parts = placeBuilding('base', x, y, pad);
         if (!parts.length) continue;
-        const bb = boundsOf(parts);
-        const pid = 'tb' + t;
-        for (const part of parts) { part.placement = pid; part.teamBase = t; genAdd(part); }
-        obstacles.push(...parts);
-        invalidateRects();
-        const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
-        const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms, shape: parts.shape };
-        buildings.push(rec);
-        requiredPlacements.push(bb);
-        furnish('base', bb, parts.rooms);
-        done = true;
+        done = commitTeamBase(t, parts);
       }
+      if (!done) done = sweepForBase(t);
+      if (!done) console.warn('[worldgen] no room for team base:', t);
     }
   }
 
+  /* Structures.ROOM_BUILDINGS (19 buildings, 12 million px² of footprint
+     between them) was sized for the 8600 domination board, where it is
+     16% of the playable ground, and is handed to this function unchanged
+     on elimination/arms-race/range, which share a 5200 board -- 36% of
+     domination's area, so the same list is 44% of THEIR ground before a
+     single door or clearance margin is drawn. The result wasn't occasional
+     crowding, it was total and constant: measured at 2436 individual
+     "no room" rejections across 210 generations on those three modes, with
+     museum and hangar missing from 86-96% of maps apiece.
+
+     A floor of 1 on every category (tried first) barely moved that number,
+     because twelve of this list's thirteen entries are already a solitary
+     building -- round(1 * ratio) floored back up to 1 every time, so
+     nothing about the actual footprint requested had changed. What
+     scales is which maps get which single, not how many categories are
+     attempted at once: each category gets a seeded coin weighted by its
+     share of a full map's worth, so a mansion shows up on roughly a third
+     of elimination maps instead of being dragged onto all of them and
+     missing from 90%+ anyway. At ratio 1 (domination, and anything else
+     given domination's own ground) every coin lands on its guaranteed
+     side and nothing in this function touches Math.random, so this
+     particular change leaves domination's own required-building counts
+     untouched (placeTeamBases' own fairness fix below still shifts the
+     random stream there, same as any other generation-time change would).
+
+     bunker-complex is the one flat exception: the map's only underground
+     route, and a roll is exactly how it used to go missing more often than
+     not before this list existed (see its own comment below). Letting the
+     scale-down roll it too would undo that fix for every map smaller than
+     domination's, so it keeps its hard floor of 1 regardless of board
+     size. */
+  const REQUIRED_BASELINE_AREA = 8600 * 8600;
+  function scaledRoomBuildings() {
+    const ratio = Math.min(1, (MAP_W * MAP_H) / REQUIRED_BASELINE_AREA);
+    const out = [];
+    for (const [name, count] of Structures.ROOM_BUILDINGS) {
+      const scaled = count * ratio;
+      const whole = Math.floor(scaled);
+      const frac = scaled - whole;
+      let n = whole + (frac > 0 && Math.random() < frac ? 1 : 0);
+      if (name === 'bunker-complex') n = Math.max(1, n);
+      if (n > 0) out.push([name, n]);
+    }
+    return out;
+  }
   function placeRequiredBuildings() {
     /* Biggest first, for the same reason landmarks go before everything else:
        a harbor is fifteen hundred pixels across and needs an unbroken stretch
@@ -2115,7 +2208,7 @@ const Game = (() => {
       const bb = boundsOf(parts);
       return bb.w * bb.h;
     };
-    const order = Structures.ROOM_BUILDINGS
+    const order = scaledRoomBuildings()
       .filter(([name]) => Structures.BUILDINGS[name])
       .map(([name, count]) => [name, count, footprint(name)])
       .sort((a, b) => b[2] - a[2]);
