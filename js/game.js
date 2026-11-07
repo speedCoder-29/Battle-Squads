@@ -232,14 +232,34 @@ const Game = (() => {
     const want = Math.max(0, tr - 140);
     return { x: tx + (dx / d) * want, y: ty + (dy / d) * want };
   }
+  /* Outside the circle this phase is closing to -- safe now, not for long. */
+  const zoneOutsideNext = (a) => !!zone && zone.state !== 'done' && zone.tr !== undefined
+    && Math.hypot(a.x - zone.tx, a.y - zone.ty) > zone.tr - 60;
+  /* Should this bot drop everything and head in? Always when the edge is
+     already eating it. When it is only outside the *next* circle, once the
+     close is near or under way -- and not while somebody is in its face,
+     because turning your back on a gunfight to go for a walk is worse than
+     the zone. */
+  function botZoneBound(a, enemy, d) {
+    if (!zone) return false;
+    if (zoneOutside(a)) return true;
+    if (!zoneOutsideNext(a)) return false;
+    if (!(zone.state === 'close' || zone.t < 30)) return false;
+    return !(enemy && d < 420);
+  }
+  /* Nothing worth fetching past the edge. */
+  const zoneSafeSpot = (x, y) => !zone || Math.hypot(x - zone.x, y - zone.y) < zone.r - 80;
   /* What the circle is costing anybody standing outside it. Offline only --
      online the room bills everyone and sends the result, and running it on
      both sides would charge the player twice for the same mistake. */
   function stepZone(dt) {
     if (!zone || online) return;
     RoomSim.Zone.step(zone, dt);
+    /* Riders too: a hull is not a shelter from the weather, and bots ride a
+       lot -- skipping them made a jeep a free pass through the endgame. The
+       room has always billed riders, so this also brings offline into line. */
     for (const a of agents) {
-      if (!a.alive || a.isVehicle || a.riding) continue;
+      if (!a.alive || a.isVehicle) continue;
       const dps = RoomSim.Zone.damage(zone, a.x, a.y);
       /* 'true' damage: a vest is no help against the weather, and letting
          armour reduce it would make the zone a loot check. */
@@ -4684,7 +4704,10 @@ const Game = (() => {
     // legend is loud for the first few seconds, then fades back (hover to read)
     const hint = document.getElementById('hud-hint');
     renderHint();
-    hint.style.display = ''; hint.classList.remove('is-faded');
+    hint.style.display = '';
+    /* On a short screen the open legend is taller than the gap it has under
+       the minimap, so it starts as the pill there; hover still opens it. */
+    hint.classList.toggle('is-faded', innerHeight < 820);
     setTimeout(() => hint.classList.add('is-faded'), 12000);
     updateWeaponHud();
 
@@ -6682,7 +6705,7 @@ const Game = (() => {
     let best = null, bd = BOT_LOOT_RANGE * BOT_LOOT_RANGE;
     for (const c of crates) {
       // a crate that wants a perk stays shut for a bot, exactly as for you
-      if (c.opened || c.needs) continue;
+      if (c.opened || c.needs || !zoneSafeSpot(c.x, c.y)) continue;
       const dd = dist2(a.x, a.y, c.x, c.y);
       if (dd < bd) { bd = dd; best = c; }
     }
@@ -7947,6 +7970,11 @@ const Game = (() => {
     }
     const { enemy, d } = nearestEnemy(a);
     let moveX = 0, moveY = 0;
+    /* The circle outranks every errand below. Loot, a parked jeep, even a
+       downed mate: each of those used to return before the zone was ever
+       looked at, so a bot would cheerfully walk out past the edge to open a
+       crate and stand there healing while it died. */
+    const zoneBound = botZoneBound(a, enemy, d);
 
     /* A garrison that has not noticed you does not shoot at you.
 
@@ -8027,7 +8055,7 @@ const Game = (() => {
        anyway will divert for one that is roughly on its way, and once it is
        in, the rest of updateBot drives it — a vehicle is an agent like any
        other, so everything below already works from the driver's seat. */
-    if (!a.isVehicle && !a.riding && a.alive) {
+    if (!zoneBound && !a.isVehicle && !a.riding && a.alive) {
       /* A squadmate on the floor outranks a vehicle.
 
          This divert sits above the revive tactic in updateBot and returns when
@@ -8203,7 +8231,7 @@ const Game = (() => {
       }
       /* Walking to a downed body outranks the objective, but never outranks
          someone shooting at you right now. */
-      if (a.tacticPt && !(enemy && d < 300)) {
+      if (a.tacticPt && !zoneBound && !(enemy && d < 300)) {
         const tp = a.tacticPt;
         const near = dist2(a.x, a.y, tp.x, tp.y) < (tp.revive ? 60 * 60 : 90 * 90);
         // arrived at a box: open it, and the errand is over
@@ -8348,7 +8376,8 @@ const Game = (() => {
 
     // SURVIVAL — hurt bots start a heal (see the channel above), then break contact
     const hpFrac = a.hp / a.maxHp;
-    if (SURV.usesHeals && !a.isVehicle && hpFrac < SURV.healAt && !a.healCd && !a.healingT) {
+    // ...but never stood still outside the circle, where the bandage loses
+    if (SURV.usesHeals && !a.isVehicle && hpFrac < SURV.healAt && !a.healCd && !a.healingT && !zoneOutside(a)) {
       a.healingT = 1.2;
     }
     if (a.healCd > 0) a.healCd -= dt;
@@ -8363,12 +8392,13 @@ const Game = (() => {
        as well is deliberate -- a squad that stops to trade shots on the wrong
        side of the edge simply dies there, and watching that happen reads as
        the AI being stupid rather than as the zone being dangerous. */
-    const fleeing = !!zone && !a.isVehicle && zoneOutside(a);
+    const fleeing = zoneBound;
     if (fleeing) {
       const run = zoneRunPoint(a);
       if (run) {
         let dir = null;
-        if (navGrid && Nav.clearLine(navGrid, a, run)) {
+        // gridFor, not navGrid: a hull with a bot at the wheel drives in too
+        if (gridFor(a) && Nav.clearLine(gridFor(a), a, run)) {
           const ang = Math.atan2(run.y - a.y, run.x - a.x);
           dir = { x: Math.cos(ang), y: Math.sin(ang) };
           a.path = null;
@@ -13965,6 +13995,14 @@ const Game = (() => {
   // furniture it is (c.look), never as a crate sprite.
   const CRATE_SPRITE = { regular: 'crate', silver: 'crateSilver', gold: 'crateGold', chest: 'lootChest', airdrop: 'crateAirdrop' };
   function drawCratesAndDeployables() {
+    /* One prompt, on the one E would open. A kitchen of cupboards in reach
+       stacked three "[E] Search" labels on top of each other. */
+    let promptFor = null, pd = 95 * 95;
+    if (player) for (const c of crates) {
+      if (!c.look || c.opened) continue;
+      const dd = dist2(player.x, player.y, c.x, c.y);
+      if (dd < pd) { pd = dd; promptFor = c; }
+    }
     // crates
     for (const c of crates) {
       if (!onScreen(c.x, c.y, 40)) continue;
@@ -13982,7 +14020,7 @@ const Game = (() => {
           // a searched-through look: a glint, so you can tell it from scenery
           ctx.beginPath(); ctx.arc(c.x + m.r * 0.55, c.y - m.r * 0.55, 3.5, 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(255,224,150,0.9)'; ctx.fill();
-          if (near2(player, c, 95)) {
+          if (c === promptFor) {
             ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
             ctx.fillText('[E] Search', c.x, c.y - m.r - 14);
@@ -14355,8 +14393,13 @@ const Game = (() => {
        squeezing the whole stack thinner. */
     const colsOf = (cat) => (rowsOf(cat) > 3 ? 2 : 1);
     const linesOf = (cat) => Math.ceil(rowsOf(cat) / colsOf(cat));
-    const linesTotal = CAT_KEYS.reduce((t, c) => t + linesOf(c), 0);
-    const chrome = CAT_KEYS.length * (PANEL.head + PANEL.pad) + PANEL.gap * (CAT_KEYS.length - 1);
+    /* Only where there is a choice to make. One kind of grenade is already
+       said in full by its slot on the action bar -- icon, key and count -- and
+       a panel repeating it was most of what crowded the right-hand side. */
+    const shown = CAT_KEYS.filter(c => p.inv[c] && p.inv[c].held && Object.keys(p.inv[c].held).length > 1);
+    if (!shown.length) return;
+    const linesTotal = shown.reduce((t, c) => t + linesOf(c), 0);
+    const chrome = shown.length * (PANEL.head + PANEL.pad) + PANEL.gap * (shown.length - 1);
     // stand on the legend wherever it currently ends (it folds to a pill)
     const foot = Math.max(PANEL_FOOT_MIN, H - hintTop() + 12);
     const space = H - foot - PANEL_CEIL;
@@ -14364,7 +14407,7 @@ const Game = (() => {
     const heightOf = (cat) => PANEL.head + linesOf(cat) * row + PANEL.pad;
     const total = linesTotal * row + chrome;
     let y = Math.max(PANEL_CEIL, H - foot - total);
-    for (const cat of CAT_KEYS) {
+    for (const cat of shown) {
       const slot = p.inv[cat];
       const meta = CAT_META[cat];
       const ids = slot && slot.held ? Object.keys(slot.held) : [];
@@ -14569,8 +14612,9 @@ const Game = (() => {
     ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = p.cls.color;
     ctx.fillText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`, x, y);
     statusTopY = y - 12;          // the squad list stops above this
+    const clsW = ctx.measureText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`).width;
     ctx.font = '11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#8ea0c9';
-    ctx.fillText(`${p.cls.speed}× · ${p.tool.name}`, x + ctx.measureText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`).width + 44, y);
+    ctx.fillText(`${p.cls.speed}× · ${p.tool.name}`, x + clsW + 10, y);
   }
 
   /* one centred row of every action, in the order you use them */
@@ -16283,7 +16327,13 @@ const Game = (() => {
     ctx.restore();
     roundRect(ox, oy, mw, mh, 8);
     ctx.strokeStyle = 'rgba(175,210,255,0.55)'; ctx.lineWidth = 1; ctx.stroke();
-    drawZoneOnChart(ox, oy, sx, sy);    // the closing circle, where there is one
+    /* The closing circle, where there is one -- clipped to the frame. The
+       opening circle is bigger than the island, and unclipped it drew a ring
+       straight across the corner of the screen. */
+    ctx.save();
+    roundRect(ox, oy, mw, mh, 8); ctx.clip();
+    drawZoneOnChart(ox, oy, sx, sy);
+    ctx.restore();
     /* Objectives get their letter, not just a dot. "Push B" means nothing if
        the minimap will not tell you which of the three dots B is, and the
        world markers carry the letter already — the minimap was the one place
@@ -20036,6 +20086,7 @@ const Game = (() => {
         landmarks: landmarks.map(l => l.name),
         zone: zone ? {
           x: Math.round(zone.x), y: Math.round(zone.y), r: Math.round(zone.r),
+          tx: Math.round(zone.tx), ty: Math.round(zone.ty),
           tr: Math.round(zone.tr), phase: zone.phase, state: zone.state, dps: zone.dps,
           outside: agents.filter(a => a.alive && !a.isVehicle && zoneOutside(a)).length,
         } : null,

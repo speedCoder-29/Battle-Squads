@@ -1109,6 +1109,15 @@ p  { text-wrap: pretty; }
 .score-pill { white-space: nowrap; }
 .hud-scores--many .score-pill { padding: 2px 7px; font-size: 12px; }
 .hud-scores--many .score-pill .dot { width: 7px; height: 7px; }
+/* A laptop screen fits six squads on one line if the pills give up a little
+   padding; wrapping to two rows pushed the strip down onto the compass. */
+@media (max-width: 1400px) {
+  #hud-scores .score-pill { padding: 4px 10px; gap: 6px; font-size: 13px; }
+  #hud-scores .score-pill .dot { width: 9px; height: 9px; }
+}
+@media (max-width: 1100px) {
+  #hud-scores .score-pill { padding: 3px 8px; gap: 5px; font-size: 12px; }
+}
 
 
 /* ============================================================
