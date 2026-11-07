@@ -880,7 +880,7 @@ p  { text-wrap: pretty; }
 .hud__room:hover { border-color: var(--accent-2); }
 .hud__room .hud__room-n { color: var(--muted); letter-spacing: 0; font-weight: 700; }
 .hud__room[hidden] { display: none; }
-.hud__bottom { position: absolute; left: 22px; bottom: 22px; display: flex; align-items: center; gap: 16px; }
+.hud__bottom { position: absolute; left: 22px; bottom: 22px; display: flex; align-items: flex-end; gap: 16px; }
 .hud__health { display: flex; align-items: center; gap: 10px; }
 .hud__hp-label { font-weight: 800; color: var(--muted); }
 .hud__hp-bar { width: 220px; height: 18px; background: rgba(0,0,0,0.55); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -896,16 +896,30 @@ p  { text-wrap: pretty; }
 @keyframes ammo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .hud__ammo b[data-ammo] { animation: none; } }
 /* control legend: grouped by what you're doing, fades out once you're playing */
+/* It lives in the right-hand column, the same width as the item panels that
+   stand on it (PANEL in game.js), so it can never reach across into the
+   action bar however long a rebound key's name is. Once you have been playing
+   a few seconds it folds down to a "Controls" pill and the item panels drop
+   onto it; hover the pill to read it again. */
 .hud__hint {
-  position: absolute; bottom: 22px; right: 22px;
-  display: flex; flex-direction: column; gap: 3px; align-items: flex-end;
-  color: var(--dim); font-size: 11px; line-height: 1.5;
-  background: rgba(0,0,0,0.45); padding: 9px 13px; border-radius: 10px;
+  position: absolute; bottom: 22px; right: 20px; width: 236px; box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 3px; align-items: stretch;
+  color: var(--dim); font-size: 10.5px; line-height: 1.45;
+  background: rgba(8,13,26,0.72); padding: 8px 11px; border-radius: 10px;
   border: 1px solid var(--line);
+  pointer-events: auto;
   transition: opacity 0.6s ease;
 }
-.hud__hint.is-faded { opacity: 0.18; }
-.hud__hint:hover { opacity: 1; }
+.hint-group { display: block; }
+.hud__hint.is-faded { width: auto; padding: 5px 11px; opacity: 0.7; }
+.hud__hint.is-faded .hint-group { display: none; }
+.hud__hint.is-faded::before {
+  content: 'CONTROLS ?'; color: var(--muted);
+  font-size: 9px; letter-spacing: 1px; font-weight: 800;
+}
+.hud__hint.is-faded:hover { width: 236px; padding: 8px 11px; opacity: 1; }
+.hud__hint.is-faded:hover::before { content: none; }
+.hud__hint.is-faded:hover .hint-group { display: block; }
 .hint-group b {
   color: var(--muted); font-size: 9px; letter-spacing: 1px;
   margin-right: 6px; font-weight: 800;
@@ -1081,7 +1095,10 @@ p  { text-wrap: pretty; }
    rather than overflowing. */
 #hud-scores, .hud-scores {
   display: flex; flex-wrap: wrap; justify-content: center;
-  gap: 4px 6px; max-width: min(74vw, 1100px);
+  /* ...and stays out of the minimap's column on the right (196px wide, plus
+     the mode label over it) — symmetric, so the strip and the timer still
+     centre on the screen. 560 = both columns and the timer beside it. */
+  gap: 4px 6px; max-width: min(74vw, 1100px, calc(100vw - 560px));
   max-height: 76px; overflow-y: auto;
 }
 #hud-scores::-webkit-scrollbar, .hud-scores::-webkit-scrollbar { height: 4px; width: 4px; }
@@ -1639,6 +1656,52 @@ p  { text-wrap: pretty; }
 .gunslot.is-live .gunslot__ammo b[data-ammo="empty"] { color: #ff5a5f; animation: ammo-pulse 420ms ease-in-out infinite; }
 /* Mid-swap: the incoming slot lights up before its ammo means anything. */
 .gunslot.is-swapping { border-color: rgba(255,207,74,0.7); }
+/* The spare rounds behind the magazine. Amber under one more magazine, red
+   when there is nothing left to reload from; the whole row goes red once the
+   gun is spent for good. */
+.gunslot__ammo span[data-reserve="low"]   { color: #ffb038; }
+.gunslot__ammo span[data-reserve="empty"] { color: #ff5a5f; }
+.gunslot.is-live.is-dry { border-color: rgba(255,90,95,0.75); background: rgba(60,8,14,0.55); }
+
+/* Under ~1200px the gun rows beside the health bar and the action bar in
+   the middle need the same strip of screen. Stacked above the health bar
+   instead, the bottom-left block is no wider than the health bar itself and
+   the action bar fits between it and the item column. */
+@media (max-width: 1200px) {
+  .hud__bottom { flex-direction: column-reverse; align-items: flex-start; gap: 8px; }
+  .hud__guns { align-items: flex-start; }
+}
+
+/* ---------- armour chips ----------
+   Over the health bar, one per piece: what it is, and its tier as a small
+   coloured label. Clicking one takes that piece off. The HUD layer ignores
+   the pointer so the canvas gets every click; these take it back. */
+.hud__vitals { display: flex; flex-direction: column; gap: 6px; }
+.hud__armor { display: flex; gap: 6px; }
+.hud__armor[hidden] { display: none; }
+.armor-chip {
+  pointer-events: auto; flex: 1 1 0; min-width: 0;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px 4px 8px; border-radius: 8px;
+  background: rgba(8,13,26,0.72); border: 1px solid var(--line);
+  color: var(--text); font: 600 11px/1 Outfit, 'Segoe UI', sans-serif;
+  cursor: pointer; transition: border-color 120ms ease, background 120ms ease;
+}
+.armor-chip__icon { font-size: 13px; }
+.armor-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.armor-chip__tier {
+  margin-left: auto; flex: none;
+  font: 800 10px/1 var(--font-mono); padding: 3px 5px; border-radius: 4px;
+  background: rgba(255,255,255,0.08); color: var(--muted);
+}
+.armor-chip[data-tier="1"] .armor-chip__tier { color: #0b1422; background: #9fd8ff; }
+.armor-chip[data-tier="2"] .armor-chip__tier { color: #160b22; background: #c39bff; }
+.armor-chip[data-tier="3"] .armor-chip__tier { color: #221806; background: #ffcf4a; }
+.armor-chip:disabled { opacity: 0.38; cursor: default; }
+.armor-chip:not(:disabled):hover,
+.armor-chip:not(:disabled):focus-visible { border-color: rgba(232,85,106,0.75); background: rgba(40,10,18,0.8); outline: none; }
+.armor-chip:not(:disabled):hover .armor-chip__tier::after,
+.armor-chip:not(:disabled):focus-visible .armor-chip__tier::after { content: ' ✕'; }
 
 /* A perk you were given rather than chose: shown lit, but plainly not a
    button. No hover, no pointer, and it never dims like an unpicked one. */

@@ -430,8 +430,8 @@ const Game = (() => {
      (x, y). Returns the landmark record on success, null on any rejection --
      occupied ground, water, off the map, or crowding a landmark already
      placed -- so the caller is free to just try somewhere else. */
-  function tryPlaceLandmark(name, pid, x, y) {
-    const parts = placeBuilding(name, x, y);
+  function tryPlaceLandmark(name, pid, x, y, pad) {
+    const parts = placeBuilding(name, x, y, pad);
     if (!parts.length) return null;
     const bb = boundsOf(parts);
     if (landmarks.some(l => padOverlap(bb, l, 260))) return null;
@@ -450,6 +450,37 @@ const Game = (() => {
     return { name, placement: pid, ...bb, style: lst, floor: lst.floor, landmark: true, rooms: parts.rooms, shape: parts.shape, flagAt: parts.flagAt || null };
   }
 
+  /* The ring spiral and the coarse scan both search exhaustively, but until
+     now both held clearance flat at placeBuilding's own 120px default --
+     every other required-content placer in this file (placeRequiredBuildings,
+     placeTeamBases) eases that down as its budget runs out, precisely
+     because a flat clearance on a crowded board turns "no spot at 120px"
+     into "no spot", full stop, when a spot at 54px was sitting right there.
+     Landmarks never got that treatment, and they are the single biggest
+     thing placeLandmarks ever tries to stand up -- 700,000 to 1.5 million
+     px² apiece, on modes that share the small 5200 board and, since
+     placeTeamBases runs first, do it with however many team bases the
+     lobby's squad count already spent. Measured on elimination's own
+     default team count, that cost a landmark on roughly half of all maps. */
+  function landmarkPad(ring) { return ring < 15 ? 120 : ring < 24 ? 84 : 54; }
+  /* Walk the map on a coarse lattice, same as sweepFor does for a required
+     building that still hasn't landed after its own search -- a landmark
+     never had this fallback at all, just the spiral and one coarse-step
+     pass at a clearance already proven too strict for a crowded board. */
+  function sweepForLandmark(name, pid) {
+    const sz = placedSize(name);
+    const lo = Terrain.BEACH_INSET;
+    for (const pad of [80, 50, 24]) {
+      const jx = (pad % 3) * (SWEEP_STEP / 3), jy = (pad % 2) * (SWEEP_STEP / 2);
+      for (let y = lo + jy; y < MAP_H - lo - sz.h; y += SWEEP_STEP) {
+        for (let x = lo + jx; x < MAP_W - lo - sz.w; x += SWEEP_STEP) {
+          const rec = tryPlaceLandmark(name, pid, x, y, pad);
+          if (rec) return rec;
+        }
+      }
+    }
+    return null;
+  }
   function placeLandmarks() {
     const n = objectiveCount();
     const anchors = objectiveLayout(n).map(a => ({ x: MAP_W * a.u, y: MAP_H * a.v }));
@@ -460,10 +491,11 @@ const Game = (() => {
       const pid = 'L' + i;
       let rec = null;
       for (let ring = 0; ring <= 30 && !rec; ring++) {
+        const pad = landmarkPad(ring);
         for (let k = 0; k < 12 && !rec; k++) {
           const ang = (k / 12) * Math.PI * 2 + ring;
           const d = ring * 140;
-          rec = tryPlaceLandmark(name, pid, anchor.x + Math.cos(ang) * d - 300, anchor.y + Math.sin(ang) * d - 250);
+          rec = tryPlaceLandmark(name, pid, anchor.x + Math.cos(ang) * d - 300, anchor.y + Math.sin(ang) * d - 250, pad);
         }
       }
       /* The spiral above searches ~4200px out from this objective's own
@@ -479,10 +511,13 @@ const Game = (() => {
         const step = 500;
         for (let y = 500; y < MAP_H - 500 && !rec; y += step) {
           for (let x = 500; x < MAP_W - 500 && !rec; x += step) {
-            rec = tryPlaceLandmark(name, pid, x, y);
+            rec = tryPlaceLandmark(name, pid, x, y, 54);
           }
         }
       }
+      // last resort: a deterministic lattice sweep, same as a required
+      // building gets when its own search comes up empty
+      if (!rec) rec = sweepForLandmark(name, pid);
       if (!rec) continue;    // every square inch of this map is already spoken for
       landmarks.push(rec);
       buildings.push(rec);
@@ -695,6 +730,213 @@ const Game = (() => {
     invalidateRects();
   }
 
+  /* ---------------- every room has a way in ----------------
+     Blueprints are authored by hand, then scaled, furnished, and squeezed in
+     next to each other, and somewhere in that a room loses its door: a desk
+     lands across the only doorway, a neighbour's wall closes an exterior
+     opening, a partition runs one cell too far. Measured across eighteen
+     seeds, nearly every map had a sealed room in a base, hangar, harbor or
+     bunker, and the loot in it was loot nobody could reach.
+
+     So once the world is final we flood it at the player's own size, on a
+     grid fine enough that a doorway is several cells wide, and anything
+     inside a building the flood never reached gets a way in: the cheapest
+     route out to the rest of the map, through furniture where it can (the
+     piece is removed) and through a wall where it must (a door is cut into
+     it, of the wall's own weight). Repeated until nothing is left sealed,
+     because opening one pocket can be what the next one needed.
+
+     No Math.random anywhere in here — every client builds the map from the
+     same seed and has to cut the same doors. */
+  const LINK_CELL = 10;          // px; a 74px doorway is seven cells wide
+  const LINK_MIN = 12;           // cells; anything smaller is a nook, not a room
+  const LINK_GAP = 80;           // px; the doorway a cut leaves
+  // cover that is cleared rather than cut: it was never meant to be a wall
+  const CLEARABLE = new Set(['wire', 'sandbag', 'barricade']);
+  const isClearable = (o) => o.isProp || o.lowProfile || CLEARABLE.has(o.type);
+
+  /* The walkable world at the player's size: which cells a body can stand
+     in, and which connected piece of floor each one belongs to. */
+  function accessMap() {
+    const S = LINK_CELL, R = BODY_R - 1;
+    const cols = Math.ceil(MAP_W / S), rows = Math.ceil(MAP_H / S), n = cols * rows;
+    const block = new Uint8Array(n);       // 0 floor, 1 furniture, 2 wall
+    const solids = obstacles.filter(o => Structures.blocksMove(o) && !Structures.isDoor(o));
+    const bucket = new Map();
+    const BK = 200;
+    for (const o of solids) {
+      const heavy = isClearable(o) ? 1 : 2;
+      const x0 = Math.max(0, Math.floor((o.x - R) / S)), x1 = Math.min(cols - 1, Math.floor((o.x + o.w + R) / S));
+      const y0 = Math.max(0, Math.floor((o.y - R) / S)), y1 = Math.min(rows - 1, Math.floor((o.y + o.h + R) / S));
+      const rr = o.round ? Math.min(o.w, o.h) / 2 + R : 0;
+      for (let cy = y0; cy <= y1; cy++) {
+        const py = cy * S + S / 2;
+        const dy = Math.max(o.y - py, 0, py - o.y - o.h);
+        for (let cx = x0; cx <= x1; cx++) {
+          const px = cx * S + S / 2;
+          const dx = Math.max(o.x - px, 0, px - o.x - o.w);
+          const i = cy * cols + cx;
+          const hit = o.round
+            ? (px - o.x - o.w / 2) ** 2 + (py - o.y - o.h / 2) ** 2 < rr * rr
+            : dx * dx + dy * dy < R * R;
+          if (hit && block[i] < heavy) block[i] = heavy;
+        }
+      }
+      for (let by = Math.floor((o.y - R) / BK); by <= Math.floor((o.y + o.h + R) / BK); by++) {
+        for (let bx = Math.floor((o.x - R) / BK); bx <= Math.floor((o.x + o.w + R) / BK); bx++) {
+          const k = by * 1e5 + bx;
+          let arr = bucket.get(k);
+          if (!arr) bucket.set(k, arr = []);
+          arr.push(o);
+        }
+      }
+    }
+    // what is standing in this cell, for when a route has to go through it
+    const blockersAt = (i) => {
+      const px = (i % cols) * S + S / 2, py = ((i / cols) | 0) * S + S / 2;
+      const arr = bucket.get(Math.floor(py / BK) * 1e5 + Math.floor(px / BK)) || [];
+      return arr.filter(o => {
+        if (o.round) {
+          const rr = Math.min(o.w, o.h) / 2 + R;
+          return (px - o.x - o.w / 2) ** 2 + (py - o.y - o.h / 2) ** 2 < rr * rr;
+        }
+        const dx = Math.max(o.x - px, 0, px - o.x - o.w), dy = Math.max(o.y - py, 0, py - o.y - o.h);
+        return dx * dx + dy * dy < R * R;
+      });
+    };
+    const comp = new Int32Array(n).fill(-1);
+    const sizes = [];
+    const stack = [];
+    for (let s = 0; s < n; s++) {
+      if (block[s] || comp[s] >= 0) continue;
+      const id = sizes.length;
+      let size = 0;
+      comp[s] = id; stack.push(s);
+      while (stack.length) {
+        const i = stack.pop(); size++;
+        const cx = i % cols;
+        if (cx > 0 && !block[i - 1] && comp[i - 1] < 0) { comp[i - 1] = id; stack.push(i - 1); }
+        if (cx < cols - 1 && !block[i + 1] && comp[i + 1] < 0) { comp[i + 1] = id; stack.push(i + 1); }
+        if (i >= cols && !block[i - cols] && comp[i - cols] < 0) { comp[i - cols] = id; stack.push(i - cols); }
+        if (i < n - cols && !block[i + cols] && comp[i + cols] < 0) { comp[i + cols] = id; stack.push(i + cols); }
+      }
+      sizes.push(size);
+    }
+    let main = 0;
+    for (let c = 1; c < sizes.length; c++) if (sizes[c] > sizes[main]) main = c;
+    return { S, cols, rows, n, block, comp, sizes, main, blockersAt };
+  }
+
+  /* The pieces of floor inside a building that the open map cannot reach. */
+  function sealedPockets(am) {
+    const { S, cols, n, comp, sizes, main } = am;
+    const cells = new Map();
+    for (let i = 0; i < n; i++) {
+      const c = comp[i];
+      if (c < 0 || c === main || sizes[c] < LINK_MIN) continue;
+      let arr = cells.get(c);
+      if (!arr) cells.set(c, arr = []);
+      arr.push(i);
+    }
+    const out = [];
+    for (const [c, arr] of cells) {
+      const mid = arr[arr.length >> 1];
+      const px = (mid % cols) * S, py = ((mid / cols) | 0) * S;
+      const b = buildings.find(bb => px > bb.x - 40 && px < bb.x + bb.w + 40 && py > bb.y - 40 && py < bb.y + bb.h + 40);
+      if (b) out.push({ comp: c, cells: arr, building: b.name, x: px, y: py });
+    }
+    return out;
+  }
+
+  /* Open a door into a wall, centred on `at` along its length. */
+  function cutDoorway(o, at) {
+    const along = o.w >= o.h;
+    const lo = along ? o.x : o.y, len = along ? o.w : o.h;
+    const idx = obstacles.indexOf(o);
+    if (idx < 0) return;
+    if (len <= LINK_GAP + 12) { obstacles.splice(idx, 1); return; }
+    const g0 = Math.max(lo, Math.min(lo + len - LINK_GAP, at - LINK_GAP / 2)), g1 = g0 + LINK_GAP;
+    const pieces = [];
+    const piece = (a, b) => {
+      if (b - a < 12) return;
+      pieces.push(along ? { ...o, x: a, w: b - a } : { ...o, y: a, h: b - a });
+    };
+    piece(lo, g0);
+    piece(g1, lo + len);
+    // a door of the wall's own weight; a window or a fence just gets an opening
+    const doorType = o.type === 'wood' ? 'door'
+      : (o.type === 'metal' || o.type === 'rwall') ? 'rdoor' : null;
+    if (doorType) {
+      const d = along
+        ? Structures.seg(doorType, g0, o.y + o.h / 2, LINK_GAP / PX_PER_M, 'h', 0.3)
+        : Structures.seg(doorType, o.x + o.w / 2, g0, LINK_GAP / PX_PER_M, 'v', 0.3);
+      for (const k of ['placement', 'landmark', 'upstairs', 'underground']) if (o[k] !== undefined) d[k] = o[k];
+      pieces.push(d);
+    }
+    obstacles.splice(idx, 1, ...pieces);
+  }
+
+  /* One sweep: every sealed pocket gets the cheapest route out. Returns how
+     many it opened, so the caller knows whether to look again. */
+  function linkPass() {
+    const am = accessMap();
+    const pockets = sealedPockets(am);
+    if (!pockets.length) return 0;
+    const { cols, n, block, comp, main } = am;
+    const STEP = [1, 4, 12];                 // floor, furniture, wall
+    const dist = new Float64Array(n).fill(Infinity);
+    const prev = new Int32Array(n).fill(-1);
+    const removed = new Set();
+    const cuts = new Map();                  // wall -> { pocket, crossing points along it }
+    let opened = 0;
+    for (const p of pockets) {
+      const touched = [];
+      const heap = new Nav.MinHeap();
+      for (const i of p.cells) { dist[i] = 0; prev[i] = -1; touched.push(i); heap.push(i, 0); }
+      let hit = -1;
+      while (heap.size) {
+        const i = heap.pop();
+        if (comp[i] === main) { hit = i; break; }
+        const cx = i % cols;
+        const nbrs = [cx > 0 ? i - 1 : -1, cx < cols - 1 ? i + 1 : -1, i - cols, i + cols];
+        for (const j of nbrs) {
+          if (j < 0 || j >= n) continue;
+          const d = dist[i] + STEP[block[j]];
+          if (d < dist[j]) {
+            if (dist[j] === Infinity) touched.push(j);
+            dist[j] = d; prev[j] = i; heap.push(j, d);
+          }
+        }
+      }
+      if (hit >= 0) {
+        for (let i = hit; i >= 0; i = prev[i]) {
+          if (!block[i]) continue;
+          for (const o of am.blockersAt(i)) {
+            if (isClearable(o)) { removed.add(o); continue; }
+            /* One crossing per wall per sweep. Two pockets either side of the
+               same long wall would otherwise average into a door between
+               them that serves neither; the second one is picked up next
+               sweep against the pieces this one leaves. */
+            let c = cuts.get(o);
+            if (!c) cuts.set(o, c = { pocket: p, pts: [] });
+            if (c.pocket !== p) continue;
+            c.pts.push(o.w >= o.h ? (i % cols) * am.S + am.S / 2 : ((i / cols) | 0) * am.S + am.S / 2);
+          }
+        }
+        opened++;
+      }
+      for (const i of touched) { dist[i] = Infinity; prev[i] = -1; }
+    }
+    if (removed.size) obstacles = obstacles.filter(o => !removed.has(o));
+    for (const [o, c] of cuts) cutDoorway(o, c.pts.reduce((a, b) => a + b, 0) / c.pts.length);
+    invalidateRects();
+    return opened;
+  }
+
+  function connectRooms() {
+    for (let pass = 0; pass < 6; pass++) if (!linkPass()) break;
+  }
+
   /* How much of everything a map gets, per million pixels of playable ground.
      Everything scales from the board size, so making the map bigger fills it
      instead of stretching it thin. */
@@ -786,8 +1028,6 @@ const Game = (() => {
   function assignDistricts() {
     const cats = Object.keys(BUILDING_CATEGORIES);
     const order = cats.slice();
-    // a seeded shuffle, same as rollSpawnOrder -- this already runs inside
-    // withSeed(worldSeed, ...), so Math.random() here is reproducible
     for (let i = order.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [order[i], order[j]] = [order[j], order[i]];
@@ -2081,7 +2321,12 @@ const Game = (() => {
   function commitTeamBase(t, parts) {
     const bb = boundsOf(parts);
     const pid = 'tb' + t;
-    for (const part of parts) { part.placement = pid; part.teamBase = t; genAdd(part); }
+    /* parts may have come from the 'base-small' blueprint (see baseKind) --
+       tagged back to plain 'base' here so nothing downstream (furnish,
+       rendering, loot, debug counts) needs to know the smaller variant
+       exists. Only the geometry differs; everything reads it as a base. */
+    for (const part of parts) { part.placement = pid; part.teamBase = t; part.building = 'base'; genAdd(part); }
+    if (parts.rooms) for (const r of parts.rooms) r.building = 'base';
     obstacles.push(...parts);
     invalidateRects();
     const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
@@ -2090,6 +2335,44 @@ const Game = (() => {
     requiredPlacements.push(bb);
     furnish('base', bb, parts.rooms);
     return true;
+  }
+  /* A full base is what both the board and the "defended building"
+     treatment around it (see defendBuilding) were tuned against -- the
+     smaller variant only comes in once a mode is carrying more squads than
+     its own listed default (TEAM_SETUP), which is the point past which
+     placeTeamBases' own sector search started missing bases outright on
+     the shared 5200 board (see its own comment). Below that line nothing
+     changes; domination's bases, sized for an 8600 board with room to
+     spare, never do either. */
+  function baseKind() {
+    if (mode === 'domination') return 'base';
+    /* Not TEAM_SETUP's own default -- measured, elimination's listed default
+       of 6 was already losing a base on 8 of 10 seeds at full size, so "the
+       mode's normal team count" and "what a full base actually has room to
+       share the board with" turned out to be two different numbers. Four is
+       where both modes were landing every base reliably before this fix
+       existed; five still dropped one on an occasional seed. */
+    return nTeams > 4 ? 'base-small' : 'base';
+  }
+  /* Non-domination squads already stand on an even bearing around the island
+     -- `spawnPoint`'s ring, one slot per team -- so "this team's own ground"
+     has a precise meaning: the wedge of the island centred on its spawn
+     bearing, as wide as the gap to its two neighbours. Domination's bases
+     sit behind a flag instead of round a ring and already place reliably
+     (see placeTeamBases), so this stays off there -- it would just be
+     dividing ground that was never contested to begin with. */
+  function teamSector(t) {
+    if (mode === 'domination') return null;
+    return {
+      cx: MAP_W / 2, cy: MAP_H / 2,
+      center: -Math.PI / 2 + (slotOf(t) / Math.max(1, nTeams)) * Math.PI * 2,
+      half: Math.PI / Math.max(1, nTeams),
+    };
+  }
+  function inSector(sector, x, y) {
+    if (!sector) return true;
+    const a = ((Math.atan2(y - sector.cy, x - sector.cx) - sector.center + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    return Math.abs(a) <= sector.half;
   }
   /* The spiral starts from this team's own spawn point and gives up after
      200 steps -- fine when the board has room near every spawn, but a small
@@ -2100,19 +2383,39 @@ const Game = (() => {
      no walls bots will defend as theirs. Measured: elimination at its own
      default-adjacent team count (4) lost a base in 3 of 10 seeds. A required
      building gets a deterministic lattice fallback (see sweepFor) when its
-     own search comes up empty; a team's base is no less required. */
+     own search comes up empty; a team's base is no less required.
+
+     Tried against the whole board in a fixed scan order, the way sweepFor
+     works for an ordinary required building: measured at six to eight
+     squads (elimination/arms-race/range), that found a spot for barely one
+     team in ten. A base is a sixth of the board on its own at eight squads,
+     so the board is never short of room for ONE more base so much as it is
+     short of a contiguous piece of it -- and a scan with no notion of whose
+     ground it's walking hands whatever it finds first to whichever team
+     happens to reach this fallback, which both fragments what's left for
+     the rest and has nothing to do with where this team actually plays from.
+     Restricting the scan to this team's own wedge first turns "whoever gets
+     here first wins" into "does my own slice have room", which it almost
+     always does, since the wedges were sized to share the ring evenly in
+     the first place. Only once a team's own slice is proven empty does this
+     fall through to the unrestricted scan, same as before. */
   function sweepForBase(t) {
-    const sz = placedSize('base');
+    const kind = baseKind();
+    const sz = placedSize(kind);
     const lo = Terrain.BEACH_INSET;
-    for (const pad of [60, 34, 16]) {
-      const jx = (pad % 3) * (SWEEP_STEP / 3), jy = (pad % 2) * (SWEEP_STEP / 2);
-      for (let y = lo + jy; y < MAP_H - lo - sz.h; y += SWEEP_STEP) {
-        for (let x = lo + jx; x < MAP_W - lo - sz.w; x += SWEEP_STEP) {
-          const parts = placeBuilding('base', x, y, pad);
-          if (!parts.length) continue;
-          const bb = boundsOf(parts);
-          if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(pad, 30)))) continue;
-          return commitTeamBase(t, parts);
+    const sector = teamSector(t);
+    for (const restrict of sector ? [true, false] : [false]) {
+      for (const pad of [60, 34, 16]) {
+        const jx = (pad % 3) * (SWEEP_STEP / 3), jy = (pad % 2) * (SWEEP_STEP / 2);
+        for (let y = lo + jy; y < MAP_H - lo - sz.h; y += SWEEP_STEP) {
+          for (let x = lo + jx; x < MAP_W - lo - sz.w; x += SWEEP_STEP) {
+            if (restrict && !inSector(sector, x + sz.w / 2, y + sz.h / 2)) continue;
+            const parts = placeBuilding(kind, x, y, pad);
+            if (!parts.length) continue;
+            const bb = boundsOf(parts);
+            if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(pad, 30)))) continue;
+            return commitTeamBase(t, parts);
+          }
         }
       }
     }
@@ -2130,8 +2433,11 @@ const Game = (() => {
      instead of always the same two -- the same reasoning `shuffle()` above
      already exists for. */
   function placeTeamBases() {
+    const kind = baseKind();
+    const sz = placedSize(kind);
     for (const t of shuffle([...Array(nTeams).keys()])) {
       const sp = spawnPoint(t);
+      const sector = teamSector(t);
       let done = false;
       for (let tries = 0; tries < 200 && !done; tries++) {
         // spiral outward from the spawn until the base fits, easing the
@@ -2141,8 +2447,18 @@ const Game = (() => {
         const a2 = tries * 0.7;
         const x = clamp(sp.x + Math.cos(a2) * d - 330, Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
         const y = clamp(sp.y + Math.sin(a2) * d - 220, Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
+        /* sp sits on this team's own bearing, but the spiral's local angle
+           (a2) has nothing to do with that bearing, so at d big enough to
+           matter it swings just as readily toward a neighbour's ground as
+           its own -- which is how an early-processed team ended up sitting
+           on ground a late-processed team's spawn was right next to (see
+           sweepForBase for the fuller account). Rejecting those tries here,
+           not just in the fallback sweep, is what keeps the first 200 tries
+           from spending a neighbour's ground before the fallback ever gets
+           a say in whose it was. */
+        if (sector && !inSector(sector, x + sz.w / 2, y + sz.h / 2)) continue;
         const pad = tries < 80 ? 120 : tries < 150 ? 84 : 54;
-        const parts = placeBuilding('base', x, y, pad);
+        const parts = placeBuilding(kind, x, y, pad);
         if (!parts.length) continue;
         done = commitTeamBase(t, parts);
       }
@@ -2405,6 +2721,27 @@ const Game = (() => {
     };
   }
 
+  /* Three cuts of BUILDING_MIX by footprint, smallest-heavy as the index
+     grows. A harbor and a tower cost the same one attempt out of the budget
+     when picked blind, but only one of them still has a chance once the
+     board is this full -- on a tight map (small team-count boards, or any
+     map whose required+landmark content ran heavy) the mix kept rolling
+     mansion, airfield, campground, base, chasing a gap that didn't exist
+     while `easing` tightened clearance around attempts that were never going
+     to land regardless of clearance. Cut by actual footprint rather than by
+     name so this adapts to whatever BUILDING_MIX holds, not a hardcoded
+     list. */
+  const BUILDING_MIX_BY_SIZE = BUILDING_MIX.slice().sort((a, b) => {
+    const sa = placedSize(a[0]), sb = placedSize(b[0]);
+    return sa.w * sa.h - sb.w * sb.h;
+  });
+  const BUILDING_MIX_TIERS = [
+    BUILDING_MIX,
+    BUILDING_MIX_BY_SIZE.slice(0, Math.ceil(BUILDING_MIX_BY_SIZE.length * 0.7)),
+    BUILDING_MIX_BY_SIZE.slice(0, Math.ceil(BUILDING_MIX_BY_SIZE.length * 0.4)),
+  ];
+  const BUILDING_TIER_SET = BUILDING_MIX_TIERS.map(list => new Set(list.map(m => m[0])));
+
   function placeBuildingsProcedural(count) {
     const placed = [];
     const seen = {};
@@ -2444,7 +2781,7 @@ const Game = (() => {
         const choice = missingCategoryLists[Math.floor(Math.random() * missingCategoryLists.length)];
         categoryName = choice[Math.floor(Math.random() * choice.length)];
       }
-      const name = (missing.length && placed.length < count * 0.7)
+      let name = (missing.length && placed.length < count * 0.7)
         ? missing[Math.floor(Math.random() * missing.length)][0]
         : categoryName || rollMix(BUILDING_MIX);
       // most of the time in its own band; occasionally anywhere, so a crowded
@@ -2458,6 +2795,11 @@ const Game = (() => {
          the rarer entries in it — the garage, the workshop, the filling
          station — went whole runs of maps without ever being built. */
       const easing = guard < count * 20 ? (guard < count * 8 ? 2 : 1) : 0;
+      // the variety/category pick above answers "what's missing", not "what
+      // still fits" -- once the budget is easing, swap an oversized pick for
+      // one from the size-capped tier instead of spending the attempt on a
+      // building that was never going to clear a board this full
+      if (easing && !BUILDING_TIER_SET[easing].has(name)) name = rollMix(BUILDING_MIX_TIERS[easing]);
       const pad = [120, 78, 48][easing];
       const gap = [112, 74, 46][easing];
       const spot = (Math.random() < 0.82 && !easing) ? ringSpot(name, true) : fittingSpot(name);
@@ -3071,7 +3413,10 @@ const Game = (() => {
     }
     return out;
   }
-  const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  // a round prop is the circle inscribed in its box (see Structures.prop)
+  const inRect = (x, y, r) => (r.round
+    ? (x - r.x - r.w / 2) ** 2 + (y - r.y - r.h / 2) ** 2 <= (Math.min(r.w, r.h) / 2) ** 2
+    : x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
   const onGrass = (a) => grass.some(g => inRect(a.x, a.y, g));
   const inTrench = (a) => trenches.some(t => dist2(a.x, a.y, t.x, t.y) < t.r * t.r);
 
@@ -3152,7 +3497,20 @@ const Game = (() => {
   const BAND_MIN = 0.55, BAND_MAX = 1.15;
   function alignSpawnRing() {
     spawnBands = null;
-    if (!objectives.length || nTeams < 2) return;
+    /* `objectives` is a domination-only idea -- every other mode leaves it
+       empty (see setupTeams) because there's no flag to capture, which also
+       meant this whole function silently never ran for them: the guard
+       below returned before anything else here was reached. But elimination,
+       arms-race and range all place the same three landmark buildings
+       domination's capture points sit inside (see placeLandmarks/LANDMARKS),
+       and the squads sitting at fixed bearings around them have exactly the
+       problem this function exists to fix -- a squad whose arc happens to
+       face two landmarks walks a fraction of the squad opposite them. With
+       no flag to call "the objectives", the landmarks are the next best
+       thing worth equalising the walk to. */
+    const targets = objectives.length ? objectives
+      : landmarks.map(l => ({ x: l.x + l.w / 2, y: l.y + l.h / 2 }));
+    if (!targets.length || nTeams < 2) return;
     /* Only for lobbies where the ring has room to be adjusted.
 
        Past six squads the ring is crowded enough that its own staggered
@@ -3181,7 +3539,7 @@ const Game = (() => {
        radius is solved against that. */
     const walk = (team, band) => {
       const a = at(team, band);
-      const ds = objectives.map(o => Math.hypot(a.x - o.x, a.y - o.y));
+      const ds = targets.map(o => Math.hypot(a.x - o.x, a.y - o.y));
       const nearest = Math.min(...ds);
       const avg = ds.reduce((n, x) => n + x, 0) / ds.length;
       return nearest * 0.6 + avg * 0.4;
@@ -4172,6 +4530,8 @@ const Game = (() => {
       bindInput();
     }
     bindRoomChip();
+    bindArmorHud();
+    armorHudKey = null;     // a new match redraws the chips whatever they said last
     bindLobby();
     showLobby(false);      // an offline match never has one
     resize();
@@ -4202,6 +4562,16 @@ const Game = (() => {
        still sets both again below; calling setupFor() and rollSpawnOrder()
        twice for the same mode and seed is just the same answer read twice. */
     nTeams = (coached ? COACH_SETUP : setupFor(mode)).teams;
+    /* Range and tutorial aren't a lobby pick -- setupRange()/setupTutorial()
+       hardcode nTeams = 2 below regardless of what setupFor(mode) just
+       answered, because neither mode has a real second team: range is you
+       and a row of static targets, tutorial is you and the arena. Reading
+       the lobby's matchSetup here anyway means whatever team count the
+       player last picked for an actual mode leaks in -- placeTeamBases()
+       then spends its budget (and the sector each squad would have claimed,
+       see sweepForBase) standing up team-coloured bases for squads that
+       will never exist, on a map that was never going to use them. */
+    if (mode === 'range' || mode === 'tutorial') nTeams = 2;
     rollSpawnOrder();
     buildMap();
     /* The ladder is built before the squads are, because setupTeams hands out
@@ -4252,6 +4622,8 @@ const Game = (() => {
     balanceVehicles();     // ...and then the hulls, against where they end up
     clearRangeLane();      // firing range only: nothing between you and the targets
     buildTutorialArena();  // basic training only: the cleared field and its props
+    // last thing that touches walls: every room inside a building gets a way in
+    if (mode !== 'tutorial' && mode !== 'range') connectRooms();
     stampWorldIds();     // the wall list is final, so it can be named now
     buildNav();          // the world is final now, so the grid matches it
     // starting tactical kit = whatever your class deploys with
@@ -4259,6 +4631,7 @@ const Game = (() => {
       grenade: freshSlot(), tactical: freshSlot(), heal: freshSlot(),
       tokens: [],
     };
+    refillAll(player);     // full magazines and full spares to start with
     const kit = Items.CONSUMABLES[player.cls.consumable];
     if (kit) addItem(kit.cat, player.cls.consumable, Classes.startFor(player.cls, carryTier(player), player.perks));
     // everyone also deploys with a couple of bandages so you're never stranded
@@ -4510,8 +4883,20 @@ const Game = (() => {
     let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
     if (dx === 0 && dy === 0) { dx = Math.cos(player.angle); dy = Math.sin(player.angle); }
     const m = Math.hypot(dx, dy) || 1;
-    player.x += (dx / m) * 120; player.y += (dy / m) * 120;
-    resolveObstacles(player);
+    /* Swept, not teleported. Jumping the whole 120px and then pushing out of
+       whatever we landed in put you on the far side of any wall thinner than
+       the jump — every interior partition, every closed door — because the
+       push-out goes to the nearest face, and past the halfway point that is
+       the far one. Short steps, each resolved, and the dash ends where a
+       step stops making progress: against the wall, not through it. */
+    const STEP = 6;
+    for (let d = 0; d < 120; d += STEP) {
+      const want = Math.min(STEP, 120 - d);
+      const bx = player.x, by = player.y;
+      player.x += (dx / m) * want; player.y += (dy / m) * want;
+      resolveObstacles(player);
+      if (Math.hypot(player.x - bx, player.y - by) < want * 0.5) break;
+    }
     spawnFx(player.x, player.y, '#35e0ff', 8);
   }
 
@@ -4539,6 +4924,7 @@ const Game = (() => {
   function startReload(a) {
     if (a.swapT > 0) return;              // still bringing it up
     if (a.reloadTimer > 0 || a.ammo >= a.weapon.mag) return;
+    if (a.reserve != null && a.reserve <= 0) { outOfAmmo(a); return; }
     // online our magazine belongs to the host, so ask rather than assume
     if (online && a.isPlayer) online.transport.send('reload', {});
     // Adren%/2 reload speedup, and whatever the perk takes off on top
@@ -4975,12 +5361,100 @@ const Game = (() => {
     // merge into a nearby identical pile rather than littering. The radius has
     // to comfortably exceed the scatter above, or two drops from the same spot
     // can land far enough apart to stay separate.
-    for (const dr of drops) {
+    // ...but not armour: two vests are two things to pick up, not a stack
+    if (cat !== 'armor') for (const dr of drops) {
       if (dr.id === id && dist2(dr.x, dr.y, x, y) < 100 * 100) { dr.n += n; dr.life = DROP_LIFE; return; }
     }
     drops.push({ x, y, cat, id, n, life: DROP_LIFE, bob: Math.random() * Math.PI * 2 });
   }
   const DROP_LIFE = 90;              // seconds a dropped stack survives
+
+  /* What a pile on the floor is, for drawing and for saying so: a consumable
+     out of the item table, or a piece of armour out of its drop id. */
+  const ARMOR_LOOK = {
+    vest: { icon: '🦺', name: 'Vest', of: (t) => Combat.vest(t) },
+    helmet: { icon: '⛑', name: 'Helmet', of: (t) => Combat.helmet(t) },
+    bag: { icon: '🎒', name: 'Bag', of: (t) => Combat.bag(t) },
+  };
+  const ARMOR_TIER_INK = ['#8ea0c9', '#9fd8ff', '#c39bff', '#ffcf4a'];
+  function dropLook(id) {
+    const arm = Combat.parseArmorDrop(id);
+    if (arm) {
+      const l = ARMOR_LOOK[arm.piece];
+      return { icon: l.icon, name: `${l.name} T${arm.tier}`, tier: arm.tier };
+    }
+    const it = Items.CONSUMABLES[id];
+    return it ? { icon: it.icon, name: it.name } : null;
+  }
+
+  /* ================= taking armour off =================
+     Armour is a trade — a T3 vest is 45% of your speed — and the only way to
+     undo it was to die. Each piece now has a chip on the HUD; click it and the
+     piece comes off and goes on the floor at your feet, where [E] puts it back
+     on. A bag takes its extra carry with it: spare rounds and kit over the
+     smaller ceiling are dropped rather than kept for free. */
+  function takeOffArmor(k) {
+    if (!player || !player.alive || player.riding || !ARMOR_LOOK[k]) return;
+    const tier = player[k] || 0;
+    if (!tier) return;
+    SFX.click();
+    // online the room owns your armour; it will drop the piece and tell us
+    if (online) { online.transport.send('unequip', { k }); return; }
+    player[k] = 0;
+    dropItem('armor', Combat.armorDropId(k, tier), 1, player);
+    if (k === 'bag') {
+      addBagRounds(player, 0);              // clamps the spares to the new ceiling
+      for (const cat of CAT_KEYS) {
+        const slot = player.inv[cat];
+        if (!slot || !slot.held) continue;
+        for (const id of Object.keys(slot.held)) {
+          const over = slot.held[id] - Classes.limitFor(player.cls, id, carryTier(player), player.perks);
+          if (over > 0) { slot.held[id] -= over; dropItem(cat, id, over, player); }
+        }
+        syncSlot(cat);
+      }
+    }
+    hudMsg(`${ARMOR_LOOK[k].of(tier).name} taken off — [E] to put it back on`);
+    updateArmorHud();
+  }
+
+  /* The three chips over the health bar: what you are wearing, at what tier,
+     and a click to take it off. Rebuilt only when a tier changes. */
+  let armorHudKey = '';
+  function updateArmorHud() {
+    const el = document.getElementById('hud-armor');
+    if (!el) return;
+    const s = hudSubject();
+    const mine = s === player && player && player.alive && !player.riding;
+    const key = mine ? `${player.vest || 0}${player.helmet || 0}${player.bag || 0}` : '';
+    el.hidden = !mine;
+    if (key === armorHudKey) return;
+    armorHudKey = key;
+    if (!mine) return;
+    for (const btn of el.querySelectorAll('[data-armor]')) {
+      const k = btn.dataset.armor;
+      const tier = player[k] || 0;
+      const piece = ARMOR_LOOK[k].of(tier);
+      btn.dataset.tier = String(tier);
+      btn.disabled = !tier;
+      btn.querySelector('.armor-chip__tier').textContent = tier ? 'T' + tier : '–';
+      const what = k === 'vest' ? `${Math.round((1 - piece.body) * 100)}% less body damage`
+        : k === 'helmet' ? `headshots ×${piece.head}`
+        : `×${piece.capacity} carry`;
+      const slow = piece.speed ? `, ${Math.round(piece.speed * 100)}% speed` : '';
+      btn.title = tier ? `${piece.name}: ${what}${slow} — click to take off` : `No ${ARMOR_LOOK[k].name.toLowerCase()}`;
+    }
+  }
+  function bindArmorHud() {
+    const el = document.getElementById('hud-armor');
+    if (!el || el.dataset.bound) return;
+    el.dataset.bound = '1';
+    for (const btn of el.querySelectorAll('[data-armor]')) {
+      // the canvas fires on mousedown; this click is not a shot
+      btn.addEventListener('mousedown', (e) => e.stopPropagation());
+      btn.addEventListener('click', (e) => { e.stopPropagation(); takeOffArmor(btn.dataset.armor); btn.blur(); });
+    }
+  }
 
   function updateDrops(dt) {
     for (let i = drops.length - 1; i >= 0; i--) {
@@ -5003,6 +5477,21 @@ const Game = (() => {
        same stack, and then the next snapshot put it back on the floor for
        whichever of them the room had said no to. */
     if (online) { online.transport.send('grab', {}); SFX.click(); return true; }
+    const arm = Combat.parseArmorDrop(best.id);
+    if (arm) {
+      const have = player[arm.piece] || 0;
+      if (have >= arm.tier) { hudMsg(`Already wearing ${ARMOR_LOOK[arm.piece].of(have).name}`); return false; }
+      drops.splice(bi, 1);
+      // swapping up leaves the old piece where the new one was
+      if (have) dropItem('armor', Combat.armorDropId(arm.piece, have), 1, best);
+      player[arm.piece] = arm.tier;
+      if (arm.piece === 'bag') updateWeaponHud();
+      hudMsg(`${ARMOR_LOOK[arm.piece].of(arm.tier).name} equipped`);
+      SFX.click();
+      spawnFx(best.x, best.y, '#9fd8ff', 10);
+      updateArmorHud();
+      return true;
+    }
     const it = Items.CONSUMABLES[best.id];
     const slot = player.inv[best.cat];
     const cap = Classes.limitFor(player.cls, best.id, carryTier(player), player.perks);
@@ -5027,8 +5516,10 @@ const Game = (() => {
        the single best weapon the loot table hands out -- would silently
        revert to whatever you were holding before, the moment you swapped to
        your sidearm and back. */
+    // a new gun comes with its own spare magazines
+    if (tracksReserve(a)) a.reserve = reserveFor(a, w);
     const g = slotsOf(a);
-    if (g && g[a.gun]) { g[a.gun].weapon = w; g[a.gun].ammo = w.mag; }
+    if (g && g[a.gun]) { g[a.gun].weapon = w; g[a.gun].ammo = w.mag; g[a.gun].reserve = a.reserve; }
     if (a.isPlayer) updateWeaponHud();
   }
 
@@ -5520,6 +6011,7 @@ const Game = (() => {
       const k = kindOf(o);
       return {
         id: o.nid, x: o.x, y: o.y, w: o.w, h: o.h,
+        round: !!o.round,
         solid: Structures.blocksMove(o),
         mode: bal.mode, keep: bal.keep,
         hp: o.hp, type: o.type, toughness: o.toughness,
@@ -6941,11 +7433,13 @@ const Game = (() => {
         ].sort((a, b) => a.v - b.v);
         const slot = slots[0].k;
         if (player[slot] >= tier) { hudMsg('Already better equipped'); break; }
+        const was = player[slot] || 0;
         player[slot] = tier;
         if (slot === 'bag') {
           // a bigger bag tops you straight up to its new ceiling
           const b = Combat.bag(tier);
           refillFromBag();
+          addBagRounds(player, tier - was);
           hudMsg(`${b.name} equipped (×${b.capacity} carry capacity)`);
         } else {
           const piece = slot === 'vest' ? Combat.vest(tier) : Combat.helmet(tier);
@@ -7129,6 +7623,15 @@ const Game = (() => {
     a.x = clamp(a.x, a.r, MAP_W - a.r);
     a.y = clamp(a.y, a.r, MAP_H - a.r);
     for (const o of nearRects(solidIndex(), a.x, a.y, a.r + 4)) {
+      // a tree is a disc: slide round it rather than along a box's edge
+      if (o.round) {
+        const ox = o.x + o.w / 2, oy = o.y + o.h / 2, min = Math.min(o.w, o.h) / 2 + a.r;
+        const dx = a.x - ox, dy = a.y - oy, d = Math.hypot(dx, dy);
+        if (d < min) {
+          if (d > 0) { a.x = ox + (dx / d) * min; a.y = oy + (dy / d) * min; } else a.x = ox + min;
+        }
+        continue;
+      }
       const cx = clamp(a.x, o.x, o.x + o.w);
       const cy = clamp(a.y, o.y, o.y + o.h);
       const dx = a.x - cx, dy = a.y - cy;
@@ -9554,7 +10057,7 @@ const Game = (() => {
       if (a.bloom > 0) a.bloom = Math.max(0, a.bloom - a.bloom * 7 * dt);
       a.wireSlow = (a.alive && !a.isVehicle && !a.riding) ? wireAt(a, dt) : 1;
       if (!a.isPlayer) a.stillT = Math.hypot(a.vx || 0, a.vy || 0) < 12 ? (a.stillT || 0) + dt : 0;
-      if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { a.ammo = a.weapon.mag; if (isYours(a)) updateWeaponHud(); } }
+      if (a.reloadTimer > 0) { a.reloadTimer -= ms; if (a.reloadTimer <= 0) { loadMagazine(a); if (isYours(a)) updateWeaponHud(); } }
       // drive an in-progress burst
       if (a.burstLeft > 0) {
         a.burstCd -= ms;
@@ -10395,6 +10898,12 @@ const Game = (() => {
       if (d < bd) { bd = d; best = a; }
     }
     if (!best) { hudMsg('No squadmate in reach needs a resupply'); return; }
+    // the magazine you hand over comes out of your own spares
+    if (player.reserve != null) {
+      if (player.reserve <= 0) { hudMsg('No spare ammo to hand over'); return; }
+      player.reserve -= Math.min(player.reserve, player.weapon.mag);
+      updateWeaponHud();
+    }
     best.ammo = best.weapon.mag;
     best.reloadTimer = 0;
     best.hp = Math.min(best.maxHp, best.hp + 25);
@@ -10924,13 +11433,63 @@ const Game = (() => {
   function refillAll(a) {
     a.ammo = a.weapon.mag;
     a.reloadTimer = 0;
+    if (tracksReserve(a)) a.reserve = reserveFor(a, a.weapon);
     const g = slotsOf(a);
     if (!g) return;
     for (const slot of g) {
       if (!slot || !slot.weapon) continue;
       slot.ammo = slot.weapon.mag;
       slot.reloadTimer = 0;
+      if (tracksReserve(a)) slot.reserve = reserveFor(a, slot.weapon);
     }
+  }
+
+  /* ---------------- spare rounds ----------------
+     A reload used to conjure a full magazine out of nothing, forever, so
+     ammo was a timer rather than a resource: nothing you did between fights
+     changed how long you could keep shooting in the next one. Each gun now
+     carries a reserve — SPARE_MAGS magazines, one more per bag tier — and a
+     reload draws on it. Every resupply that already existed (respawn, an
+     armoury, an ammo box, a crate's ammo roll, a squadmate's revive) fills it
+     back up through refillAll, so the sources are the ones you already know.
+
+     Players only. Bots don't loot, so a finite bot is a bot that stops
+     fighting halfway through the match; the range and basic training keep
+     their bottomless magazines because they are for practising, not for
+     rationing. `reserve` left undefined means bottomless. */
+  const SPARE_MAGS = 3;
+  const tracksReserve = (a) => !!a.isPlayer && mode !== 'range' && mode !== 'tutorial';
+  const reserveFor = (a, w) => w.mag * (SPARE_MAGS + (a.bag || 0));
+  // load what the reserve can cover; bottomless guns just fill
+  function loadMagazine(a) {
+    if (a.reserve == null) { a.ammo = a.weapon.mag; return; }
+    const take = Math.min(a.weapon.mag - a.ammo, a.reserve);
+    a.ammo += take; a.reserve -= take;
+  }
+  /* A bag change moves the ceiling: a bigger one comes with the extra
+     magazines in it, taking one off drops whatever no longer fits. */
+  function addBagRounds(a, tiers) {
+    if (!tracksReserve(a)) return;
+    const g = slotsOf(a);
+    const fix = (s, w) => {
+      if (s.reserve == null) return;
+      s.reserve = Math.max(0, Math.min(reserveFor(a, w), s.reserve + w.mag * Math.max(0, tiers)));
+    };
+    fix(a, a.weapon);
+    if (g) g.forEach((s, i) => { if (i !== a.gun && s && s.weapon) fix(s, s.weapon); });
+    if (isYours(a)) updateWeaponHud();
+  }
+  let dryMsgT = 0;
+  function outOfAmmo(a) {
+    if (!isYours(a)) return;
+    const t = performance.now();
+    if (t - dryMsgT < 1500) return;
+    dryMsgT = t;
+    SFX.click();
+    const g = slotsOf(a);
+    const spare = g && g[1 - a.gun];
+    hudMsg(spare && (spare.ammo > 0 || spare.reserve > 0)
+      ? 'Out of ammo — swap weapons [1/2]' : 'Out of ammo — find an ammo box or crate');
   }
 
   /* How long this gun takes to raise. Heavier guns come up slower, which is
@@ -10948,10 +11507,12 @@ const Game = (() => {
     if (!g[i] || !g[i].weapon) return false;
     // put the live magazine back where it came from
     g[a.gun].ammo = a.ammo;
+    g[a.gun].reserve = a.reserve;
     g[a.gun].reloadTimer = a.reloadTimer;
     a.gun = i;
     a.weapon = g[i].weapon;
     a.ammo = g[i].ammo;
+    a.reserve = g[i].reserve;
     /* A reload does not continue in a bag. Cancelling it is also what makes
        swapping a real tactical option -- it is the fast way out of a long
        reload, at the cost of the rounds you were about to load. */
@@ -10993,13 +11554,19 @@ const Game = (() => {
 
     put('hud-weapon', name);
     put('hud-ammo', s.swapT > 0 ? '–' : s.reloadTimer > 0 ? '⟳' : String(s.ammo));
-    put('hud-ammomax', '/' + s.weapon.mag);
+    /* Beside the magazine: the spare rounds behind it, where there are any to
+       count. A bottomless gun (a bot, a hull, the range) keeps showing its
+       magazine size, which is the only number that means anything there. */
+    put('hud-ammomax', '/' + (s.reserve != null ? s.reserve : s.weapon.mag));
+    const resEl = document.getElementById('hud-ammomax');
+    const resState = s.reserve == null ? '' : s.reserve === 0 ? 'empty' : s.reserve < s.weapon.mag ? 'low' : '';
+    if (resEl && resEl.dataset.reserve !== resState) resEl.dataset.reserve = resState;
 
     const other = g && g[1 - live];
     if (other && other.weapon) {
       put('hud-weapon2', other.weapon.name);
       put('hud-ammo2', String(other.ammo));
-      put('hud-ammomax2', '/' + other.weapon.mag);
+      put('hud-ammomax2', '/' + (other.reserve != null ? other.reserve : other.weapon.mag));
     }
     for (const i of [0, 1]) {
       const row = rowFor(i);
@@ -11024,6 +11591,10 @@ const Game = (() => {
     const frac = s.weapon.mag > 0 ? s.ammo / s.weapon.mag : 1;
     const state = (s.reloadTimer > 0 || s.swapT > 0) ? ''
       : s.ammo === 0 ? 'empty' : frac <= 0.25 ? 'low' : '';
+    // the readout is also the place to say the gun is spent for good
+    const dry = s.ammo === 0 && s.reserve === 0;
+    const row0 = rowFor(0);
+    if (row0) row0.classList.toggle('is-dry', dry);
     if (ammoEl && ammoEl.dataset.ammo !== state) ammoEl.dataset.ammo = state;
   }
 
@@ -11078,6 +11649,7 @@ const Game = (() => {
       hpWrap.classList.toggle('is-critical', frac <= 0.25);
     }
     updateWeaponHud();     // name, rounds and magazine, all from the same subject
+    updateArmorHud();
     // timer
     const t = Math.max(0, Math.floor(timeLeft));
     document.getElementById('hud-gametimer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
@@ -12935,6 +13507,18 @@ const Game = (() => {
      for every wall on screen every frame, so the constant matters. */
   const CORNER = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
   function silhouette(s, px, py) {
+    /* A round prop's silhouette is where your two sightlines graze it, not
+       two corners of a box it does not have — otherwise a tree throws a
+       square shadow. */
+    if (s.round) {
+      const ox = s.x + s.w / 2, oy = s.y + s.h / 2, r = Math.min(s.w, s.h) / 2;
+      const d = Math.max(r + 0.5, Math.hypot(ox - px, oy - py));
+      const base = Math.atan2(oy - py, ox - px), half = Math.asin(r / d);
+      const t = Math.sqrt(d * d - r * r);
+      CORNER[0].x = px + Math.cos(base - half) * t; CORNER[0].y = py + Math.sin(base - half) * t;
+      CORNER[1].x = px + Math.cos(base + half) * t; CORNER[1].y = py + Math.sin(base + half) * t;
+      return CORNER;
+    }
     const mid = Math.atan2(s.y + s.h / 2 - py, s.x + s.w / 2 - px);
     let lo = 0, hi = 0, loX = s.x, loY = s.y, hiX = s.x, hiY = s.y;
     for (let i = 0; i < 4; i++) {
@@ -13297,14 +13881,21 @@ const Game = (() => {
   function drawDrops() {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const d of drops) {
-      const it = Items.CONSUMABLES[d.id]; if (!it) continue;
+      const it = dropLook(d.id); if (!it) continue;
       const lift = Math.sin(d.bob) * 3;
       ctx.globalAlpha = d.life < 8 ? clamp(d.life / 8, 0.15, 1) : 1;
       drawUnitShadow(d.x, d.y + 6, 11);
       // an actual pouch on the ground, not a coin over a dark disc
       Sprites.draw(ctx, 'dropPouch', d.x, d.y + lift, 1, 0);
       ctx.font = '17px Outfit, Segoe UI, sans-serif'; ctx.fillText(it.icon, d.x, d.y + lift - 2);
-      if (d.n > 1) {
+      if (it.tier) {
+        // a piece of armour wears its tier, the same chip the HUD gives it
+        ctx.font = 'bold 9px ' + NUM_FONT;
+        ctx.fillStyle = 'rgba(8,13,26,0.85)';
+        roundRect(d.x + 6, d.y + lift - 18, 18, 12, 3); ctx.fill();
+        ctx.fillStyle = ARMOR_TIER_INK[it.tier];
+        ctx.fillText('T' + it.tier, d.x + 15, d.y + lift - 11.5);
+      } else if (d.n > 1) {
         ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#fff';
         ctx.fillText('×' + d.n, d.x + 13, d.y + lift - 10);
       }
@@ -13624,6 +14215,27 @@ const Game = (() => {
     rowH: 18,
   };
   const hudBarY = () => H - HUD.barBottom - HUD.slotH;
+  /* The top edge of the DOM block in the bottom-left corner (armour, health,
+     guns), so the canvas stack above it starts where it really ends rather
+     than where it ended before anything was added to it. */
+  function hudBottomTop() {
+    const el = document.querySelector('.hud__bottom');
+    const r = el && el.getBoundingClientRect();
+    return r && r.height ? r.top : H - 78;
+  }
+  // ...and its right edge, which is as far as the action bar may come
+  function hudBottomRight() {
+    const el = document.querySelector('.hud__bottom');
+    const r = el && el.getBoundingClientRect();
+    return r && r.width ? r.right : 380;
+  }
+  /* The top of the key legend in the bottom-right corner — it collapses to a
+     pill once you have played a few seconds, so this moves. */
+  function hintTop() {
+    const el = document.getElementById('hud-hint');
+    const r = el && el.offsetParent && el.getBoundingClientRect();
+    return r && r.height ? r.top : H - 30;
+  }
 
   function drawTacticalHud() {
     const p = player; if (!p || !p.inv) return;
@@ -13713,9 +14325,10 @@ const Game = (() => {
      stack is measured first and anchored from its foot, growing upward — a
      bag with one item sits low and out of the way, a full one climbs toward
      the compass and stops short of it. */
-  const PANEL_FOOT = 150;        // clear space kept below the stack
+  const PANEL_FOOT_MIN = 40;     // clear space kept below the stack, at the least
   const PANEL_CEIL = 252;        // ...and above it, clear of the minimap
   let panelHots = [];                 // click targets, rebuilt each frame
+  let statusTopY = 0;                 // top of the bottom-left stack, last drawn
 
   const CAT_META = {
     grenade:  { key: 'Q', name: 'Grenades', tint: '#ff9d6a' },
@@ -13744,11 +14357,13 @@ const Game = (() => {
     const linesOf = (cat) => Math.ceil(rowsOf(cat) / colsOf(cat));
     const linesTotal = CAT_KEYS.reduce((t, c) => t + linesOf(c), 0);
     const chrome = CAT_KEYS.length * (PANEL.head + PANEL.pad) + PANEL.gap * (CAT_KEYS.length - 1);
-    const space = H - PANEL_FOOT - PANEL_CEIL;
+    // stand on the legend wherever it currently ends (it folds to a pill)
+    const foot = Math.max(PANEL_FOOT_MIN, H - hintTop() + 12);
+    const space = H - foot - PANEL_CEIL;
     const row = clamp(Math.floor((space - chrome) / Math.max(1, linesTotal)), 24, PANEL.row);
     const heightOf = (cat) => PANEL.head + linesOf(cat) * row + PANEL.pad;
     const total = linesTotal * row + chrome;
-    let y = Math.max(PANEL_CEIL, H - PANEL_FOOT - total);
+    let y = Math.max(PANEL_CEIL, H - foot - total);
     for (const cat of CAT_KEYS) {
       const slot = p.inv[cat];
       const meta = CAT_META[cat];
@@ -13866,33 +14481,50 @@ const Game = (() => {
     if (!player || !player.alive) return;
     const mates = agents.filter(a => a.team === player.team && a !== player && !a.isVehicle);
     if (!mates.length) return;
-    const x = 16, w = 150, rh = 30, gap = 6;
+    /* Fitted between its own top and the status stack below it. Eight rows
+       at full height ran straight through the class line and the adrenaline
+       bar on a 720-high window; rows tighten first, and only when even the
+       tight ones will not fit does the tail fold into a "+N more" line. */
+    const x = 16, w = 150, gap = 6;
     let y = 250;
+    const room = Math.max(0, (statusTopY || H - 140) - 10 - y);
+    const rh = clamp(Math.floor((room + gap) / mates.length) - gap, 22, 30);
+    const fits = Math.max(1, Math.floor((room + gap) / (rh + gap)));
+    const shown = mates.length > fits ? mates.slice(0, Math.max(0, fits - 1)) : mates;
+    const nameY = rh <= 24 ? 7 : 10, barY = rh - 10;
     ctx.save();
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    for (const m of mates) {
+    for (const m of shown) {
       ctx.fillStyle = 'rgba(8,13,26,0.72)';
       roundRect(x, y, w, rh, 7); ctx.fill();
       ctx.strokeStyle = hexA(teamInk(m.team), 0.4); ctx.lineWidth = 1; ctx.stroke();
       ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif';
       ctx.fillStyle = m.alive ? '#e9f0ff' : 'rgba(200,210,230,0.45)';
       const nm = nameOf(m, 'Squadmate');
-      ctx.fillText(nm.length > 10 ? nm.slice(0, 9) + '…' : nm, x + 9, y + 10);
+      ctx.fillText(nm.length > 10 ? nm.slice(0, 9) + '…' : nm, x + 9, y + nameY);
       const bw = w - 18;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(x + 9, y + 19, bw, 5);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(x + 9, y + barY, bw, 5);
       if (m.alive) {
         const f = clamp(m.hp / m.maxHp, 0, 1);
         ctx.fillStyle = m.downed ? '#ffcf4a' : f > 0.35 ? '#4be08a' : '#ff4b5c';
-        ctx.fillRect(x + 9, y + 19, bw * f, 5);
+        ctx.fillRect(x + 9, y + barY, bw * f, 5);
         if (m.downed) {
           ctx.font = 'bold 9px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#ffcf4a';
-          ctx.textAlign = 'right'; ctx.fillText('DOWN', x + w - 9, y + 10); ctx.textAlign = 'left';
+          ctx.textAlign = 'right'; ctx.fillText('DOWN', x + w - 9, y + nameY); ctx.textAlign = 'left';
         }
       } else {
         ctx.font = '9px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = 'rgba(200,210,230,0.4)';
-        ctx.textAlign = 'right'; ctx.fillText('DEAD', x + w - 9, y + 10); ctx.textAlign = 'left';
+        ctx.textAlign = 'right'; ctx.fillText('DEAD', x + w - 9, y + nameY); ctx.textAlign = 'left';
       }
       y += rh + gap;
+    }
+    if (shown.length < mates.length) {
+      const rest = mates.slice(shown.length);
+      const up = rest.filter(m => m.alive && !m.downed).length;
+      ctx.fillStyle = 'rgba(8,13,26,0.72)';
+      roundRect(x, y, w, 22, 7); ctx.fill();
+      ctx.font = 'bold 10px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#c9d6ef';
+      ctx.fillText(`+${rest.length} more · ${up} up`, x + 9, y + 11);
     }
     ctx.restore();
   }
@@ -13900,8 +14532,11 @@ const Game = (() => {
   function drawStatusStack(p) {
     const adr = Combat.adrenaline(p.adrenaline);
     const x = HUD.statusLeft;
-    // the HTML health bar occupies the bottom ~46px, so stack upward from there
-    let y = H - 78;
+    /* Stack upward from wherever the DOM block underneath actually ends. A
+       fixed H - 78 was right for a lone health bar and wrong the moment
+       anything sat above it — the class line drew straight through the spare
+       gun row and the armour chips. */
+    let y = hudBottomTop() - 14;
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
 
     /* Adrenaline. Taller, on its own backing plate, with a label you can read
@@ -13929,19 +14564,11 @@ const Game = (() => {
       ctx.fillText(`+${Math.round((adr.speed - 1) * 100)}% speed · -${Math.round(adr.dr * 100)}% dmg${healing}`, x + bw + 14, y);
       y -= HUD.rowH + 8;
     }
-    // armour
-    if (p.vest || p.helmet || p.bag) {
-      ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#9fd8ff';
-      const bits = [];
-      if (p.vest) bits.push(`🦺 T${p.vest} ${Math.round(Combat.vest(p.vest).body * 100)}% body`);
-      if (p.helmet) bits.push(`⛑ T${p.helmet} ${Math.round(Combat.helmet(p.helmet).head * 100)}% head`);
-      if (p.bag) bits.push(`🎒 T${p.bag} ×${Combat.bag(p.bag).capacity} carry`);
-      ctx.fillText(bits.join('   '), x, y);
-      y -= HUD.rowH;
-    }
+    // armour is the DOM chips over the health bar now (see updateArmorHud)
     // class + tool
     ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = p.cls.color;
     ctx.fillText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`, x, y);
+    statusTopY = y - 12;          // the squad list stops above this
     ctx.font = '11px Outfit, Segoe UI, sans-serif'; ctx.fillStyle = '#8ea0c9';
     ctx.fillText(`${p.cls.speed}× · ${p.tool.name}`, x + ctx.measureText(`${p.cls.icon} ${p.cls.name.toUpperCase()}`).width + 44, y);
   }
@@ -13963,9 +14590,21 @@ const Game = (() => {
 
     const { slotW: sw, slotH: sh, gap } = HUD;
     const totalW = slots.length * sw + (slots.length - 1) * gap;
-    let x = W / 2 - totalW / 2;
-    const y = hudBarY();
-    for (const s of slots) { drawActionSlot(s, x, y, sw, sh); x += sw + gap; }
+    /* Centred in the gap the HUD actually leaves, not on the screen. The
+       bottom-left block (armour, health, guns) and the item column on the
+       right both reach toward the middle, and on a 1280-wide window the bar
+       sat on top of the gun rows on one side and the key legend on the
+       other. Too narrow a gap shrinks the bar rather than overlapping. */
+    const left = hudBottomRight() + 16, right = W - PANEL.w - PANEL.right - 16;
+    const room = right - left;
+    const k = room >= totalW ? 1 : clamp(room / totalW, 0.72, 1);
+    const mid = room >= totalW * k ? (left + right) / 2 : W / 2;
+    ctx.save();
+    ctx.translate(mid - (totalW * k) / 2, H - HUD.barBottom - sh * k);
+    ctx.scale(k, k);
+    let x = 0;
+    for (const s of slots) { drawActionSlot(s, x, 0, sw, sh); x += sw + gap; }
+    ctx.restore();
   }
   function slotFor(key, slot) {
     const it = slot && slot.id ? Items.CONSUMABLES[slot.id] : null;
@@ -14615,7 +15254,7 @@ const Game = (() => {
        silently stopped clearing anything. 22px of slack is the arrow's own
        label and its distance, which hang below it and can stagger to avoid
        each other. */
-    const bandB = (player && !player.alive) ? spectateTop() - 48 : H - 160;
+    const bandB = (player && !player.alive) ? spectateTop() - 48 : hudBarY() - 24;
 
     const items = [];
     for (const a of agents) {
@@ -14685,8 +15324,12 @@ const Game = (() => {
       ctx.font = 'bold 10px ' + NUM_FONT;
       const txt = (it.label ? it.label + ' · ' : '') + metres + 'm';
       const tw = ctx.measureText(txt).width + 10;
-      let ly = py + 12;
-      while (placed.some(q => Math.abs(q.y - ly) < 15 && Math.abs(q.x - px) < (q.w + tw) / 2)) ly += 16;
+      /* Labels hang off the arrow and stack away from the screen edge it is
+         pinned to: down from the top band, up from the bottom one. Stacking
+         downward from the bottom band walked them onto the action bar. */
+      const upward = py > H / 2;
+      let ly = upward ? py - 26 : py + 12;
+      while (placed.some(q => Math.abs(q.y - ly) < 15 && Math.abs(q.x - px) < (q.w + tw) / 2)) ly += upward ? -16 : 16;
       placed.push({ x: px, y: ly, w: tw });
       ctx.fillStyle = 'rgba(6,10,20,0.75)';
       roundRect(px - tw / 2, ly, tw, 14, 4); ctx.fill();
@@ -16209,8 +16852,8 @@ const Game = (() => {
         else if (e.e === 'legendary') {
           if (e.id === online.id) { hudMsg('LEGENDARY! ' + e.name); SFX.reward(); }
         } else if (e.e === 'pickup' && e.id === online.id) {
-          const it = Items.CONSUMABLES[e.kind];
-          hudMsg(`Picked up ${it ? it.name : e.kind} ×${e.n}`);
+          const look = dropLook(e.kind);
+          hudMsg(Combat.parseArmorDrop(e.kind) ? `${look.name} equipped` : `Picked up ${look.name} ×${e.n}`);
         } else if (e.e === 'revive' && e.id === online.id) hudMsg('Revived by ' + e.by);
         else if (e.e === 'wreck') spawnFx(0, 0, '#ff9d3b', 0);
         else if (e.e === 'join') hudMsg(`${e.name} joined`);
@@ -16297,7 +16940,7 @@ const Game = (() => {
         const old = before.get(d.i);
         drops.push({
           nid: d.i, x: d.x, y: d.y, id: d.k, n: d.n,
-          cat: (Items.CONSUMABLES[d.k] || {}).cat || 'heal',
+          cat: Combat.parseArmorDrop(d.k) ? 'armor' : (Items.CONSUMABLES[d.k] || {}).cat || 'heal',
           // keep the bob running rather than resetting the animation every tick
           life: 99, bob: old ? old.bob : Math.random() * Math.PI * 2,
         });
@@ -16616,6 +17259,7 @@ const Game = (() => {
       if (you) {
         online.respawn = you.respawn || 0;   // the host owns the clock, not us
         player.ammo = you.ammo;
+        if (you.res != null) player.reserve = you.res;
         player.vest = you.vest; player.helmet = you.helmet; player.bag = you.bag || 0;
       }
       // behind the wheel it is the hull that gets corrected, and we ride it
@@ -19258,6 +19902,23 @@ const Game = (() => {
       const total = sizes.reduce((t, c) => t + c.size, 0);
       return { components: sizes.length, biggest: sizes[0].size, total,
         next: sizes.slice(1, 9) };
+    },
+    /* Rooms the player cannot walk into, measured at the player's own size
+       (see connectRooms) rather than on the coarser bot grid. Empty is the
+       only right answer. */
+    sealedRooms() {
+      return sealedPockets(accessMap()).map(p => ({ building: p.building, cells: p.cells.length, x: p.x, y: p.y }));
+    },
+    // the live world, as the tutorial and coach see it (see assistApi)
+    live: () => assistApi,
+    // can a player standing anywhere near (x, y) walk out to the open map?
+    canReach(x, y, r = 40) {
+      const am = accessMap();
+      for (let py = y - r; py <= y + r; py += am.S) for (let px = x - r; px <= x + r; px += am.S) {
+        const i = Math.floor(py / am.S) * am.cols + Math.floor(px / am.S);
+        if (am.comp[i] === am.main) return true;
+      }
+      return false;
     },
     // how many doorways have no walkable cell in them at all
     doorGaps() {

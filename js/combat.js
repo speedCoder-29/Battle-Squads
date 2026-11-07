@@ -78,6 +78,16 @@ const Combat = (() => {
   const helmet = (t) => HELMETS[clampTier(t)];
   const bag    = (t) => BAGS[clampTier(t)];
   const clampTier = (t) => Math.max(0, Math.min(3, t | 0));
+  /* A piece taken off goes on the floor as an ordinary drop, so it rides the
+     same pile list, snapshot and [E] pickup as a bandage does. The id carries
+     what it is — 'armor:vest:2' — because a drop is only ever an id and a
+     count, and the count is how many, not how good. */
+  const ARMOR_PIECES = ['vest', 'helmet', 'bag'];
+  const armorDropId = (piece, tier) => `armor:${piece}:${clampTier(tier)}`;
+  function parseArmorDrop(id) {
+    const m = /^armor:(vest|helmet|bag):([1-3])$/.exec(id || '');
+    return m ? { piece: m[1], tier: +m[2] } : null;
+  }
   /* Combined movement penalty from what you're wearing. A bag is weightless
      as far as the table is concerned — only the vest and helmet slow you.
 
@@ -258,6 +268,7 @@ const Combat = (() => {
     DAMAGE_TYPES, TARGETS, HIT_ZONES, VESTS, HELMETS, BAGS, TOUGHNESS_MEANING,
     MAX_TOUGHNESS, ADREN_MAX, MIN_DAMAGE_THROUGH,
     targetOf, rollZone, zoneMult, vest, helmet, bag, armorSpeed, adrenaline,
+    ARMOR_PIECES, armorDropId, parseArmorDrop,
     resolve, canDamageStructure,
     /* `perk` is optional: Beefy adds to the class's base, everyone else gets
        the table's number. Both the client and the room call this. */

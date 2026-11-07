@@ -442,6 +442,11 @@ const Structures = (() => {
     s.maxHp = maxHp(type, 0.4); s.hp = s.maxHp;
     s.toughness = toughness(type, 0.4);
     s.isProp = true;
+    /* Trees, boulders, stumps: grown things are round, and a square footprint
+       round a round canopy left you snagging on a corner of empty air. A round
+       prop is the circle inscribed in this box, for walking, shooting and
+       seeing alike (see Game's inRect and resolveObstacles). */
+    if (d.round && !box) s.round = true;
     s.scale = scale || 1;
     s.rot = Math.random() * Math.PI * 2;
     return s;
@@ -458,9 +463,20 @@ const Structures = (() => {
   function shell(ox, oy, w, h, type, thickness, doors) {
     const out = [];
     const M = 1 / PX_PER_M;                       // px -> metres for run lengths
+    /* Each run stops exactly at the corner point the perpendicular run starts
+       from, so neither rect reaches the thickness/2 square between them --
+       every outer corner of every building was an uncovered hole the size of
+       half a wall, open to collision and sightlines alike, not just a seam.
+       The north/south runs absorb the corner: they start half a thickness
+       early and finish half a thickness late, reaching fully behind the
+       east/west runs so the two meet without a gap. Door offsets stay
+       measured from the untouched corner -- only the first and last solid
+       segment of the run, the ones that actually land on a corner, get
+       stretched. */
+    const half = Math.max(6, (thickness || def(type).defThickness || 0.3) * PX_PER_M) / 2;
     const sides = [
-      { side: 'n', x: ox, y: oy, len: w, axis: 'h' },
-      { side: 's', x: ox, y: oy + h, len: w, axis: 'h' },
+      { side: 'n', x: ox, y: oy, len: w, axis: 'h', corner: true },
+      { side: 's', x: ox, y: oy + h, len: w, axis: 'h', corner: true },
       { side: 'w', x: ox, y: oy, len: h, axis: 'v' },
       { side: 'e', x: ox + w, y: oy, len: h, axis: 'v' },
     ];
@@ -470,7 +486,10 @@ const Structures = (() => {
         .sort((a, b) => a.at - b.at);
       let cursor = 0;
       for (const g of gaps) {
-        if (g.at - cursor > 4) out.push(runSeg(type, sd, cursor, (g.at - cursor) * M, thickness));
+        if (g.at - cursor > 4) {
+          const lead = sd.corner && cursor === 0 ? half : 0;
+          out.push(runSeg(type, sd, cursor - lead, (g.at - cursor + lead) * M, thickness));
+        }
         /* `open` leaves the run empty rather than filling it with a door or a
            window. It is what lets two rectangular shells be joined into one
            L- or T-shaped building: where the blocks meet, both sides leave the
@@ -480,7 +499,11 @@ const Structures = (() => {
         if (g.type !== 'open') out.push(runSeg(g.type, sd, g.at, g.len * M, undefined));
         cursor = g.at + g.len;
       }
-      if (sd.len - cursor > 4) out.push(runSeg(type, sd, cursor, (sd.len - cursor) * M, thickness));
+      if (sd.len - cursor > 4) {
+        const lead = sd.corner && cursor === 0 ? half : 0;
+        const trail = sd.corner ? half : 0;
+        out.push(runSeg(type, sd, cursor - lead, (sd.len - cursor + lead + trail) * M, thickness));
+      }
     }
     return out;
   }
@@ -2197,6 +2220,22 @@ const Structures = (() => {
         room('watchPost', ox - 115, oy + h + 105, 130, 95),
       ];
       return out;
+    },
+
+    /* The same base, shared out further. A board carrying more squads than
+       it was tuned for (see placeTeamBases in game.js) runs out of a round
+       place to put a full base long before it runs out of squads needing
+       one -- and the shortfall isn't a doorway or a clearance margin, it's
+       the whole 1268x938 footprint competing for a wedge of the island only
+       a little bigger than that to begin with. Reusing base()'s own layout
+       and scaling it down together, rooms included, keeps every room kind
+       (opsRoom, bunkroom, the lot) exactly what furnishing and the room
+       table already know how to dress, just smaller -- not a second
+       building to keep in sync with the first one. */
+    'base-small'(ox, oy) {
+      const parts = BUILDINGS.base(ox, oy);
+      scalePlacement(parts, ox, oy, 0.72);
+      return parts;
     },
 
     /* warehouse: one big metal hall, a mezzanine wall, wide roller doors.

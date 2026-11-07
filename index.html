@@ -746,9 +746,24 @@
         <button type="button" class="hud__room" id="hud-room" hidden></button>
       </div>
       <div class="hud__bottom">
-        <div class="hud__health" id="hud-healthwrap">
-          <span class="hud__hp-label">HP</span>
-          <div class="hud__hp-bar" id="hud-hpbar" data-hp="100 / 100"><div class="hud__hp-fill" id="hud-hpfill"></div></div>
+        <div class="hud__vitals">
+          <!-- What you are wearing, at what tier; click a piece to take it off.
+               Filled in by game.js updateArmorHud(). -->
+          <div class="hud__armor" id="hud-armor">
+            <button type="button" class="armor-chip" data-armor="vest" data-tier="0" disabled>
+              <span class="armor-chip__icon" aria-hidden="true">🦺</span><span class="armor-chip__name">Vest</span><span class="armor-chip__tier">–</span>
+            </button>
+            <button type="button" class="armor-chip" data-armor="helmet" data-tier="0" disabled>
+              <span class="armor-chip__icon" aria-hidden="true">⛑</span><span class="armor-chip__name">Helmet</span><span class="armor-chip__tier">–</span>
+            </button>
+            <button type="button" class="armor-chip" data-armor="bag" data-tier="0" disabled>
+              <span class="armor-chip__icon" aria-hidden="true">🎒</span><span class="armor-chip__name">Bag</span><span class="armor-chip__tier">–</span>
+            </button>
+          </div>
+          <div class="hud__health" id="hud-healthwrap">
+            <span class="hud__hp-label">HP</span>
+            <div class="hud__hp-bar" id="hud-hpbar" data-hp="100 / 100"><div class="hud__hp-fill" id="hud-hpfill"></div></div>
+          </div>
         </div>
         <!-- Two slots, the active one large and lit, the other dim beneath
              it: the arrangement every shooter uses, and the only one that

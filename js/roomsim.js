@@ -299,12 +299,32 @@
      fast round can step straight past someone. */
   const BODY_R = 15;
   const BULLET_STEP = 10;
+  /* Spare rounds behind the magazine, mirrored from game.js: SPARE_MAGS
+     magazines plus one per bag tier, drawn on by every reload and filled back
+     up by every resupply. The client reads `res` out of its personal
+     snapshot, so the two have to agree on what a full reserve is. */
+  const SPARE_MAGS = 3;
+  const reserveFor = (p, w) => w.mag * (SPARE_MAGS + (p.bag || 0));
+  function refillAmmo(p) {
+    p.ammo = p.weapon.mag; p.reserve = reserveFor(p, p.weapon);
+    p.reloadUntil = 0; p.reloading = false;
+    if (p.guns) for (const g of p.guns) { g.ammo = g.weapon.mag; g.reserve = reserveFor(p, g.weapon); }
+  }
+  function loadMagazine(p) {
+    if (p.reserve == null) { p.ammo = p.weapon.mag; return; }
+    const take = Math.min(p.weapon.mag - p.ammo, p.reserve);
+    p.ammo += take; p.reserve -= take;
+  }
+  const canReload = (p) => p.reserve == null || p.reserve > 0;
   const FALLOFF_START = 0.45, FALLOFF_MIN = 0.4;   // FALLOFF_STEP set in deps()
 
   const now = () => Date.now();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
-  const inRect = (x, y, r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  // a round prop (a tree, a boulder) is the circle inscribed in its box
+  const inRect = (x, y, r) => (r.round
+    ? (x - r.x - r.w / 2) ** 2 + (y - r.y - r.h / 2) ** 2 <= (Math.min(r.w, r.h) / 2) ** 2
+    : x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
   const angleDiff = (x, y) => Math.atan2(Math.sin(x - y), Math.cos(x - y));
 
   /* ---------- one movement model ----------
@@ -607,6 +627,7 @@
       }));
       this.walls = (rects || []).map(r => ({
         id: r.id, x: r.x, y: r.y, w: r.w, h: r.h,
+        round: !!r.round,                        // a tree or a boulder: a disc, not a box
         solid: !!r.solid,                        // stops a player walking through
         mode: r.mode || 'stop',                  // what a round does: stop/pen/through/ricochet
         keep: typeof r.keep === 'number' ? r.keep : 0,
@@ -670,6 +691,14 @@
       if (!this.wallIndex) return;
       for (const o of nearRects(this.wallIndex, p.x, p.y, r + 4)) {
         if (!o.solid) continue;
+        if (o.round) {
+          const ox = o.x + o.w / 2, oy = o.y + o.h / 2, min = Math.min(o.w, o.h) / 2 + r;
+          const dx = p.x - ox, dy = p.y - oy, d = Math.hypot(dx, dy);
+          if (d < min) {
+            if (d > 0) { p.x = ox + (dx / d) * min; p.y = oy + (dy / d) * min; } else p.x = ox + min;
+          }
+          continue;
+        }
         const cx = clamp(p.x, o.x, o.x + o.w);
         const cy = clamp(p.y, o.y, o.y + o.h);
         const dx = p.x - cx, dy = p.y - cy;
@@ -828,9 +857,11 @@
       i = Math.max(0, Math.min(p.guns.length - 1, i | 0));
       if (i === p.gun || (p.swapT || 0) > 0) return false;
       p.guns[p.gun].ammo = p.ammo;
+      p.guns[p.gun].reserve = p.reserve;
       p.gun = i;
       p.weapon = p.guns[i].weapon;
       p.ammo = p.guns[i].ammo;
+      p.reserve = p.guns[i].reserve;
       p.reloadUntil = 0; p.reloading = false;
       p.burstLeft = 0;
       // a deadline, not a countdown -- the room measures everything else the
@@ -844,7 +875,7 @@
       /* The magazine fills when the reload *ends* — step() does that. Filling
          it here made the ammo counter, which the client reads straight out of
          the snapshot, snap to full and then refuse to fire for two seconds. */
-      if (now() < p.reloadUntil || p.ammo >= p.weapon.mag) return false;
+      if (now() < p.reloadUntil || p.ammo >= p.weapon.mag || !canReload(p)) return false;
       p.reloadUntil = now() + this.reloadMs(p);
       p.reloading = true;
       return true;
@@ -985,7 +1016,7 @@
       for (const o of this.players.values()) {
         if (o.alive || o.id === p.id || o.team !== p.team) continue;
         if (dist2(o.x, o.y, p.x, p.y) > 150 * 150) continue;
-        o.alive = true; o.hp = o.maxHp * 0.5; o.ammo = o.weapon.mag;
+        o.alive = true; o.hp = o.maxHp * 0.5; refillAmmo(o);
         o.x = p.x + (Math.random() * 60 - 30); o.y = p.y + (Math.random() * 60 - 30);
         this.resolveWorld(o);
         this.pushEvent({ e: 'revive', id: o.id, by: p.name });
@@ -1000,9 +1031,10 @@
       const a = Math.random() * Math.PI * 2, d = 18 + Math.random() * 22;
       const x = clamp((at.x || 0) + Math.cos(a) * d, 20, this.map.w - 20);
       const y = clamp((at.y || 0) + Math.sin(a) * d, 20, this.map.h - 20);
-      // merge into a nearby identical pile rather than littering the floor
-      for (const dr of this.drops) {
-        if (dr.id === id && dist2(dr.x, dr.y, x, y) < 100 * 100) { dr.n += n; dr.life = DROP_LIFE; return; }
+      // merge into a nearby identical pile rather than littering the floor —
+      // but not armour: two vests are two things to pick up, not a stack
+      if (cat !== 'armor') for (const dr of this.drops) {
+        if (dr.kind === id && dist2(dr.x, dr.y, x, y) < 100 * 100) { dr.n += n; dr.life = DROP_LIFE; return; }
       }
       this.drops.push({ id: this.nextEnt++, x: Math.round(x), y: Math.round(y), cat, kind: id, n, life: DROP_LIFE });
     }
@@ -1033,12 +1065,47 @@
         if (dd < bd) { bd = dd; best = d; bi = i; }
       }
       if (!best) return false;
+      const arm = C.parseArmorDrop(best.kind);
+      if (arm) {
+        // a piece you would be swapping down to stays on the floor
+        if ((p[arm.piece] || 0) >= arm.tier) return false;
+        this.drops.splice(bi, 1);
+        if (p[arm.piece]) this.dropItem('armor', C.armorDropId(arm.piece, p[arm.piece]), 1, p);
+        p[arm.piece] = arm.tier;
+        this.pushEvent({ e: 'pickup', id: p.id, kind: best.kind, n: 1, drop: best.id });
+        return true;
+      }
       const cap = K.limitFor(p.cls, best.kind, carryTier(p));
       const slot = p.inv[best.cat];
       if (slot && slot.id === best.kind && slot.n >= cap) return false;    // already full of it
       this.drops.splice(bi, 1);
       addItem(this, p, best.cat, best.kind, best.n);
       this.pushEvent({ e: 'pickup', id: p.id, kind: best.kind, n: best.n, drop: best.id });
+      return true;
+    }
+    /* Taking a piece of armour off: it goes on the floor where you stand, and
+       a bag takes its extra carry with it — spare rounds and kit over the
+       smaller ceiling are dropped rather than kept for free. Mirrors
+       takeOffArmor() in game.js. */
+    unequip(p, k) {
+      if (!p || !p.alive || p.riding || !C.ARMOR_PIECES.includes(k)) return false;
+      const tier = p[k] || 0;
+      if (!tier) return false;
+      p[k] = 0;
+      this.dropItem('armor', C.armorDropId(k, tier), 1, p);
+      if (k === 'bag') {
+        if (p.reserve != null) p.reserve = Math.min(p.reserve, reserveFor(p, p.weapon));
+        if (p.guns) for (const g of p.guns) if (g.reserve != null) g.reserve = Math.min(g.reserve, reserveFor(p, g.weapon));
+        for (const cat of ['grenade', 'tactical', 'heal']) {
+          const slot = p.inv[cat];
+          if (!slot || !slot.held) continue;
+          for (const id of Object.keys(slot.held)) {
+            const over = slot.held[id] - K.limitFor(p.cls, id, carryTier(p));
+            if (over > 0) { slot.held[id] -= over; this.dropItem(cat, id, over, p); }
+          }
+          syncSlot(slot);
+        }
+      }
       return true;
     }
     /* Opening a crate. It has to be in reach, and it can only be opened once —
@@ -1062,7 +1129,7 @@
     grantLoot(p, entry) {
       switch (entry.id) {
         case 'ammo':
-          p.ammo = p.weapon.mag;
+          refillAmmo(p);
           addItem(this, p, 'grenade', p.inv.grenade.id || 'frag', 1);
           break;
         case 'classConsumable': {
@@ -1074,6 +1141,8 @@
         case 'legendary': {
           const gold = I.makeLegendary(I.bestOfClass(p.cls.name));
           p.weapon = gold; p.weaponId = gold.id; p.ammo = gold.mag;
+          p.reserve = reserveFor(p, gold);
+          if (p.guns && p.guns[p.gun]) Object.assign(p.guns[p.gun], { weapon: gold, ammo: gold.mag, reserve: p.reserve });
           p.reloadUntil = 0; p.reloading = false;
           this.touchRoster();
           this.pushEvent({ e: 'legendary', id: p.id, weapon: gold.id, name: gold.name });
@@ -1086,7 +1155,14 @@
             { k: 'vest', v: p.vest || 0 }, { k: 'helmet', v: p.helmet || 0 }, { k: 'bag', v: p.bag || 0 },
           ].sort((a, b) => a.v - b.v);
           const k = slots[0].k;
-          if (p[k] < tier) p[k] = tier;
+          if (p[k] < tier) {
+            // a bigger bag comes with the extra magazines already in it
+            if (k === 'bag') {
+              const more = tier - (p.bag || 0);
+              p.bag = tier;
+              if (p.reserve != null) p.reserve = Math.min(reserveFor(p, p.weapon), p.reserve + p.weapon.mag * more);
+            } else p[k] = tier;
+          }
           break;
         }
         case 'jeep': case 'tank':
@@ -1226,10 +1302,10 @@
          keep computing damage, magazine size and walking speed off the primary
          while the player was holding a pistol. */
       const secBase = info.secondary && W.byId[info.secondary];
-      const guns = [{ weapon, ammo: weapon.mag, reloadTimer: 0 }];
+      const guns = [{ weapon, ammo: weapon.mag, reserve: weapon.mag * SPARE_MAGS, reloadTimer: 0 }];
       if (secBase && secBase.id !== weapon.id) {
         const sw = PK().applyToWeapon(secBase, perks);
-        guns.push({ weapon: sw, ammo: sw.mag, reloadTimer: 0 });
+        guns.push({ weapon: sw, ammo: sw.mag, reserve: sw.mag * SPARE_MAGS, reloadTimer: 0 });
       }
       const cls = K.forWeapon(weapon);
       // a party is handed a team so it stays together; otherwise the smallest
@@ -1249,7 +1325,7 @@
         perk, perks: full,
         guns, gun: 0, swapUntil: 0,
         weaponId: weapon.id, weapon, cls,
-        ammo: weapon.mag, reloadUntil: 0, fireCd: 0,
+        ammo: weapon.mag, reserve: weapon.mag * SPARE_MAGS, reloadUntil: 0, fireCd: 0,
         alive: true, respawnAt: 0, kills: 0, deaths: 0,
         skin: info.skin || 'default',
         input: { up: false, down: false, left: false, right: false, shooting: false, ads: false, angle: 0 },
@@ -1535,8 +1611,11 @@
            the moment the reload began meant the ammo counter — which the
            client reads straight from the snapshot — snapped back to full
            immediately and then refused to fire for two seconds. */
-        if (p.reloading) { p.ammo = p.weapon.mag; p.reloading = false; }
-        if (p.ammo <= 0) { p.reloadUntil = now() + this.reloadMs(p); p.reloading = true; continue; }
+        if (p.reloading) { loadMagazine(p); p.reloading = false; }
+        if (p.ammo <= 0) {
+          if (canReload(p)) { p.reloadUntil = now() + this.reloadMs(p); p.reloading = true; }
+          continue;
+        }
         const wantsFire = i.shooting && (p.weapon.action === 'auto' || i.fireEdge);
         if (wantsFire && p.fireCd <= 0) this.fire(p);
       }
@@ -1677,9 +1756,14 @@
           for (const p of this.players.values()) {
             if (!p.alive || p.team !== dp.team || dp.supply <= 0) continue;
             if (dist2(p.x, p.y, dp.x, dp.y) > 90 * 90) continue;
-            if (p.ammo >= p.weapon.mag) continue;
-            const give = Math.min(dp.supply, p.weapon.mag - p.ammo);
-            p.ammo += give; dp.supply -= give;
+            // the magazine first, then the spares behind it
+            const room = p.weapon.mag - p.ammo, spare = p.reserve == null ? 0 : reserveFor(p, p.weapon) - p.reserve;
+            if (room <= 0 && spare <= 0) continue;
+            const give = Math.min(dp.supply, room + spare);
+            const toMag = Math.min(give, room);
+            p.ammo += toMag;
+            if (p.reserve != null) p.reserve += give - toMag;
+            dp.supply -= give;
             p.reloadUntil = 0; p.reloading = false;
           }
         } else if (dp.mode === 'sentry') {
@@ -1841,7 +1925,7 @@
       p.input.fireEdge = false;
       this.fireFrom(p, w, p.team, p.id, p.input.ads);
       // fired the last round: start the reload, and let step() fill it
-      if (p.ammo <= 0) { p.reloadUntil = now() + this.reloadMs(p); p.reloading = true; }
+      if (p.ammo <= 0 && canReload(p)) { p.reloadUntil = now() + this.reloadMs(p); p.reloading = true; }
     }
     /* One trigger pull from anything with a barrel — a player, or the gun on a
        jeep. Split out so a mounted weapon behaves exactly like a carried one
@@ -2150,7 +2234,7 @@
     respawn(p) {
       const s = this.spawnPoint(p.team);
       p.x = s.x; p.y = s.y; p.hp = p.maxHp; p.alive = true;   // maxHp already has Beefy in it
-      p.ammo = p.weapon.mag; p.reloadUntil = 0; p.reloading = false; p.adrenaline = 0;
+      refillAmmo(p); p.adrenaline = 0;
       p.wireAcc = 0;             // don't carry a part-finished wire cut into the next life
       p.blind = 0; p.channel = null;
       // you come back with your class kit, not with whatever you died holding
@@ -2268,7 +2352,7 @@
         /* Your own body's numbers. These were in the agent list, which meant
            everybody was told everybody else's magazine and armour tiers
            twenty times a second and no client ever read one of them. */
-        ammo: p.ammo,
+        ammo: p.ammo, res: p.reserve,
         vest: p.vest, helmet: p.helmet, bag: p.bag,
         respawn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - now()) / 1000)),
         inv: {
@@ -2306,6 +2390,7 @@
         case 'heal': return this.heal(p);
         case 'pick': return this.pickItem(p, msg.cat, msg.id);
         case 'grab': return this.grab(p);
+        case 'unequip': return this.unequip(p, msg.k);
         case 'crate': return this.openCrate(p, msg.i);
         case 'token': return this.callVehicle(p, msg.x, msg.y);
         case 'ride': return this.useVehicle(p);

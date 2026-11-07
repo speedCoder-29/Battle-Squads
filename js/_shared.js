@@ -68,7 +68,8 @@ function worldSandbox() {
     classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
     addEventListener: noop, appendChild: noop, remove: noop,
     getBoundingClientRect: () => ({ left: 0, top: 0 }), getContext: () => ctx2d,
-    querySelectorAll: () => [],
+    // the HUD looks things up inside its own elements (the gun slots' key chips)
+    querySelector: () => el(), querySelectorAll: () => [],
   });
   const store = {};
   const box = {

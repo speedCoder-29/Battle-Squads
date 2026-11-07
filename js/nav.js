@@ -110,13 +110,18 @@ const Nav = (() => {
       const y0 = Math.max(0, Math.floor((r.y - P) / CELL) - 1);
       const y1 = Math.min(rows - 1, Math.floor((r.y + r.h + P) / CELL) + 1);
       const l = r.x - P, t = r.y - P, ri = r.x + r.w + P, b = r.y + r.h + P;
-      const hits = (px, py) => px >= l && px <= ri && py >= t && py <= b;
+      // a round prop is the disc inscribed in its box, padded the same way
+      const ox = r.x + r.w / 2, oy = r.y + r.h / 2, rr = Math.min(r.w, r.h) / 2 + P;
+      const hits = r.round
+        ? (px, py) => (px - ox) ** 2 + (py - oy) ** 2 <= rr * rr
+        : (px, py) => px >= l && px <= ri && py >= t && py <= b;
+      const entry = r.round ? [l, t, ri, b, ox, oy, rr] : [l, t, ri, b];
       for (let cy = y0; cy <= y1; cy++) {
         for (let cx = x0; cx <= x1; cx++) {
           if (hits(cx * CELL + CELL / 2, cy * CELL + CELL / 2)) blocked[cy * cols + cx] = 1;
           // only bucket cells the rect really overlaps
           if (l < (cx + 1) * CELL && ri > cx * CELL && t < (cy + 1) * CELL && b > cy * CELL) {
-            bucket(cx, cy).push([l, t, ri, b]);
+            bucket(cx, cy).push(entry);
           }
         }
       }
@@ -330,7 +335,10 @@ const Nav = (() => {
     if (!g.solids) return isBlocked(g, ...cellOf(x, y));
     const arr = g.solids.get(Math.floor(y / CELL) * g.cols + Math.floor(x / CELL));
     if (!arr) return false;
-    for (const [l, t, r, b] of arr) if (x >= l && x <= r && y >= t && y <= b) return true;
+    for (const [l, t, r, b, ox, oy, rr] of arr) {
+      if (x < l || x > r || y < t || y > b) continue;
+      if (rr === undefined || (x - ox) ** 2 + (y - oy) ** 2 <= rr * rr) return true;
+    }
     return false;
   }
 
