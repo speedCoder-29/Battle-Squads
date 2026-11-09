@@ -47,22 +47,33 @@ const Combat = (() => {
      Vests scale body damage, helmets replace the 200% headshot multiplier.
      Both cost movement speed. Tier 0 = nothing equipped.
      Penetration buffs deliberately do NOT help against armour. */
+  /* Both halves of this table were too strong at once.
+
+     Protection: a full T3 set was worth 2.7x your health (2.94x before the
+     last pass), which is past what a magazine can deliver -- an M16, a
+     Makarov or a QBU-88 had to reload to finish one person, so the fight was
+     decided by who opened the gold crate rather than who shot first. The
+     ladder now reads 1.25x / 1.6x / 2.2x for matched sets (limb hits, 40% of
+     all hits, are never armoured, which is why the numbers below look
+     generous), and every primary on the roster kills a T3 set inside one
+     magazine.
+
+     Weight: -45% for a T3 vest and -21% for the helmet put a fully kitted
+     player at a third of walking pace -- slower than a riot shield, slower
+     than swimming. Armour that strong *and* that slow is either mandatory or
+     a trap depending on the fight, never a choice. A full T3 set now costs
+     5%: enough to notice, never enough to dread. */
   const VESTS = [
     { tier: 0, name: 'No Vest',  body: 1.00, speed: 0 },
-    { tier: 1, name: 'Vest T1',  body: 0.70, speed: -0.15 },
-    { tier: 2, name: 'Vest T2',  body: 0.40, speed: -0.30 },
-    /* 0.10 was a step change rather than a step: T1 and T2 are worth 1.28x
-       and 1.79x your effective health, and T3 was worth 2.94x — a bigger jump
-       than the two below it put together, and enough that a fight against
-       anyone wearing one was decided by who found the crate. 0.18 keeps T3 the
-       best armour in the game (2.5x) on a ladder that climbs evenly. */
-    { tier: 3, name: 'Vest T3',  body: 0.18, speed: -0.45 },
+    { tier: 1, name: 'Vest T1',  body: 0.75, speed: -0.01 },
+    { tier: 2, name: 'Vest T2',  body: 0.50, speed: -0.02 },
+    { tier: 3, name: 'Vest T3',  body: 0.30, speed: -0.03 },
   ];
   const HELMETS = [
     { tier: 0, name: 'No Helmet', head: 2.00, speed: 0 },
-    { tier: 1, name: 'Helmet T1', head: 1.50, speed: -0.07 },
-    { tier: 2, name: 'Helmet T2', head: 1.00, speed: -0.14 },
-    { tier: 3, name: 'Helmet T3', head: 0.50, speed: -0.21 },
+    { tier: 1, name: 'Helmet T1', head: 1.50, speed: 0 },
+    { tier: 2, name: 'Helmet T2', head: 1.10, speed: -0.01 },
+    { tier: 3, name: 'Helmet T3', head: 0.70, speed: -0.02 },
   ];
   /* ---------- bags ----------
      The third armour slot, and the only one that isn't about surviving being

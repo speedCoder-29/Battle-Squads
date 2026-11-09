@@ -491,6 +491,110 @@ const Sprites = (() => {
       ctx.fillRect(-r * 0.55, -r * 0.28, r * 1.1, r * 0.16);
       ctx.fillRect(-r * 0.55, r * 0.06, r * 0.7, r * 0.16);
     },
+    /* framed painting -- a little landscape or abstract piece. `v` picks
+       both the scene and its palette, so four of them on the same wall bank
+       don't hang as four copies of one picture. */
+    painting(ctx, r, v) {
+      box(ctx, -r * 0.85, -r * 0.62, r * 1.7, r * 1.24, P.woodDark, '#2a1d12', 2, 1);
+      const cw = r * 1.42, ch = r * 0.94;
+      box(ctx, -cw / 2, -ch / 2, cw, ch, mix(P.sand, '#fff6df', 0.3), null, 0, 0);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(-cw / 2, -ch / 2, cw, ch); ctx.clip();
+      const scene = Math.floor(v * 3);
+      const horizon = -ch * 0.1 + ((v * 53) % 1) * ch * 0.3;
+      if (scene === 0) {               // hills under a low sun
+        ctx.fillStyle = mix(P.sand, '#ffd27a', 0.4 + ((v * 7) % 1) * 0.4);
+        ctx.beginPath(); ctx.arc(cw * 0.18, -ch * 0.12, ch * 0.2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = P.leafDark;
+        ctx.beginPath();
+        ctx.moveTo(-cw / 2, horizon); ctx.quadraticCurveTo(0, horizon - ch * 0.28, cw / 2, horizon);
+        ctx.lineTo(cw / 2, ch / 2); ctx.lineTo(-cw / 2, ch / 2); ctx.closePath(); ctx.fill();
+      } else if (scene === 1) {        // a couple of trees on a flat field
+        ctx.fillStyle = P.leaf; ctx.fillRect(-cw / 2, horizon, cw, ch / 2 - horizon);
+        for (const tx of [-cw * 0.2, cw * 0.15]) {
+          ctx.fillStyle = P.leafDark;
+          ctx.beginPath(); ctx.arc(tx, horizon - ch * 0.12, ch * 0.16, 0, Math.PI * 2); ctx.fill();
+          ctx.fillRect(tx - 1.4, horizon - ch * 0.04, 2.8, ch * 0.18);
+        }
+      } else {                         // abstract bands of colour
+        const bands = [P.cloth, P.rust, mix(P.sand, '#fff6df', 0.3)];
+        const bh = ch / bands.length;
+        bands.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(-cw / 2, -ch / 2 + i * bh, cw, bh + 0.5); });
+      }
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(-cw / 2, -ch / 2, cw, ch);
+    },
+    /* wall map -- a grid, a winding route and a scatter of pins. For an ops
+       room, a briefing room, anywhere that plans a route rather than hangs
+       art. */
+    map(ctx, r, v) {
+      box(ctx, -r * 0.9, -r * 0.65, r * 1.8, r * 1.3, P.woodDark, '#2a1d12', 2, 1);
+      const cw = r * 1.5, ch = r * 1.0;
+      box(ctx, -cw / 2, -ch / 2, cw, ch, mix(P.sand, '#f2e3b8', 0.4), null, 0, 0);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(-cw / 2, -ch / 2, cw, ch); ctx.clip();
+      ctx.strokeStyle = 'rgba(80,60,30,0.25)'; ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      for (let x = -cw / 2 + cw / 6; x < cw / 2; x += cw / 6) { ctx.moveTo(x, -ch / 2); ctx.lineTo(x, ch / 2); }
+      for (let y = -ch / 2 + ch / 4; y < ch / 2; y += ch / 4) { ctx.moveTo(-cw / 2, y); ctx.lineTo(cw / 2, y); }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(120,70,40,0.55)'; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(-cw / 2, -ch * 0.2 + v * ch * 0.3);
+      ctx.quadraticCurveTo(0, ch * 0.1, cw / 2, -ch * 0.1 - v * ch * 0.2);
+      ctx.stroke();
+      const pins = 2 + Math.floor(v * 3);
+      for (let i = 0; i < pins; i++) {
+        const px = -cw * 0.35 + ((v * (13 + i * 31)) % 1) * cw * 0.7;
+        const py = -ch * 0.3 + ((v * (17 + i * 41)) % 1) * ch * 0.6;
+        ctx.fillStyle = i % 2 ? '#d1443f' : '#3f7aa8';
+        ctx.beginPath(); ctx.arc(px, py, r * 0.05, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(-cw / 2, -ch / 2, cw, ch);
+    },
+    /* wall monitor -- a glowing readout for a control room or a radio room.
+       It is furniture, not a working screen; the glow is the point. */
+    monitor(ctx, r, v) {
+      box(ctx, -r * 0.8, -r * 0.6, r * 1.6, r * 1.15, '#23262c', '#101216', 2, 2);
+      const cw = r * 1.32, ch = r * 0.82;
+      const g = ctx.createLinearGradient(-cw / 2, -ch / 2, cw / 2, ch / 2);
+      g.addColorStop(0, '#163a34'); g.addColorStop(1, '#1e5048');
+      ctx.fillStyle = g; ctx.fillRect(-cw / 2, -ch / 2, cw, ch);
+      ctx.strokeStyle = 'rgba(140,255,220,0.12)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let y = -ch / 2 + 3; y < ch / 2; y += 4) { ctx.moveTo(-cw / 2, y); ctx.lineTo(cw / 2, y); }
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(180,255,230,0.55)';
+      ctx.fillRect(-cw / 2 + 3, -ch / 2 + 3, cw * (0.3 + (v % 1) * 0.3), 2.4);
+      ctx.fillRect(-cw / 2 + 3, -ch / 2 + 8, cw * (0.2 + ((v * 3) % 1) * 0.3), 2.4);
+      ctx.fillStyle = 'rgba(120,255,200,0.9)';
+      ctx.beginPath(); ctx.arc(cw / 2 - 5, ch / 2 - 5, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(-cw / 2, -ch / 2, cw, ch);
+    },
+    /* chalkboard -- a wavy scribble of "writing" and a rough diagram, for a
+       classroom or a staff room. */
+    chalkboard(ctx, r, v) {
+      box(ctx, -r * 0.95, -r * 0.65, r * 1.9, r * 1.3, P.woodDark, '#2a1d12', 2, 1);
+      const cw = r * 1.6, ch = r * 1.02;
+      box(ctx, -cw / 2, -ch / 2, cw, ch, '#1e3327', null, 0, 0);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(-cw / 2, -ch / 2, cw, ch); ctx.clip();
+      ctx.strokeStyle = 'rgba(240,240,230,0.55)'; ctx.lineWidth = 1.2; ctx.lineCap = 'round';
+      for (let i = 0; i < 3; i++) {
+        const y = -ch * 0.28 + i * ch * 0.26 + ((v * (5 + i * 9)) % 1) * ch * 0.06;
+        const len = cw * (0.45 + ((v * (11 + i * 7)) % 1) * 0.35);
+        ctx.beginPath();
+        ctx.moveTo(-cw / 2 + 4, y);
+        for (let x = 0; x <= len; x += 6) ctx.lineTo(-cw / 2 + 4 + x, y + Math.sin(x * 0.9 + i) * 1.4);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(240,240,230,0.45)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cw * 0.28, ch * 0.18, ch * 0.14, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cw * 0.28 - ch * 0.14, ch * 0.18); ctx.lineTo(cw * 0.28 + ch * 0.14, ch * 0.18); ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(-cw / 2, -ch / 2, cw, ch);
+    },
     /* canvas tent */
     tent(ctx, r) {
       ctx.beginPath();
@@ -798,6 +902,12 @@ const Sprites = (() => {
     plant:     { r: 20, shadow: 4 },
     lamp:      { r: 16, shadow: 3, light: 190 },      // light = glow radius in px
     striplight: { r: 22, shadow: 2, light: 150 },
+    /* Wall art: flush to the wall, so no shadow -- a picture frame does not
+       throw one worth drawing at this scale. */
+    painting:  { r: 18, shadow: 0 },                  // 0.9m frame
+    map:       { r: 19, shadow: 0 },                  // 0.95m board
+    monitor:   { r: 16, shadow: 0 },                  // 0.8m screen
+    chalkboard: { r: 20, shadow: 0 },                 // 1.0m board
   };
 
   /* Things that are not square. A shipping container is 2.44m by 6.06m and a
@@ -816,6 +926,10 @@ const Sprites = (() => {
     locker:    { w: 38, h: 22 },
     pallet:    { w: 48, h: 40 },
     sign:      { w: 34, h: 12 },
+    painting:  { w: 32, h: 10 },
+    map:       { w: 34, h: 10 },
+    monitor:   { w: 28, h: 10 },
+    chalkboard: { w: 38, h: 10 },
   };
 
   const kinds = Object.keys(META);

@@ -463,22 +463,33 @@ const Structures = (() => {
   function shell(ox, oy, w, h, type, thickness, doors) {
     const out = [];
     const M = 1 / PX_PER_M;                       // px -> metres for run lengths
-    /* Each run stops exactly at the corner point the perpendicular run starts
-       from, so neither rect reaches the thickness/2 square between them --
-       every outer corner of every building was an uncovered hole the size of
-       half a wall, open to collision and sightlines alike, not just a seam.
-       The north/south runs absorb the corner: they start half a thickness
-       early and finish half a thickness late, reaching fully behind the
-       east/west runs so the two meet without a gap. Door offsets stay
-       measured from the untouched corner -- only the first and last solid
-       segment of the run, the ones that actually land on a corner, get
-       stretched. */
+    /* Each run used to stop exactly at the corner point the perpendicular run
+       starts from, so neither rect reached the thickness/2 square between
+       them -- every outer corner of every building was an uncovered hole the
+       size of half a wall, open to collision and sightlines alike, not just
+       a seam. Making the north/south runs simply reach into that square
+       closed the hole but traded it for the opposite fault: both walls now
+       draw into the same square, so every corner carried a second, stacked
+       copy of a thickness x half-thickness slab -- double HP, and a seam
+       that ate two hits before either side actually showed damage.
+       A corner has to be owned by exactly one wall, not shared. North/south
+       still claims it, extending half a thickness past the nominal corner
+       the same as before; east/west now gives it up instead of just leaving
+       it unclaimed, pulling its own start and end in by that same half so it
+       begins exactly where the n/s run's thickness ends. `corner` carries
+       the sign: +1 extends into the square, -1 retreats from it, and the
+       `Math.min(half, avail/2)` clamp keeps a retreat from ever eating past
+       the middle of a wall shorter than one wall-thickness. Door offsets
+       stay measured from the untouched corner -- only the first and last
+       solid segment of the run, the ones that actually land on a corner,
+       get adjusted. */
     const half = Math.max(6, (thickness || def(type).defThickness || 0.3) * PX_PER_M) / 2;
+    const corner = (sign, avail) => sign * Math.min(half, avail / 2);
     const sides = [
-      { side: 'n', x: ox, y: oy, len: w, axis: 'h', corner: true },
-      { side: 's', x: ox, y: oy + h, len: w, axis: 'h', corner: true },
-      { side: 'w', x: ox, y: oy, len: h, axis: 'v' },
-      { side: 'e', x: ox + w, y: oy, len: h, axis: 'v' },
+      { side: 'n', x: ox, y: oy, len: w, axis: 'h', corner: 1 },
+      { side: 's', x: ox, y: oy + h, len: w, axis: 'h', corner: 1 },
+      { side: 'w', x: ox, y: oy, len: h, axis: 'v', corner: -1 },
+      { side: 'e', x: ox + w, y: oy, len: h, axis: 'v', corner: -1 },
     ];
     for (const sd of sides) {
       const gaps = (doors || []).filter(d => d.side === sd.side)
@@ -487,7 +498,7 @@ const Structures = (() => {
       let cursor = 0;
       for (const g of gaps) {
         if (g.at - cursor > 4) {
-          const lead = sd.corner && cursor === 0 ? half : 0;
+          const lead = cursor === 0 ? corner(sd.corner, g.at - cursor) : 0;
           out.push(runSeg(type, sd, cursor - lead, (g.at - cursor + lead) * M, thickness));
         }
         /* `open` leaves the run empty rather than filling it with a door or a
@@ -500,8 +511,9 @@ const Structures = (() => {
         cursor = g.at + g.len;
       }
       if (sd.len - cursor > 4) {
-        const lead = sd.corner && cursor === 0 ? half : 0;
-        const trail = sd.corner ? half : 0;
+        const avail = sd.len - cursor;
+        const lead = cursor === 0 ? corner(sd.corner, avail) : 0;
+        const trail = corner(sd.corner, avail - lead);
         out.push(runSeg(type, sd, cursor - lead, (sd.len - cursor + lead + trail) * M, thickness));
       }
     }
@@ -1559,13 +1571,18 @@ const Structures = (() => {
     const w = horiz ? lengthPx : wd;
     const h = horiz ? wd : lengthPx;
     const parts = [];
-    parts.push(...partition(wallType, x, y, w, 'h', th, [], null));
-    parts.push(...partition(wallType, x, y + h, w, 'h', th, [], null));
-    parts.push(...partition(wallType, x, y, h, 'v', th, [], null));
-    parts.push(...partition(wallType, x + w, y, h, 'v', th, [], null));
     /* A hatch at each end, on the side wall, so the passage is entered from
-       the surface rather than from the room it happens to run past. */
+       the surface rather than from the room it happens to run past. The wall
+       that carries them has to actually open there -- drawing it whole and
+       standing a door object on top of it, as this did, left a "door" with a
+       solid wall occupying the same ground, so every hatch in the game was
+       for show: nothing opened and the room below was unreachable by it. */
     const ends = opts.ends === undefined ? [0.12, 0.88] : opts.ends;
+    const hatchAt = ends.map(t => lengthPx * t);
+    parts.push(...partition(wallType, x, y, w, 'h', th, horiz ? hatchAt : [], null));
+    parts.push(...partition(wallType, x, y + h, w, 'h', th, [], null));
+    parts.push(...partition(wallType, x, y, h, 'v', th, horiz ? [] : hatchAt, null));
+    parts.push(...partition(wallType, x + w, y, h, 'v', th, [], null));
     for (const t of ends) {
       const hatch = horiz
         ? seg('door', x + lengthPx * t - 31, y, 1.6, 'h', 0.3)
@@ -1827,11 +1844,24 @@ const Structures = (() => {
         { side: 'n', at: 300, type: 'door' },
         ...plan.garages,
       ]);
-      out.push(...plan.parts);
       // the strongroom is reinforced on every side, not just its door
       const safe = plan.rooms.find(r => r.kind === 'safe');
       if (safe) {
-        out.push(...partition('rwall', safe.x - 8, safe.y - 8, safe.h + 16, 'v', 0.45, [], null));
+        /* The rwall surround below stands for this side of the room now, in
+           place of the plain partition floorPlan already drew at the room's
+           own edge -- left in, that inner wall gave the secret door nothing
+           to open into, reinforced or not. */
+        const divider = plan.parts.findIndex(p => p.axis === 'v'
+          && Math.abs((p.x + p.w / 2) - safe.x) < 15
+          && p.y <= safe.y + safe.h * 0.55 && p.y + p.h >= safe.y + safe.h * 0.55 + 64);
+        if (divider >= 0) plan.parts.splice(divider, 1);
+      }
+      out.push(...plan.parts);
+      if (safe) {
+        // the shelf-door opens through this wall, so the wall has to have a
+        // gap there -- see bank's own vault for the same fix
+        const doorAt = safe.h * 0.55 + 40;
+        out.push(...partition('rwall', safe.x - 8, safe.y - 8, safe.h + 16, 'v', 0.45, [{ at: doorAt, type: null }], null));
         out.push(...partition('rwall', safe.x + safe.w + 8, safe.y - 8, safe.h + 16, 'v', 0.45, [], null));
         // and the study next door has a shelf that swings
         out.push(secretDoor('wood', safe.x - 8, safe.y + safe.h * 0.55, 1.6, 'v', 0.3));
@@ -1899,8 +1929,11 @@ const Structures = (() => {
         { side: 's', at: 200, type: 'door', len: 2 },
         { side: 'e', at: 140, type: 'door' },
       ]));
-      out.push(seg('metal', ox + 240, oy + 16, 6.9, 'v', 0.3));
-      out.push(seg('door', ox + 240, oy + 150, 1.6, 'v'));
+      /* A door standing on top of an uncut partition is scenery, not a way
+         through: the wall behind it was still there, so the lobby/gate door
+         never actually opened anything. partition() cuts the gap the door
+         sits in, the way every other interior doorway in the file does. */
+      out.push(...partition('metal', ox + 240, oy + 16, 6.9 * PX_PER_M, 'v', 0.3, [166], 'door'));
       // gate arm and fence out onto the apron
       out.push(seg('barricade', ox + 520, oy + 40, 6, 'v', 0.3));
       out.push(seg('wire', ox + 520, oy + 300, 9, 'h', 0.4));
@@ -2043,8 +2076,8 @@ const Structures = (() => {
       out.push(...shell(ox + 940, oy + 40, 380, 280, 'wood', WALL_T.exterior, [
         { side: 'w', at: 140, type: 'door', len: 2 },
       ]));
-      out.push(seg('wood', ox + 1130, oy + 56, 6.4, 'v', 0.25));
-      out.push(seg('door', ox + 1130, oy + 180, 1.6, 'v'));
+      // same fix as airfield's lobby/gate wall: cut the gap the door sits in
+      out.push(...partition('wood', ox + 1130, oy + 56, 6.4 * PX_PER_M, 'v', 0.25, [156], 'door'));
       // washroom block and the car park
       out.push(...shell(ox + 940, oy + 400, 200, 140, 'wood', 0.3, [{ side: 'n', at: 100 }]));
       out.push(seg('barricade', ox + 940, oy + 620, 10, 'h', 0.3));
@@ -3153,12 +3186,26 @@ const Structures = (() => {
         { side: 'n', at: 280, type: 'door', len: 2.5 },
         { side: 'w', at: h * 0.46 - 28 },
       ]);
-      out.push(...plan.parts);
       /* The vault is reinforced all round, and there is a service passage
          behind it that the floor plan on the wall does not show. */
       const vault = plan.rooms.find(r => r.kind === 'safe');
       if (vault) {
-        out.push(...partition('rwall', vault.x - 8, vault.y - 8, vault.h + 16, 'v', 0.45, [], null));
+        // see mansion's own safe for why: the rwall surround stands in for
+        // the plain wall floorPlan already drew on this side of the room
+        const divider = plan.parts.findIndex(p => p.axis === 'v'
+          && Math.abs((p.x + p.w / 2) - vault.x) < 15
+          && p.y <= vault.y + vault.h * 0.6 && p.y + p.h >= vault.y + vault.h * 0.6 + 60);
+        if (divider >= 0) plan.parts.splice(divider, 1);
+      }
+      out.push(...plan.parts);
+      if (vault) {
+        /* The secret door stood on top of this wall rather than through it --
+           the wall was drawn with no gap at all, so the hidden doorway was
+           hidden a bit too well: there was never an opening behind it. The
+           gap is cut here (type: null, so partition leaves it bare) and the
+           secret door itself still goes in separately, same as before. */
+        const doorAt = vault.h * 0.6 + 38;
+        out.push(...partition('rwall', vault.x - 8, vault.y - 8, vault.h + 16, 'v', 0.45, [{ at: doorAt, type: null }], null));
         out.push(...partition('rwall', vault.x - 8, vault.y + vault.h + 8, vault.w + 16, 'h', 0.45, [], null));
         out.push(secretDoor('rwall', vault.x - 8, vault.y + vault.h * 0.6, 1.5, 'v', 0.4));
       }
@@ -3336,10 +3383,10 @@ const Structures = (() => {
       out.push(fixture('metal', ox + 220, oy + 100, 1.8, 'h', 0.4));
       out.push(fixture('metal', ox + 340, oy + 110, 1.8, 'h', 0.4));
       out.push(seg('window', ox + 60, oy + 40, 1.2, 'h', 0.12));
-      // ammo vault (ultra-secure)
-      out.push(seg('rwall', ox + 320, oy + 200, 2.2, 'h', 0.5));
+      // ammo vault (ultra-secure) -- the door goes through the wall it stands
+      // on, rather than sitting on top of it with the wall left whole
+      out.push(...partition('rwall', ox + 320, oy + 200, 2.2 * PX_PER_M, 'h', 0.5, [50], 'rdoor'));
       out.push(seg('rwall', ox + 320, oy + 200, 2, 'v', 0.5));
-      out.push(seg('rdoor', ox + 350, oy + 200, 1, 'h'));
       return out;
     },
 

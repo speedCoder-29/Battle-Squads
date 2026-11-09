@@ -234,7 +234,12 @@ const Items = (() => {
          without making stock weapons worthless.
 
      Snipers and launchers get almost no damage at all, because both already
-     kill in one and more damage buys them literally nothing. */
+     kill in one and more damage buys them literally nothing.
+
+     Measured stock against gold, the target is about +20% DPS. The LMGs
+     (+24-33%), DMRs (+29-35%), pistols (+40-50%, halving a Makarov's T3 kill)
+     and the Barrett (+58%) were well over; shotguns and launchers gained 0%,
+     their whole uplift being a bigger tube nobody empties in one fight. */
   const LEGENDARY_MODS = {
     'Assault Rifle': { dDamage: 1, dFirerate: 1, dMag: 10, dReloadS: -0.5, dAcc: -0.5, dRec: -0.06, dHandS: -0.06, dWeight: -3, dFalloffPct: -2 },
     'Burst Rifle':   { dDamage: 2, dMag: 10, dReloadS: -0.4, dAcc: -0.5, dRec: -0.06, dHandS: -0.05, dWeight: -3, dFalloffPct: -2, dBurstDelayS: -0.04 },
@@ -242,26 +247,28 @@ const Items = (() => {
        single point is a 7-13% jump, which is exactly the size that walks a
        shots-to-kill count down a step — so their uplift goes into rate, which
        shortens the kill continuously instead of in a jump. */
-    'LMG':           { dFirerate: 3, dMag: 50, dReloadS: -1.8, dAcc: -1, dRec: -0.04, dHandS: -0.1, dWeight: -4, dFalloffPct: -2 },
+    'LMG':           { dFirerate: 2, dMag: 50, dReloadS: -1.2, dAcc: -1, dRec: -0.04, dHandS: -0.1, dWeight: -4, dFalloffPct: -2 },
     'SMG':           { dFirerate: 3, dMag: 12, dReloadS: -0.4, dAcc: -0.5, dRec: -0.05, dWeight: -2 },
     // no extra pellet damage: a shotgun already one-shots at contact, so the
     // gold version gets the semi-auto action and the reload instead
-    'Shotgun':       { dMag: 4, dReloadS: -0.5, dAcc: -0.6, dRec: -0.08, actionOverride: 'semi' },
+    // ...plus a faster pump, or the gold one fights exactly like the stock one
+    'Shotgun':       { dFirerate: 0.3, dMag: 4, dReloadS: -0.5, dAcc: -0.6, dRec: -0.08, dHandS: -0.08, actionOverride: 'semi' },
     /* It already kills in one, so rate is the one stat that has to be handled
        carefully: +1/s doubled the Barrett and made a gold one a 2/s one-shot
        rifle with sixteen rounds in it, at 204 DPS — the joint highest number
-       on the roster, out of a crate. +0.4 leaves the upgrade in the magazine,
+       on the roster, out of a crate. +0.2 (the Barrett is 0.7/s now) leaves the upgrade in the magazine,
        the reload and the accuracy, where a legendary belongs. */
-    'Sniper Rifle':  { dMag: 6, dFirerate: 0.4, dReloadS: -0.8, dAcc: -0.4, dRec: -0.05, dHandS: -0.08 },
-    'DMR':           { dDamage: 2, dFirerate: 1, dAcc: -0.4, dRec: -0.12, dMag: 8, dReloadS: -0.4 },
+    'Sniper Rifle':  { dMag: 6, dFirerate: 0.2, dReloadS: -0.8, dAcc: -0.4, dRec: -0.05, dHandS: -0.08 },
+    'DMR':           { dDamage: 2, dFirerate: 0.5, dAcc: -0.4, dRec: -0.12, dMag: 8, dReloadS: -0.4 },
     /* +3 damage and +2/s took a gold DEagle from 112 DPS to 198 — a 77% jump,
        the largest of any legendary, on the sidearm class. +1 keeps it the
        biggest proportional upgrade in the game without making a pistol the
        best weapon on the island. */
-    'Pistol':        { dDamage: 3, dFirerate: 1, dMag: 6, dReloadS: -0.3, dAcc: -0.4 },
+    'Pistol':        { dDamage: 1, dFirerate: 1, dMag: 6, dReloadS: -0.3, dAcc: -0.4 },
     'Carbine':       { dDamage: 1, dFirerate: 1, dMag: 10, dReloadS: -0.5, dAcc: -0.4, dRec: -0.04, dWeight: -2 },
     // one in the tube either way; what changes is how fast the next one is
-    'Launcher':      { dReloadS: -0.9, dAcc: -0.4, dHandS: -0.1 },
+    // ...and, for the one launcher with a magazine, two more in it
+    'Launcher':      { dReloadS: -0.9, dAcc: -0.4, dHandS: -0.1, dMagIfMag: 2 },
   };
 
   /* best weapon of a class = highest raw per-trigger damage in that class */
@@ -273,13 +280,23 @@ const Items = (() => {
 
   /* produce the legendary ("Gold") version of a base weapon */
   function makeLegendary(baseWeapon) {
-    const mods = LEGENDARY_MODS[baseWeapon.type] || {};
+    const mods = { ...(LEGENDARY_MODS[baseWeapon.type] || {}) };
+    if (mods.dMagIfMag && baseWeapon.mag > 1) mods.dMag = (mods.dMag || 0) + mods.dMagIfMag;
     return Weapons.withMods(baseWeapon, mods);
+  }
+
+  /* The gold version of the gun you are holding. It used to always be the
+     class's hardest hitter, so a Sniper who picked the SV-98 opened a chest
+     and was handed a Barrett -- a different gun, at a third less speed. A gun
+     the table doesn't know falls back to that old pick. */
+  function legendaryFor(weapon, className) {
+    const base = weapon && Weapons.byId[String(weapon.id).replace(/-gold$/, '')];
+    return makeLegendary(base || bestOfClass(className));
   }
 
   return {
     CONSUMABLES, CRATE_TABLES, CRATE_RARITY, CRATE_STYLE, CRATE_PAYOUT, payoutFor, LEGENDARY_MODS,
     weightedPick, rollCrateTier, rollLoot, randomClassConsumable, classConsumableFor,
-    bestOfClass, makeLegendary,
+    bestOfClass, makeLegendary, legendaryFor,
   };
 })();

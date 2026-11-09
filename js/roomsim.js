@@ -267,7 +267,7 @@
   /* A barrel sets off its neighbours a beat later, so a row of them goes up as
      a run of blasts instead of one lump. */
   const CHAIN_MIN = 120, CHAIN_JITTER = 180;
-  const CHANNEL_SLOW = 0.4;            // how much a heal in progress slows you
+  const CHANNEL_SLOW = 0.6;            // how much a heal in progress slows you
   const DROP_LIFE = 90;                // seconds a dropped stack survives
   const CRATE_REACH = 120;             // how close you must be to open a crate
   const MAX_VEHICLES = 24;             // a battlefield, not a car park
@@ -299,12 +299,11 @@
      fast round can step straight past someone. */
   const BODY_R = 15;
   const BULLET_STEP = 10;
-  /* Spare rounds behind the magazine, mirrored from game.js: SPARE_MAGS
-     magazines plus one per bag tier, drawn on by every reload and filled back
+  /* Spare rounds behind the magazine, the same Weapons.spareRounds game.js
+     uses (three magazines or a per-type floor, more per bag tier), drawn on by every reload and filled back
      up by every resupply. The client reads `res` out of its personal
      snapshot, so the two have to agree on what a full reserve is. */
-  const SPARE_MAGS = 3;
-  const reserveFor = (p, w) => w.mag * (SPARE_MAGS + (p.bag || 0));
+  const reserveFor = (p, w) => W.spareRounds(w, p.bag);
   function refillAmmo(p) {
     p.ammo = p.weapon.mag; p.reserve = reserveFor(p, p.weapon);
     p.reloadUntil = 0; p.reloading = false;
@@ -341,6 +340,7 @@
      exact function while online. Terrain is the one term the room can't derive
      on its own, so whoever hosts hands it a lookup (see setSurface) — the host
      generated the map from the room's seed, so it has one. */
+  const ADS_SLOW = 0.7;                // aiming pace -- game.js reads this too
   function moveSpeedFor(p, ads) {
     // a guest never constructs a Room, so this can be the first thing in the
     // file anyone touches — resolve the shared tables here too
@@ -357,7 +357,7 @@
       * C.adrenaline(p.adrenaline, p.perks || p.perk).speed
       * PK().mod(p, 'speedMult', 1);            // Jogger, flat and always on
     if (ads) {
-      spd *= 0.55;
+      spd *= ADS_SLOW;
       if (typeof p.weapon.scopeMoveMult === 'number') spd *= p.weapon.scopeMoveMult;
     }
     return spd;
@@ -1139,7 +1139,7 @@
           break;
         }
         case 'legendary': {
-          const gold = I.makeLegendary(I.bestOfClass(p.cls.name));
+          const gold = I.legendaryFor(p.weapon, p.cls.name);
           p.weapon = gold; p.weaponId = gold.id; p.ammo = gold.mag;
           p.reserve = reserveFor(p, gold);
           if (p.guns && p.guns[p.gun]) Object.assign(p.guns[p.gun], { weapon: gold, ammo: gold.mag, reserve: p.reserve });
@@ -1160,7 +1160,8 @@
             if (k === 'bag') {
               const more = tier - (p.bag || 0);
               p.bag = tier;
-              if (p.reserve != null) p.reserve = Math.min(reserveFor(p, p.weapon), p.reserve + p.weapon.mag * more);
+              if (p.reserve != null) p.reserve = Math.min(reserveFor(p, p.weapon),
+                p.reserve + reserveFor(p, p.weapon) - W.spareRounds(p.weapon, p.bag - more));
             } else p[k] = tier;
           }
           break;
@@ -1302,10 +1303,10 @@
          keep computing damage, magazine size and walking speed off the primary
          while the player was holding a pistol. */
       const secBase = info.secondary && W.byId[info.secondary];
-      const guns = [{ weapon, ammo: weapon.mag, reserve: weapon.mag * SPARE_MAGS, reloadTimer: 0 }];
+      const guns = [{ weapon, ammo: weapon.mag, reserve: W.spareRounds(weapon, 0), reloadTimer: 0 }];
       if (secBase && secBase.id !== weapon.id) {
         const sw = PK().applyToWeapon(secBase, perks);
-        guns.push({ weapon: sw, ammo: sw.mag, reserve: sw.mag * SPARE_MAGS, reloadTimer: 0 });
+        guns.push({ weapon: sw, ammo: sw.mag, reserve: W.spareRounds(sw, 0), reloadTimer: 0 });
       }
       const cls = K.forWeapon(weapon);
       // a party is handed a team so it stays together; otherwise the smallest
@@ -1325,7 +1326,7 @@
         perk, perks: full,
         guns, gun: 0, swapUntil: 0,
         weaponId: weapon.id, weapon, cls,
-        ammo: weapon.mag, reserve: weapon.mag * SPARE_MAGS, reloadUntil: 0, fireCd: 0,
+        ammo: weapon.mag, reserve: W.spareRounds(weapon, 0), reloadUntil: 0, fireCd: 0,
         alive: true, respawnAt: 0, kills: 0, deaths: 0,
         skin: info.skin || 'default',
         input: { up: false, down: false, left: false, right: false, shooting: false, ads: false, angle: 0 },
@@ -2469,5 +2470,5 @@
     }
   }
   return { Room, MAP_SIZES, TICK, ROOM_MAX, MATCH_SECONDS, ELIM_SECONDS,
-    matchSecondsFor, Zone, moveSpeedFor, surfaceSpeedFor, BODY_R };
+    matchSecondsFor, Zone, moveSpeedFor, ADS_SLOW, CHANNEL_SLOW, surfaceSpeedFor, BODY_R };
 }));

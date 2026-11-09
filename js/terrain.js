@@ -571,11 +571,11 @@ const Terrain = (() => {
 
   /* what you're standing on, and what it does to you */
   function surfaceAt(t, x, y) {
-    if (inOcean(t, x, y)) return { kind: 'ocean', speed: 0.45, swim: true };
-    if (inRiver(t, x, y)) return { kind: 'river', speed: 0.55, swim: true };
+    if (inOcean(t, x, y)) return { kind: 'ocean', speed: 0.6, swim: true };
+    if (inRiver(t, x, y)) return { kind: 'river', speed: 0.7, swim: true };
     if (onBridge(t, x, y)) return { kind: 'bridge', speed: 1 };
     if (onRoad(t, x, y)) return { kind: 'road', speed: 1.12 };      // roads are quick
-    if (inBeach(t, x, y)) return { kind: 'beach', speed: 0.92 };    // sand drags a little
+    if (inBeach(t, x, y)) return { kind: 'beach', speed: 0.96 };    // sand drags a little
     return { kind: 'grass', speed: 1 };
   }
 

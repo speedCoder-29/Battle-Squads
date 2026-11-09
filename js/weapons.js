@@ -31,6 +31,10 @@ const Weapons = (() => {
      its weight penalty, so it is also the ceiling a Weight Lifter is walking
      back toward — see roomsim.moveSpeedFor. */
   const WEIGHT_FREE = 258;
+  /* Speed lost per point of weight. Was 3.4, which left a Barrett at 156 and
+     a PKP under 200 -- a third slower than a pistol, on top of armour. Now
+     the heaviest gun on the roster costs about a fifth. */
+  const WEIGHT_PER = 1.6;
   const PELLET_SPREAD = 0.10;      // shotgun fan, radians either side of aim
   /* How far a pellet gun is worth using: the distance at which the fan is
      still about the width of a body (15px radius), so a centred shot lands
@@ -203,7 +207,9 @@ const Weapons = (() => {
     ['RPK-74','LMG','17',9,'45','3.3s',3.17,0.15,'0.5s',1.2,12,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','D,Rd,W','A,Rc,H','M,S,F',58,30,'Rifle-weight rounds; the LMG you can actually move with',8],
     ['PKP','LMG','17',10,'200','5s',3.97,0.13,'0.4s',1,18,'Cyan','Automatic','5%','None','Bipod, Scope','AP, Tracer','Gunner','M,Rc,H','D,S,F','Rd,A,W',58,28,'200-round belt - chews cover as fast as people',7.5],
     ['Vector','SMG','7.5',25,'33, 25      , 33','1.6s',3.97,0.1,'0.15s',2,8,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','Rc,S,H','Rd,A,W','F,M,D',44,12,'Absurd rate of fire, evaporates past a room',4.5],
-    ['Uzi','SMG','8.75',21,'20, 32','1.8s',15.9,0.2,'0.2s',4,6,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','F,Rd,W','M,H,D','Rc,A,S',40,11,'Sprays wildly, and worse at a run - a doorway weapon',11],
+    // 25 by default: twenty rounds of an 8.75-damage gun could not finish a
+    // T3 set, the only SMG that had to reload mid-kill
+    ['Uzi','SMG','8.75',21,'32, 25','1.8s',15.9,0.2,'0.2s',4,6,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','F,Rd,W','M,H,D','Rc,A,S',40,11,'Sprays wildly, and worse at a run - a doorway weapon',11],
     ['P90','SMG','12',14,'50','2s',4.76,0.15,'0.25s',3,10,'Yellow','Automatic','12%','None','Suppressor','HP, Tracer','Assault','M,A,D','Rc,F,S','Rd,H,W',48,17,'50-round mag and real accuracy; the SMG with range',4],
     ['M870','Shotgun','12.5',1.11,'5','0.75s/shell',10,2.1,'0.3s',5,8,'Red','Non-Automatic','10%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','D,H,W','Rd,S,Rc','F,M,A',40,13,'A full 9-pellet hit at contact range kills outright',2],
     /* The two semi-auto shotguns were not a choice: the BM4 fired faster
@@ -219,18 +225,26 @@ const Weapons = (() => {
     ['SPAS-12','Shotgun','8.75',1.9,'9','0.55s/shell',3,1.4,'0.4s',6,12,'Red','Semi-Automatic','5%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','F,M,Rc','D,A,H','Rd,S,W',42,15,'Semi-auto buckshot - two triggers, two bodies',3],
     ['Mk 14 EBR','DMR','28',4.35,'20','2.5s',1.586,0.9,'0.42s',0.55,12,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','D,A,M','Rd,H,W','F,Rc,S',66,38,'20-round DMR mag - the volume marksman rifle',4.25],
     ['SVD Dragunov','DMR','37',3.6,'10','2.5s',1.586,1.05,'0.45s',0.5,10,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','D,Rd,S','A,H,W','F,M,Rc',68,40,'Three body shots, or two with a head in them',4.5],
-    ['QBU-88','DMR','23',5.4,'10','2.4s',1.586,0.75,'0.38s',0.45,9,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','F,A,Rc','D,Rd,S','M,H,W',70,36,'Fastest-cycling DMR, steadiest on the move',3],
-    ['Barrett M82 / M107','Sniper Rifle','102',1,'10','3.75s',1.586,3.6,'0.75s',0.24,30,'Olive','Semi-Automatic','1%','Anti-Materiel','Bipod, Scope','AP, Tracer','Sniper','D,M,F','A,Rd,H','W,S,Rc',100,50,'Anti-materiel: one round through a bare torso, and it eats structures',4],
+    ['QBU-88','DMR','23',5.4,'12','2.4s',1.586,0.75,'0.38s',0.45,9,'Orange','Semi-Automatic','5%','None','Scope, Suppressor','AP, Tracer, HP','Marksman','F,A,Rc','D,Rd,S','M,H,W',70,36,'Fastest-cycling DMR, steadiest on the move',3],
+    /* The Barrett out-hit the bolt guns (102 against 80 and 72), out-cycled
+       them and carried the same magazine, so the SV-98 and QBU-10 were simply
+       worse. It keeps the one-shot torso that is its whole identity, and pays
+       for it in cycle time: 0.7/s puts it below both bolts on sustained
+       damage, where an anti-materiel rifle belongs. */
+    ['Barrett M82 / M107','Sniper Rifle','102',0.7,'10','3.75s',1.586,3.6,'0.75s',0.24,30,'Olive','Semi-Automatic','1%','Anti-Materiel','Bipod, Scope','AP, Tracer','Sniper','D,M,F','A,Rd,H','W,S,Rc',100,50,'Anti-materiel: one round through a bare torso, and it eats structures',4],
     ['SV-98','Sniper Rifle','80',0.85,'10','2.7s',1.586,3.1,'1.55s',0.16,14,'Olive','Non-Automatic','2%','None','Bipod, Scope','AP, Tracer','Sniper','D,A,W','M,Rd,S','F,H,Rc',92,56,'Longest range on the roster; one head is enough',2.5],
     ['QBU-10','Sniper Rifle','72',1,'5','2.9s',1.586,2.7,'1.35s',0.17,13,'Olive','Non-Automatic','2%','None','Bipod, Scope','AP, Tracer','Sniper','A,Rd,W','D,H,Rc','M,F,S',90,52,'Handles fastest of the bolt guns, smallest magazine',3],
     ['DEagle','Pistol','35',3.2,'7','2.3s',3.97,0.65,'0.15s',1.8,3,'Black','Semi-Automatic','12%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','D,S,Rd','A,W,M','Rc,F,H',58,14,'Hand cannon: three shots, and it hits like a DMR',6],
-    ['Makarov PM','Pistol','17',6.5,'8','1.6s',4.76,0.45,'0.13s',2,2,'Black','Semi-Automatic','12%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','M,F,W','Rd,H,Rc','D,S,A',48,10,'Fastest trigger of the pistols, snappiest draw',5],
-    ['Colt Python','Pistol','27',4,'6','2s',1.98,0.5,'0.14s',2.1,2,'Black','Semi-Automatic','15%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','H,A,Rc','F,D,S','M,Rd,W',56,12,'Revolver accuracy - the pin-point sidearm',3],
+    // 10 rounds, not 8: an Engineer's pistol is their primary, and eight
+    // couldn't finish anyone in a vest without stopping to reload
+    ['Makarov PM','Pistol','19',6.5,'10','1.6s',4.76,0.45,'0.13s',2,2,'Black','Semi-Automatic','12%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','M,F,W','Rd,H,Rc','D,S,A',48,10,'Fastest trigger of the pistols, snappiest draw',5],
+    // 28: at 27 a full cylinder fell a point short of a T2 vest
+    ['Colt Python','Pistol','28',4,'6','1.6s',1.98,0.5,'0.14s',2.1,2,'Black','Semi-Automatic','15%','None','Scope, Suppressor, Flare Launcher','AP, HP','Engineer','H,A,Rc','F,D,S','M,Rd,W',56,12,'Revolver accuracy - the pin-point sidearm',3],
     ['M4','Carbine','13',11,'30','3.1s',3.17,0.18,'0.24s',1,7,'Purple','Automatic','9%','None','Scope, Suppressor, Laser Sight','AP, Tracer, HP','Medic','A,Rc,H','M,Rd,W','D,F,S',54,22,'The all-rounder: an M16 that trades reach for handling',4],
     ['AKS-74U','Carbine','13.5',11,'30','2.4s',4.76,0.24,'0.22s',1.35,6,'Purple','Automatic','10%','None','Scope, Suppressor, Laser Sight','AP, Tracer, HP','Medic','D,H,W','F,M,Rd','A,Rc,S',48,19,'Cut-down AK: quickest handling, wanders when you run',7.5],
     ['QBZ-95B','Carbine','14',10,'30','3s',6.34,0.2,'0.23s',1.15,7,'Purple','Automatic','5%','None','Scope, Suppressor, Laser Sight','AP, Tracer, HP','Medic','F,A,Rc','D,M,H','Rd,W,S',60,25,'Bullpup: wide from the hip but rock-steady on the move',0.5],
     ['M79','Launcher','125','N/A','1','2.2s',2.5,2.8,'0.42s',1,7,'Brown','Non-Automatic','25%','Explosive','Scope','Fuze, Anti-Tank','Demolitionist','D,A,W','Rd,H,M','F,Rc,S',24,20,'Lobbed HE round - arcs into cover',3],
-    ['Rpg-7','Launcher','110','N/A','1','3.3s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','Fuze, Anti-Tank','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
+    ['Rpg-7','Launcher','110','N/A','1','2.8s',3.5,4.5,'0.65s',1.4,15,'Brown','Non-Automatic','18%','HEAT','Scope','Fuze, Anti-Tank','Demolitionist','D,Rc,M','A,H,S','F,Rd,W',30,24,'The only HEAT weapon: the answer to a tank',5],
     /* 60 damage at 4 rounds a second was 240 DPS — the highest on the roster
        by 28%, out of a weapon whose damage is explosive, so it rolls no hit
        zone, needs no aim beyond the general direction, and lands two-shot
@@ -336,7 +350,7 @@ const Weapons = (() => {
       dmgType, penetration: 0,          // penetration is a % buff from ammo
 
       // feel
-      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * 3.4)),
+      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * WEIGHT_PER)),
       handling: num(handStr), weight, recoilRaw: rec, accuracyRaw: acc, firerate,
       scope,                            // ADS zoom factor (lower = more magnification)
 
@@ -373,10 +387,12 @@ const Weapons = (() => {
       reloadMs: Math.max(400, base.reloadMs + (m.dReloadS || 0) * 1000),
       burstDelay: Math.max(0, base.burstDelay + (m.dBurstDelayS || 0) * 1000),
       accuracyRaw: acc, recoilRaw: rec, weight, falloff,
+      // every legendary row lists a handling gain; it used to be dropped here
+      handling: Math.max(0.05, Math.round((base.handling + (m.dHandS || 0)) * 100) / 100),
       spreadBase: acc * 0.011,
       recoilKick: rec * 0.016,
       bloomMax: 0.02 + rec * 0.055,
-      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * 3.4)),
+      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * WEIGHT_PER)),
     };
   }
 
@@ -386,8 +402,8 @@ const Weapons = (() => {
   const ATTACHMENTS = {
     'Grenade Launcher': {
       name: 'Grenade Launcher', icon: '💣',
-      buffs: ['Throw grenades while holding your primary'], debuffs: ['-10% Speed', '+25% Handling'],
-      mods: { speedMult: 0.90, handlingMult: 1.25 }, launchGrenades: true,
+      buffs: ['Throw grenades while holding your primary'], debuffs: ['-5% Speed', '+25% Handling'],
+      mods: { speedMult: 0.95, handlingMult: 1.25 }, launchGrenades: true,
     },
     'Scope': {
       name: 'Scope', icon: '🔭',
@@ -401,8 +417,9 @@ const Weapons = (() => {
     },
     'Bipod': {
       name: 'Bipod', icon: '🦿',
-      buffs: ['-50% Scoping Recoil'], debuffs: ['-100% Scoping Movement Speed'],
-      mods: { scopeRecoilMult: 0.50, scopeMoveMult: 0 },
+      buffs: ['-50% Scoping Recoil'], debuffs: ['-60% Scoping Movement Speed'],
+      // was a dead stop, which on top of the 0.7 aiming pace made scoping in a trap
+      mods: { scopeRecoilMult: 0.50, scopeMoveMult: 0.4 },
     },
     'Sawed-Off': {
       name: 'Sawed-Off', icon: '🪚',
@@ -411,8 +428,8 @@ const Weapons = (() => {
     },
     'Flare Launcher': {
       name: 'Flare Launcher', icon: '🎆',
-      buffs: ['Single-use airstrike'], debuffs: ['-5% Speed', '+50% Handling'],
-      mods: { speedMult: 0.95, handlingMult: 1.50 }, airstrike: true,
+      buffs: ['Single-use airstrike'], debuffs: ['-2% Speed', '+50% Handling'],
+      mods: { speedMult: 0.98, handlingMult: 1.50 }, airstrike: true,
     },
     'Double Barrel': {
       name: 'Double Barrel', icon: '🔱',
@@ -552,7 +569,7 @@ const Weapons = (() => {
       spreadBase: acc * 0.011,
       recoilKick: rec * 0.016,
       bloomMax: 0.02 + rec * 0.055,
-      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * 3.4)) * mul('speedMult'),
+      moveSpeed: Math.max(120, Math.min(255, WEIGHT_FREE - weight * WEIGHT_PER)) * mul('speedMult'),
       handling: base.handling * mul('handlingMult'),
       scope: base.scope * mul('scopeMult'),
       audio: mul('audioMult'),
@@ -580,9 +597,31 @@ const Weapons = (() => {
   const BOT_POOL = ['m16', 'akm', 'scar-h', 'famas-f1', 'an-94', 'm249', 'rpk-74',
     'vector', 'uzi', 'p90', 'm870', 'spas-12', 'm4', 'aks-74u', 'mk-14-ebr'];
 
+  /* ---------- spare ammunition ----------
+     Three magazines behind the one in the gun, and a bag tier adds a third
+     again. Measured in magazines alone, though, the low-capacity guns starved:
+     a QBU-10 carried 15 spare rounds, an M870 15 shells and a launcher three
+     rockets -- one fight each -- while a PKP walked around with 600. So each
+     type has a floor in rounds, sized to a few kills' worth rather than to
+     its magazine. Shared by game.js and the room, which must agree on what a
+     full reserve is. */
+  // Five spare mags at spawn (was three, which ran dry by the second fight)
+  const SPARE_MAGS = 5;
+  const SPARE_FLOOR = {
+    'Shotgun': 45, 'Sniper Rifle': 50, 'DMR': 65, 'Pistol': 70, 'Launcher': 12,
+  };
+  const SPARE_CAP = 450;
+  function spareRounds(w, bagTier) {
+    if (!w) return 0;
+    // ...and a ceiling, or a 200-round belt is 1000 spare
+    const base = Math.min(SPARE_CAP, Math.max(w.mag * SPARE_MAGS, SPARE_FLOOR[w.type] || 0));
+    // each bag tier still adds a third
+    return Math.round(base * (3 + (bagTier || 0)) / 3);
+  }
+
   return {
     list, byId, BOT_POOL, AMMO_COLORS, CLASS_META, RATING_LABELS, TYPE_META, SCOPES, withMods, TILE, WEIGHT_FREE,
-    ATTACHMENTS, AMMO_TYPES, configure, ANTI_TANK_PASSTHROUGH,
+    ATTACHMENTS, AMMO_TYPES, configure, ANTI_TANK_PASSTHROUGH, spareRounds,
     allIds: () => list.map(w => w.id),
     default: 'm16',
     randomBot: () => BOT_POOL[Math.floor(Math.random() * BOT_POOL.length)],

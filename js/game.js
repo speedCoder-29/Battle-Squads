@@ -459,6 +459,7 @@ const Game = (() => {
     obstacles.push(...parts);
     invalidateRects();
     const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+    tagWalls(parts, lst.trim);
     /* bb is the bounding box of every part the blueprint returned, basement
        and upper floor included -- those are modelled as separate rects
        offset below the ground floor's own footprint, so a building with
@@ -1157,6 +1158,12 @@ const Game = (() => {
   const padOverlap = (a, b, pad) =>
     a.x - pad < b.x + b.w && a.x + a.w + pad > b.x &&
     a.y - pad < b.y + b.h && a.y + a.h + pad > b.y;
+  /* Every wall a building is made of carries its own trim colour, so the
+     renderer can paint a house, a mansion and a farm differently without a
+     per-frame lookup from wall back to building. Called right after a
+     building's shaded style is rolled, never before it -- moving it earlier
+     would shift every Math.random() draw that follows on a seeded map. */
+  const tagWalls = (parts, trim) => { for (const p of parts) if (!p.isProp) p.wallTint = trim; };
 
   /* ---------------- generation-time overlap index ----------------
      Placing ~1700 walls by testing each candidate against every wall already
@@ -1366,16 +1373,16 @@ const Game = (() => {
      rooms — and every room gets a light, which is what makes the interior
      lighting mean anything. */
   const ROOM_PROPS = {
-    bedroom:     { props: ['bed', 'shelf', 'chair', 'plant'], n: 4, lamps: 1 },
-    apartment:   { props: ['bed', 'table', 'chair', 'stove', 'shelf', 'plant'], n: 6, lamps: 1 },
+    bedroom:     { props: ['bed', 'shelf', 'chair', 'plant', 'painting'], n: 5, lamps: 1 },
+    apartment:   { props: ['bed', 'table', 'chair', 'stove', 'shelf', 'plant', 'painting'], n: 7, lamps: 1 },
     bathroom:    { props: ['toilet', 'shelf'], n: 2, lamps: 1 },
     washroom:    { props: ['toilet', 'shelf'], n: 5, lamps: 2 },
     kitchen:     { props: ['stove', 'table', 'shelf', 'chair'], n: 6, lamps: 1 },
     backKitchen: { props: ['stove', 'table', 'shelf', 'crate'], n: 8, lamps: 2 },
-    dining:      { props: ['table', 'chair', 'chair', 'plant'], n: 9, lamps: 2 },
-    diningLobby: { props: ['table', 'chair', 'chair', 'plant'], n: 12, lamps: 3 },
-    lounge:      { props: ['chair', 'table', 'plant', 'shelf'], n: 7, lamps: 2 },
-    lobby:       { props: ['chair', 'plant', 'desk', 'table'], n: 6, lamps: 2 },
+    dining:      { props: ['table', 'chair', 'chair', 'plant', 'painting'], n: 10, lamps: 2 },
+    diningLobby: { props: ['table', 'chair', 'chair', 'plant', 'painting'], n: 13, lamps: 3 },
+    lounge:      { props: ['chair', 'table', 'plant', 'shelf', 'painting'], n: 8, lamps: 2 },
+    lobby:       { props: ['chair', 'plant', 'desk', 'table', 'painting'], n: 7, lamps: 2 },
     /* A corridor, furnished like one.
 
        It used to be two potted plants, which is what a corridor looks like
@@ -1390,14 +1397,14 @@ const Game = (() => {
        own signature props are mixed in on top, which is what makes a
        hospital corridor different from a factory aisle — see GENERIC_ROOMS. */
     hall:        { props: ['bench', 'locker', 'plant', 'bin', 'crate'], n: 5, lamps: 3, strip: true },
-    living:      { props: ['chair', 'chair', 'table', 'shelf', 'plant'], n: 7, lamps: 2 },
-    foyer:       { props: ['plant', 'plant', 'chair', 'table'], n: 4, lamps: 2 },
-    study:       { props: ['desk', 'chair', 'shelf', 'shelf', 'plant'], n: 6, lamps: 1 },
+    living:      { props: ['chair', 'chair', 'table', 'shelf', 'plant', 'painting'], n: 8, lamps: 2 },
+    foyer:       { props: ['plant', 'plant', 'chair', 'table', 'painting'], n: 5, lamps: 2 },
+    study:       { props: ['desk', 'chair', 'shelf', 'shelf', 'plant', 'painting'], n: 7, lamps: 1 },
     pantry:      { props: ['shelf', 'crate', 'stove'], n: 4, lamps: 1 },
-    opsRoom:     { props: ['table', 'chair', 'chair', 'desk', 'locker'], n: 8, lamps: 2 },
-    briefing:    { props: ['chair', 'chair', 'chair', 'table', 'desk'], n: 10, lamps: 2 },
+    opsRoom:     { props: ['table', 'chair', 'chair', 'desk', 'locker', 'map'], n: 9, lamps: 2 },
+    briefing:    { props: ['chair', 'chair', 'chair', 'table', 'desk', 'map'], n: 11, lamps: 2 },
     mess:        { props: ['table', 'table', 'chair', 'chair', 'stove', 'shelf'], n: 12, lamps: 2 },
-    radioRoom:   { props: ['desk', 'ammoBox', 'chair', 'locker'], n: 6, lamps: 2 },
+    radioRoom:   { props: ['desk', 'ammoBox', 'chair', 'locker', 'monitor'], n: 7, lamps: 2 },
     motorPool:   { props: ['tyre', 'barrel', 'ammoBox', 'pallet'], n: 8, lamps: 2 },
     watchPost:   { props: ['ammoBox', 'crate', 'chair'], n: 3, lamps: 1 },
 
@@ -1422,36 +1429,49 @@ const Game = (() => {
        fit, and the room exists as a joke and a hiding place. */
     portapotty:  { props: ['toilet', 'shelf'], n: 2, lamps: 1 },
     /* Poolside furniture round the edge, nothing in the water. */
-    pool:        { props: ['chair', 'chair', 'plant', 'table'], n: 6, lamps: 2 },
+    pool:        { props: ['chair', 'chair', 'plant', 'table'], n: 6, lamps: 2 },     // outdoors; a frame has no wall out here
     parkingLot:  { props: ['tyre', 'barrel', 'cone', 'pallet'], n: 6, lamps: 2 },
     /* Lit end to end, because a passage you cannot see down is a passage
        nobody walks. Sparse otherwise — it is a route, not a room. */
     tunnel:      { props: ['crate', 'barrel', 'ammoBox'], n: 5, lamps: 5, strip: true },
     passage:     { props: ['crate', 'shelf', 'barrel', 'pipes', 'bin'], n: 5, lamps: 2, strip: true },
-    office:      { props: ['desk', 'chair', 'shelf', 'locker', 'plant'], n: 6, lamps: 1 },
-    controlRoom: { props: ['desk', 'chair', 'ammoBox', 'locker'], n: 6, lamps: 2 },
-    classroom:   { props: ['desk', 'chair', 'chair', 'shelf'], n: 8, lamps: 1 },
-    staffRoom:   { props: ['table', 'chair', 'shelf', 'plant'], n: 5, lamps: 1 },
+    office:      { props: ['desk', 'chair', 'shelf', 'locker', 'plant', 'painting'], n: 7, lamps: 1 },
+    controlRoom: { props: ['desk', 'chair', 'ammoBox', 'locker', 'monitor'], n: 7, lamps: 2 },
+    classroom:   { props: ['desk', 'chair', 'chair', 'shelf', 'chalkboard'], n: 9, lamps: 1 },
+    staffRoom:   { props: ['table', 'chair', 'shelf', 'plant', 'chalkboard'], n: 6, lamps: 1 },
     ward:        { props: ['bed', 'shelf', 'chair'], n: 4, lamps: 1 },
     surgery:     { props: ['bed', 'locker', 'shelf'], n: 4, lamps: 2 },
     dispensary:  { props: ['shelf', 'locker', 'crate'], n: 6, lamps: 1 },
-    bunkroom:    { props: ['bed', 'locker', 'chair'], n: 6, lamps: 1 },
+    bunkroom:    { props: ['bed', 'locker', 'chair', 'painting'], n: 7, lamps: 1 },
     cell:        { props: ['bed', 'toilet'], n: 2, lamps: 1 },
-    guardRoom:   { props: ['desk', 'chair', 'locker', 'ammoBox'], n: 5, lamps: 2 },
-    armoury:     { props: ['locker', 'ammoBox', 'crate'], n: 7, lamps: 2 },
+    guardRoom:   { props: ['desk', 'chair', 'locker', 'ammoBox', 'map'], n: 6, lamps: 2 },
+    armoury:     { props: ['locker', 'ammoBox', 'crate', 'map'], n: 8, lamps: 2 },
     stall:       { props: ['table', 'crate', 'shelf'], n: 4, lamps: 1 },
     storeroom:   { props: ['crate', 'pallet', 'shelf', 'barrel'], n: 7, lamps: 1 },
     workbay:     { props: ['ammoBox', 'pallet', 'tyre', 'barrel', 'crate'], n: 6, lamps: 1 },
     gym:         { props: ['crate', 'chair', 'plant'], n: 6, lamps: 2 },
     barn:        { props: ['crate', 'pallet', 'barrel', 'shelf'], n: 8, lamps: 1 },
-    lodge:       { props: ['table', 'chair', 'shelf', 'plant'], n: 6, lamps: 1 },
+    lodge:       { props: ['table', 'chair', 'shelf', 'plant', 'painting'], n: 7, lamps: 1 },
     safe:        { props: ['locker', 'crate'], n: 3, lamps: 1 },
     strongroom:  { props: ['locker', 'ammoBox', 'crate'], n: 4, lamps: 1 },
-    mainExhibit: { props: ['plant', 'table', 'crate'], n: 6, lamps: 3 },
-    gunExhibit:  { props: ['locker', 'table', 'ammoBox'], n: 5, lamps: 2 },
-    displayHall: { props: ['plant', 'table'], n: 5, lamps: 3 },
+    mainExhibit: { props: ['plant', 'table', 'crate', 'painting'], n: 7, lamps: 3 },
+    gunExhibit:  { props: ['locker', 'table', 'ammoBox', 'painting'], n: 6, lamps: 2 },
+    displayHall: { props: ['plant', 'table', 'painting'], n: 6, lamps: 3 },
     tent:        { props: ['bed', 'crate'], n: 2, lamps: 0 },
     plane:       { props: ['chair', 'chair', 'crate'], n: 8, lamps: 1 },
+    /* Two more the same audit missed: the farm's coop is the one room in the
+       game that hands out a gold crate for free, and it was going to the one
+       player who happened to check a dark shed nobody lights; the airfield's
+       gate room sat behind the lobby with nothing in it at all. Both are
+       roofed (see `shape` on their blueprints), so both were sitting under
+       the full interior gloom with no lamp to cut it back. */
+    /* Small, not just few. The coop is barely wider than a corridor, so the
+       narrow-room lane rule (see `put`, above) refuses anything whose own
+       width eats the walking lane -- a hay bale or a crate is too big to
+       pass it and silently never lands. Only things small enough to actually
+       clear a 91px shed get to be in the list. */
+    chickenCoop: { props: ['barrel', 'bin'], n: 2, lamps: 1 },
+    gate:        { props: ['desk', 'chair', 'sign'], n: 3, lamps: 1 },
   };
 
   /* Dress a room as what it is, and light it. */
@@ -1485,6 +1505,9 @@ const Game = (() => {
        corridor put a 44px obstacle in a 68px passage, which is a blocked
        hallway — the same mistake as a support post on the centreline. */
     lamp: 'wall', striplight: 'wall',
+    // framed wall art -- flush to the wall by the same rule as a shelf, just
+    // thinner, so it never stands proud of one
+    painting: 'wall', map: 'wall', monitor: 'wall', chalkboard: 'wall',
   };
   // tables and desks first, then wall furniture, then the chairs that go with them
   const rank = (kind) => (PLACEMENT[kind] === 'centre' ? 0
@@ -1495,6 +1518,17 @@ const Game = (() => {
     'storeroom', 'office', 'lobby', 'hall', 'workbay', 'guardRoom',
     'controlRoom', 'strongroom', 'safe', 'stall', 'gym',
   ]);
+
+  /* Rooms you pass through, not just into. A corridor needs the full two-body
+     lane because someone can be coming the other way down it — that is the
+     rule LANE exists for. Applying the same rule to every small room charged
+     a bathroom, a pantry or a portapotty for traffic that can never happen in
+     a cul-de-sac with one door: measured across a sample of maps, bathrooms
+     furnished 1% of the time and corridors 10%, because nothing in the lists
+     that furnish them was ever going to clear a 54px lane in a 48-90px room.
+     A dead-end room only has to let you get past whatever is just inside the
+     door, which is one body width, not two. */
+  const CIRCULATION = new Set(['hall', 'passage', 'tunnel']);
 
   /* Furniture you can go through. A locker, a cabinet, a desk and a shelf are
      the things a person would actually rifle through on the way past, so a
@@ -1549,8 +1583,11 @@ const Game = (() => {
        sealed the route.
 
        LANE is two body widths plus a margin — enough for somebody to come the
-       other way, which is the whole reason a corridor is worth fighting in. */
+       other way, which is the whole reason a corridor is worth fighting in.
+       A dead-end room has nobody to pass, so it only has to clear one body
+       width past whatever is standing in it (see CIRCULATION, above). */
     const LANE = BODY_R * 2 + 24;
+    const CLEARANCE = CIRCULATION.has(r.kind) ? LANE : BODY_R * 2 + 8;
     const narrow = Math.min(r.w, r.h) < LANE + 70;
     const put = (kind, m) => {
       const how = PLACEMENT[kind] || 'free';
@@ -1651,7 +1688,15 @@ const Game = (() => {
       if (narrow) {
         const how = PLACEMENT[kind] || 'free';
         if (how !== 'wall' && how !== 'corner') continue;
-        if (Math.min(r.w, r.h) - m.r * 2 < LANE) continue;
+        /* `put`'s own "too tight to be fussy" bypass (below) never got a
+           chance to run: this gate was rejecting the prop before `put` was
+           ever called. A bathroom or a pantry is a dead end at this size,
+           not a route someone is squeezing past, so it inherits the same
+           escape hatch -- just not a corridor, which has to stay a route
+           whatever its width. */
+        const pad = m.r + 5;
+        const tooTight = !CIRCULATION.has(r.kind) && (r.w < pad * 2.4 || r.h < pad * 2.4);
+        if (!tooTight && Math.min(r.w, r.h) - m.r * 2 < CLEARANCE) continue;
       }
       for (let tries = 0; tries < 16; tries++) {
         const p = put(kind, m);
@@ -2350,6 +2395,7 @@ const Game = (() => {
     obstacles.push(...parts);
     invalidateRects();
     const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
+    tagWalls(parts, st.trim);
     const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms, shape: parts.shape };
     buildings.push(rec);
     requiredPlacements.push(bb);
@@ -2584,6 +2630,7 @@ const Game = (() => {
           invalidateRects();
           const conf = FURNISH[name];
           const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+          tagWalls(parts, st.trim);
       buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
           furnish(name, bb, parts.rooms);
           placedOne = true;
@@ -2621,17 +2668,21 @@ const Game = (() => {
   /* add a placed required building to the world */
   function commitRequired(name, parts, bb) {
     tally(name, 'placed');
-    /* Record the blocks as well as the box, so the next required building is
-       spaced against the ground this one stands on rather than the rectangle
-       drawn round it — a compound reserves its sheds, not its whole yard. */
-    requiredPlacements.push(parts.shape && parts.shape.length
-      ? Object.assign({}, bb, { blocks: parts.shape })
-      : bb);
+    /* The full box, not just the roofed blocks. `shape` marks what has a
+       roof, for fog-of-war -- it says nothing about what's solid. Harbor's
+       container yard and quay are outside its `shape` and are built of real
+       wall segments all the same; spacing a later building against only the
+       sheds let it stand its own walls straight through that yard. Measured:
+       base and harbor overlapping by up to 1578x12 px on the shared 5200
+       board, where sweepFor -- the only placer that ever read `.blocks` --
+       is actually reached. */
+    requiredPlacements.push(bb);
     const pid = 'r' + requiredPlacements.length;
     for (const part of parts) { part.placement = pid; genAdd(part); }
     obstacles.push(...parts);
     invalidateRects();
     const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+    tagWalls(parts, st.trim);
     buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
     furnish(name, bb, parts.rooms);
     return true;
@@ -2653,13 +2704,10 @@ const Game = (() => {
           const parts = placeBuilding(name, x, y, pad);
           if (!parts.length) continue;
           const bb = boundsOf(parts);
-          const mine = parts.shape && parts.shape.length ? parts.shape : [bb];
-          const clashes = (other, gap) => {
-            const theirs = other.blocks && other.blocks.length ? other.blocks : [other];
-            return mine.some(a2 => theirs.some(b2 => padOverlap(a2, b2, gap)));
-          };
-          if (requiredPlacements.some(b => clashes(b, Math.min(pad, 30)))) continue;
-          if (landmarks.some(l => clashes(l, Math.min(pad, 60)))) continue;
+          // Full box both sides -- see commitRequired for why `shape` can't
+          // stand in for it here.
+          if (requiredPlacements.some(b => padOverlap(bb, b, Math.min(pad, 30)))) continue;
+          if (landmarks.some(l => padOverlap(bb, l, Math.min(pad, 60)))) continue;
           return commitRequired(name, parts, bb);
         }
       }
@@ -2838,6 +2886,7 @@ const Game = (() => {
       invalidateRects();
       const conf = FURNISH[name];
       const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+      tagWalls(parts, st.trim);
       buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
       furnish(name, bb, parts.rooms);
     }
@@ -4707,7 +4756,7 @@ const Game = (() => {
     hint.style.display = '';
     /* On a short screen the open legend is taller than the gap it has under
        the minimap, so it starts as the pill there; hover still opens it. */
-    hint.classList.toggle('is-faded', innerHeight < 820);
+    hint.classList.toggle('is-faded', window.innerHeight < 820);
     setTimeout(() => hint.classList.add('is-faded'), 12000);
     updateWeaponHud();
 
@@ -5411,7 +5460,7 @@ const Game = (() => {
   }
 
   /* ================= taking armour off =================
-     Armour is a trade — a T3 vest is 45% of your speed — and the only way to
+     Armour is a trade — a T3 vest costs 6% of your speed — and the only way to
      undo it was to die. Each piece now has a chip on the HUD; click it and the
      piece comes off and goes on the floor at your feet, where [E] puts it back
      on. A bag takes its extra carry with it: spare rounds and kit over the
@@ -7443,7 +7492,7 @@ const Game = (() => {
       }
       case 'legendary': {
         const cls = (Weapons.byId[player.baseWeapon.id] || player.weapon).className;
-        const gold = Items.makeLegendary(Items.bestOfClass(cls));
+        const gold = Items.legendaryFor(player.weapon, cls);
         equipWeapon(player, gold); hudMsg('LEGENDARY! ' + gold.name); break;
       }
       case 'armorT1': case 'armorT2': case 'armorT3': {
@@ -9296,6 +9345,7 @@ const Game = (() => {
       obstacles.push(...parts);
       invalidateRects();
       const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
+      tagWalls(parts, st.trim);
       const b = { name, ...bb, style: st, floor: st.floor, rooms: parts.rooms,
         shape: parts.shape };
       if (tag) b[tag] = true;
@@ -10009,9 +10059,9 @@ const Game = (() => {
           base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
           base *= Combat.armorSpeed(player);           // vest + helmet weigh you down
           base *= adr.speed;                           // Adren%/2 movement speedup
-          if (input.ads) base *= 0.55;                 // aiming slows you
+          if (input.ads) base *= RoomSim.ADS_SLOW;     // aiming slows you
           if (input.ads && player.weapon.scopeMoveMult !== undefined) base *= player.weapon.scopeMoveMult;  // bipod
-          if (player.channel) base *= 0.4;             // channeling a heal
+          if (player.channel) base *= RoomSim.CHANNEL_SLOW;  // channeling a heal
           if (gadget && tool.slow) base *= tool.slow;  // binoculars up / shield out
           if (tool.shield && input.ads) base *= tool.slow;
           base *= (player.wireSlow || 1);
@@ -10020,7 +10070,7 @@ const Game = (() => {
              A slide spends your run speed on a burst that decays into the
              ordinary crouch-walk pace rather than stopping dead, which is
              what makes it read as momentum rather than a canned animation. */
-          if (player.slideT > 0) base *= 0.55 + 0.45 * (player.slideT / SLIDE_TIME);
+          if (player.slideT > 0) base *= CROUCH_SPEED_MULT + (1 - CROUCH_SPEED_MULT) * (player.slideT / SLIDE_TIME);
           else if (player.crouched) base *= CROUCH_SPEED_MULT;
         }
         // terrain applies either way: the room is handed the same lookup, so
@@ -10509,7 +10559,7 @@ const Game = (() => {
   const REVIVE_REACH = 74;       // and how close
   const REVIVE_HP = 0.35;        // what you come back on
   const CRAWL = 0.32;            // fraction of normal pace while down
-  const CROUCH_SPEED_MULT = 0.55;  // crouch-walk pace, a real tradeoff for a smaller profile
+  const CROUCH_SPEED_MULT = 0.7;   // crouch-walk pace, a real tradeoff for a smaller profile
   const SLIDE_TIME = 0.35;         // seconds a slide's speed takes to decay into the crouch-walk
 
   function knockOut(a, owner) {
@@ -11478,7 +11528,8 @@ const Game = (() => {
      A reload used to conjure a full magazine out of nothing, forever, so
      ammo was a timer rather than a resource: nothing you did between fights
      changed how long you could keep shooting in the next one. Each gun now
-     carries a reserve — SPARE_MAGS magazines, one more per bag tier — and a
+     carries a reserve — three magazines or a per-type floor, a third more
+     per bag tier (Weapons.spareRounds) — and a
      reload draws on it. Every resupply that already existed (respawn, an
      armoury, an ammo box, a crate's ammo roll, a squadmate's revive) fills it
      back up through refillAll, so the sources are the ones you already know.
@@ -11487,9 +11538,9 @@ const Game = (() => {
      fighting halfway through the match; the range and basic training keep
      their bottomless magazines because they are for practising, not for
      rationing. `reserve` left undefined means bottomless. */
-  const SPARE_MAGS = 3;
   const tracksReserve = (a) => !!a.isPlayer && mode !== 'range' && mode !== 'tutorial';
-  const reserveFor = (a, w) => w.mag * (SPARE_MAGS + (a.bag || 0));
+  // magazines plus a per-type floor -- see Weapons.spareRounds
+  const reserveFor = (a, w) => Weapons.spareRounds(w, a.bag);
   // load what the reserve can cover; bottomless guns just fill
   function loadMagazine(a) {
     if (a.reserve == null) { a.ammo = a.weapon.mag; return; }
@@ -11503,7 +11554,8 @@ const Game = (() => {
     const g = slotsOf(a);
     const fix = (s, w) => {
       if (s.reserve == null) return;
-      s.reserve = Math.max(0, Math.min(reserveFor(a, w), s.reserve + w.mag * Math.max(0, tiers)));
+      const gain = tiers > 0 ? reserveFor(a, w) - Weapons.spareRounds(w, (a.bag || 0) - tiers) : 0;
+      s.reserve = Math.max(0, Math.min(reserveFor(a, w), s.reserve + gain));
     };
     fix(a, a.weapon);
     if (g) g.forEach((s, i) => { if (i !== a.gun && s && s.weapon) fix(s, s.weapon); });
@@ -12018,6 +12070,7 @@ const Game = (() => {
 
     drawBuildingShadows();   // the roofs' own shadows, under them
     perfMark('roofs', drawRoofs);   // roofs hide interiors until you step inside
+    drawBuildingSigns();     // the nameplate over the door, same reasoning as the beacon below
     if (mode === 'domination') drawObjectiveBeacons();   // after the roof, so it's never hidden by one
     drawSmokes();   // smoke sits above units to obscure them
 
@@ -12568,7 +12621,12 @@ const Game = (() => {
          a dark line where it meets the ground. The bevel is what makes the top
          read as a surface; the contact line is what stops the whole thing
          looking pasted onto the floor. */
-  function drawRaisedBox(s, h, fill, stroke, rad) {
+  /* Cheap, stable per-face noise -- no two flecks on the same wall land in
+     the same place, and the same wall never reshuffles them between frames,
+     without storing anything on the piece itself. */
+  const grainHash = (x, y, i) => (Math.abs((x * 374761393 + y * 668265263 + i * 982451653) | 0) % 1000) / 1000;
+
+  function drawRaisedBox(s, h, fill, stroke, rad, tint, grain) {
     const x1 = s.x + s.w, y1 = s.y + s.h;
     const a = lift(s.x, s.y, h), b = lift(x1, s.y, h);
     const c = lift(x1, y1, h), d = lift(s.x, y1, h);
@@ -12593,6 +12651,40 @@ const Game = (() => {
       ctx.closePath();
       ctx.fillStyle = fill; ctx.fill();
       ctx.fillStyle = faceShade(nx, ny); ctx.fill();
+      /* Surface grain. A flat fill plus a directional shade is still a
+         swatch; what makes it read as a material rather than a colour is
+         the grit real timber, block and sheet steel all carry. Flecks are
+         placed by lerping the face's own four corners, so they sit fixed to
+         the quad however the camera shears it, and skipped on a face too
+         short to carry any without just looking like dirt. */
+      if (grain && Math.hypot(bx1 - bx0, by1 - by0) > 24) {
+        const faceLen = Math.hypot(bx1 - bx0, by1 - by0);
+        const n = Math.min(9, Math.round(faceLen / 20));
+        ctx.fillStyle = grain;
+        for (let i = 0; i < n; i++) {
+          const u = grainHash(bx0, by0, i * 2);
+          const v = 0.1 + grainHash(bx0, by0, i * 2 + 1) * 0.7;
+          const gx = bx0 + (bx1 - bx0) * u, gy = by0 + (by1 - by0) * u;
+          const gtx = t0.x + (t1.x - t0.x) * u, gty = t0.y + (t1.y - t0.y) * u;
+          ctx.beginPath();
+          ctx.arc(gx + (gtx - gx) * v, gy + (gty - gy) * v, 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      /* A painted band under the eaves, in the building's own colour -- the
+         fascia board real buildings trim their walls with, and the thing
+         that lets a house, a mansion and a farm all built of the same wood
+         actually look like three different buildings from outside. Only the
+         top fifth of the face, so the material underneath still reads. */
+      if (tint) {
+        const bandBase = { x: bx0 + (t0.x - bx0) * 0.8, y: by0 + (t0.y - by0) * 0.8 };
+        const bandBase2 = { x: bx1 + (t1.x - bx1) * 0.8, y: by1 + (t1.y - by1) * 0.8 };
+        ctx.beginPath();
+        ctx.moveTo(bandBase.x, bandBase.y); ctx.lineTo(bandBase2.x, bandBase2.y);
+        ctx.lineTo(t1.x, t1.y); ctx.lineTo(t0.x, t0.y);
+        ctx.closePath();
+        ctx.fillStyle = tint; ctx.fill();
+      }
       // where it meets the floor
       ctx.beginPath();
       ctx.moveTo(bx0, by0); ctx.lineTo(bx1, by1);
@@ -12836,11 +12928,29 @@ const Game = (() => {
     ctx.restore();
   }
 
+  /* Floors had a pattern system with nothing to show for it: a grid of 1px
+     lines at 12-20% opacity, invisible under the interior dimming the moment
+     you're actually standing on one. Walls got grain, roofs got weathering
+     and stains; floors got ruling paper. Same idioms applied here — banding
+     for depth, scattered wear seeded off the room's own position so it never
+     reshuffles between frames, and a material-specific flourish (staggered
+     plank seams, panel-seam rivets, slab stains and a crack) so a floor
+     reads as the material it's named after rather than its grout lines. */
   function drawFloorPattern(b, st) {
     const p = st.pattern || 'planks';
+    const gh = (i) => grainHash(b.x, b.y, i);
     if (p === 'dirt') {
-      // no ruling — a handful of stones, seeded off the position so they
-      // don't crawl about between frames
+      ctx.save();
+      for (let i = 0; i < 3; i++) {
+        const r = 26 + gh(i * 3 + 2) * 38;
+        const px = b.x + gh(i * 3) * b.w, py = b.y + gh(i * 3 + 1) * b.h;
+        const patch = ctx.createRadialGradient(px, py, 0, px, py, r);
+        patch.addColorStop(0, 'rgba(20,16,10,0.14)');
+        patch.addColorStop(1, 'rgba(20,16,10,0)');
+        ctx.fillStyle = patch;
+        ctx.fillRect(px - r, py - r, r * 2, r * 2);
+      }
+      // scattered stones, seeded off the position so they don't crawl about
       ctx.fillStyle = 'rgba(0,0,0,0.10)';
       let n = (b.x * 73856093) ^ (b.y * 19349663);
       for (let i = 0; i < 26; i++) {
@@ -12848,25 +12958,99 @@ const Game = (() => {
         const px = b.x + (n % b.w), py = b.y + ((n >> 8) % b.h);
         ctx.fillRect(px, py, 3, 2);
       }
+      ctx.restore();
       return;
     }
-    ctx.beginPath();
+    ctx.save();
+    ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h); ctx.clip();
     if (p === 'planks') {
-      ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
-      for (let x = b.x + 40; x < b.x + b.w; x += 40) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      const bw = 40;
+      let col = 0;
+      // a faint light/dark jitter per board before the joints go down
+      for (let x = b.x; x < b.x + b.w; x += bw, col++) {
+        ctx.fillStyle = gh(col) > 0.5 ? 'rgba(255,240,210,0.05)' : 'rgba(10,8,4,0.07)';
+        ctx.fillRect(x, b.y, bw, b.h);
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.16)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = b.x + bw; x < b.x + b.w; x += bw) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      ctx.stroke();
+      // a broken seam partway down each board — real flooring staggers its
+      // end-joints so no two neighbours break at the same point
+      ctx.strokeStyle = 'rgba(0,0,0,0.10)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      col = 0;
+      for (let x = b.x; x < b.x + b.w; x += bw, col++) {
+        const seamLen = 64 + gh(col + 40) * 40;
+        for (let y = b.y + gh(col) * seamLen; y < b.y + b.h; y += seamLen) {
+          ctx.moveTo(x + 2, y); ctx.lineTo(x + bw - 2, y);
+        }
+      }
+      ctx.stroke();
     } else if (p === 'tile') {
-      ctx.strokeStyle = 'rgba(0,0,0,0.13)'; ctx.lineWidth = 1;
-      for (let x = b.x + 34; x < b.x + b.w; x += 34) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
-      for (let y = b.y + 34; y < b.y + b.h; y += 34) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
+      // alternation by column only — a full checkerboard turns every room
+      // into a bathroom; this just breaks the flatness
+      const cell = 34;
+      let col = 0;
+      for (let x = b.x; x < b.x + b.w; x += cell, col++) {
+        ctx.fillStyle = col % 2 === 0 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.035)';
+        ctx.fillRect(x, b.y, cell, b.h);
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.16)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = b.x + cell; x < b.x + b.w; x += cell) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      for (let y = b.y + cell; y < b.y + b.h; y += cell) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
+      ctx.stroke();
+      // a one-pixel highlight just inside the grout so each tile reads proud
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = b.x + cell + 1; x < b.x + b.w; x += cell) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      for (let y = b.y + cell + 1; y < b.y + b.h; y += cell) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
+      ctx.stroke();
     } else if (p === 'concrete') {
       ctx.strokeStyle = 'rgba(0,0,0,0.20)'; ctx.lineWidth = 2;
+      ctx.beginPath();
       for (let x = b.x + 96; x < b.x + b.w; x += 96) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
       for (let y = b.y + 96; y < b.y + b.h; y += 96) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
-    } else {                                  // metal: tight corrugation
+      ctx.stroke();
+      // mottled stains — a poured slab weathers unevenly, not in a grid
+      const blots = Math.min(14, Math.max(2, Math.round((b.w * b.h) / 11000)));
+      for (let i = 0; i < blots; i++) {
+        const r = 14 + gh(i * 2 + 1) * 22;
+        const px = b.x + gh(i * 2) * b.w, py = b.y + gh(i * 2 + 20) * b.h;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, r);
+        g.addColorStop(0, 'rgba(8,8,8,0.12)'); g.addColorStop(1, 'rgba(8,8,8,0)');
+        ctx.fillStyle = g; ctx.fillRect(px - r, py - r, r * 2, r * 2);
+      }
+      if (b.w > 90 && b.h > 90) {           // one hairline crack, if it's earned one
+        ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        let cx = b.x + gh(97) * b.w, cy = b.y + gh(98) * b.h;
+        ctx.moveTo(cx, cy);
+        for (let i = 0; i < 4; i++) { cx += (gh(i + 50) - 0.5) * 30; cy += (gh(i + 60) - 0.3) * 20; ctx.lineTo(cx, cy); }
+        ctx.stroke();
+      }
+    } else {                                  // metal: corrugation, panel seams, rivets
       ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 3;
+      ctx.beginPath();
       for (let x = b.x + 14; x < b.x + b.w; x += 22) { ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); }
+      ctx.stroke();
+      const panel = 100;
+      ctx.strokeStyle = 'rgba(0,0,0,0.24)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let y = b.y + panel; y < b.y + b.h; y += panel) { ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.w, y); }
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(0,0,0,0.32)';       // a rivet at each panel seam
+      for (let y = b.y + panel; y < b.y + b.h; y += panel) {
+        for (let x = b.x + 11; x < b.x + b.w; x += 44) {
+          ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      const sheen = ctx.createLinearGradient(b.x, b.y, b.x + b.w * 0.6, b.y + b.h * 0.6);
+      sheen.addColorStop(0, 'rgba(255,255,255,0.05)'); sheen.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = sheen; ctx.fillRect(b.x, b.y, b.w, b.h);
     }
-    ctx.stroke();
+    ctx.restore();
   }
 
   function drawFloors() {
@@ -13166,6 +13350,48 @@ const Game = (() => {
       const vx2 = wide2 ? b.x + b.w * t2 - 7 : b.x - 12;
       const vy2 = wide2 ? b.y - 12 : b.y + b.h * t2 - 7;
       roundRect(vx2, vy2, wide2 ? 14 : 9, wide2 ? 9 : 14, 2); ctx.fill();
+    }
+  }
+
+  /* What's painted on the sign, from the blueprint's own key -- "gas-station"
+     reads as GAS STATION, and the landmark's "obj-" prefix (an engine
+     bookkeeping label, not a name) is dropped rather than printed. Cached
+     per name since every instance of the same building reads the same. */
+  const SIGN_LABEL = {};
+  const signLabelFor = (name) => SIGN_LABEL[name]
+    || (SIGN_LABEL[name] = name.replace(/^obj-/, '').replace(/-/g, ' ').toUpperCase());
+
+  /* The nameplate every building earns. The roof is what tells you what a
+     building is from the air (see roofBlock above, and its own comment); this
+     is the same answer for someone already at the door, close enough that
+     the roof is the thing in the way rather than the thing they're reading.
+     Mounted over the main block's own north edge and lifted the same way a
+     wall would be, so it sits at the roofline instead of floating flat on
+     the footprint -- and drawn after the roof for the same reason the
+     objective beacon is: never hidden by one. */
+  function drawBuildingSigns() {
+    for (const b of buildings) {
+      // objectives already fly a lettered flag; a second label there is
+      // clutter, not clarity
+      if (b.landmark || !rectOnScreen(b)) continue;
+      const blk = blocksOf(b)[0];
+      if (blk.w < 110) continue;             // too small a face to bother with
+      const st = b.style || Structures.styleOf(b.name);
+      const label = signLabelFor(b.name);
+      ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
+      const textW = ctx.measureText(label).width;
+      const pw = Math.min(blk.w * 0.8, textW + 24), ph = 20;
+      const p = lift(blk.x + blk.w / 2, blk.y, 42);
+      ctx.save();
+      ctx.fillStyle = hexA(st.trim, 0.94);
+      roundRect(p.x - pw / 2, p.y - ph / 2, pw, ph, 4); ctx.fill();
+      ctx.strokeStyle = 'rgba(12,10,8,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+      ctx.strokeRect(p.x - pw / 2 + 1.5, p.y - ph / 2 + 1.5, pw - 3, ph - 3);
+      ctx.fillStyle = '#f4ead2';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, p.x, p.y + 0.5);
+      ctx.restore();
     }
   }
 
@@ -13735,6 +13961,26 @@ const Game = (() => {
       if (along) { roundRect(-w / 2, -h / 2, w, h, 3); } else { roundRect(-h / 2, -w / 2, h, w, 3); }
       ctx.fillStyle = k.fill; ctx.fill();
       ctx.lineWidth = 2; ctx.strokeStyle = k.stroke; ctx.stroke();
+      /* A slab with a dot on it reads as a hatch. Two recessed panels along
+         the door's own length — the same inset-and-bevel trick a window's
+         reveal uses — is what makes it read as a built door instead, and it
+         rotates with the leaf when the door swings open rather than being
+         painted on afterward. */
+      if (s.w > 22 && s.h > 22) {
+        const inset = 3, gap = 3;
+        const pnlLen = (s.w >= s.h ? s.w : s.h) - inset * 2 - gap, pnlTh = (s.w >= s.h ? s.h : s.w) - inset * 2;
+        const half = pnlLen / 2;
+        for (let i = 0; i < 2; i++) {
+          const lo = -half - gap / 2 + i * (half + gap);
+          ctx.fillStyle = 'rgba(0,0,0,0.16)';
+          if (s.w >= s.h) roundRect(lo, -pnlTh / 2, half, pnlTh, 2);
+          else roundRect(-pnlTh / 2, lo, pnlTh, half, 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
+          if (s.w >= s.h) ctx.strokeRect(lo + 1, -pnlTh / 2 + 1, half - 2, pnlTh - 2);
+          else ctx.strokeRect(-pnlTh / 2 + 1, lo + 1, pnlTh - 2, half - 2);
+        }
+      }
       ctx.globalAlpha = 1;
       ctx.restore();
       /* A threshold under the opening and a jamb at each side. A doorway used
@@ -13752,8 +13998,11 @@ const Game = (() => {
         ctx.fillRect(s.x - 2, s.y - 2, s.w + 4, 4);
         ctx.fillRect(s.x - 2, s.y + s.h - 2, s.w + 4, 4);
       }
-      // handle dot so a door reads as a door at a glance
-      ctx.beginPath(); ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
+      // a backplate and a short lever, not just a dot, so a door reads as a
+      // door at a glance rather than a hatch with a rivet in it
+      ctx.beginPath(); ctx.arc(c.x, c.y, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(18,15,12,0.4)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(c.x, c.y, 2.2, 0, Math.PI * 2);
       ctx.fillStyle = k.stroke; ctx.fill();
       if (player && player.alive && near2({ x: c.x, y: c.y }, player, 70)) {
         ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center';
@@ -13816,7 +14065,9 @@ const Game = (() => {
       /* Standing up. The cap is where the old flat drawing went, so everything
          below — the grain, the damage bleed, the inner line — is drawn onto it
          through the same transform rather than being reimplemented. */
-      drawRaisedBox(s, hgt, k.fill, k.stroke);
+      const wallGrain = WALL_GRAIN[s.type];
+      drawRaisedBox(s, hgt, k.fill, k.stroke, undefined, s.wallTint && hexA(s.wallTint, 0.4),
+        wallGrain && wallGrain.line);
       const top = lift(s.x, s.y, hgt);
       ctx.save();
       ctx.translate(top.x - s.x, top.y - s.y);
@@ -18910,7 +19161,7 @@ const Game = (() => {
     // only the rounds on a timer, so a count isn't polluted by everyone else's
     fuzedBullets: () => bullets.filter(b => b.fuze).length,
     // what the water under a swimmer does to them, for the Diver perk
-    swimSpeed: () => RoomSim.surfaceSpeedFor(player, { kind: 'river', speed: 0.55, swim: true }),
+    swimSpeed: () => RoomSim.surfaceSpeedFor(player, { kind: 'river', speed: 0.7, swim: true }),
     // the first crate on the map that wants a perk to open
     poolCrate() {
       const i = crates.findIndex(c => c.needs && !c.opened);

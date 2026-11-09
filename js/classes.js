@@ -36,7 +36,7 @@ const Classes = (() => {
     binoculars: {
       id: 'binoculars', name: 'Binoculars', icon: '🔭',
       melee: 0, range: 0, structure: 0, pierce: 0, cooldown: 0,
-      passive: true, zoom: 2, slow: 0.65, noFire: true, // holding binos = can't shoot
+      passive: true, zoom: 2, slow: 0.8, noFire: true, // holding binos = can't shoot
       effects: ['2x Zoom'],
     },
     'trench-spade': {
@@ -54,8 +54,8 @@ const Classes = (() => {
     'riot-shield': {
       id: 'riot-shield', name: 'Riot Shield', icon: '🛡️',
       melee: 28, range: px(2.5), structure: 15, pierce: 2, cooldown: 0.6,
-      shield: true, slow: 0.35, adsOnlyFire: true,      // only shoot while scoping
-      effects: ['100% Damage Reduction (front, while scoping)', '-35% Speed', 'Can only shoot while scoping'],
+      shield: true, slow: 0.5, adsOnlyFire: true,      // only shoot while scoping
+      effects: ['100% Damage Reduction (front, while scoping)', '-50% Speed', 'Can only shoot while scoping'],
     },
     nvg: {
       id: 'nvg', name: 'Night Vision Goggles', icon: '🥽',
