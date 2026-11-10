@@ -422,11 +422,16 @@ const Perks = (() => {
      Bullet Strap is the one perk that rewrites the gun rather than the body,
      so it has to be applied wherever a weapon is built — the client's loadout
      and the room's join — or the two disagree about how many rounds are in
-     the magazine. One function, called by both.
+     reserve. One function, called by both.
 
      A shotgun counts in shells: the table gives it 18 rather than two more
      tubes, because two more tubes of an M870 is ten shells and two more
-     magazines of an M16 is forty. */
+     magazines of an M16 is forty. That number is extra rounds *behind* the
+     one in the gun — `reserveBonus`, which Weapons.spareRounds folds into the
+     reserve — and must never land on `mag` itself: `mag` is the single loaded
+     magazine's capacity, read at spawn and on every reload, and adding a
+     reserve bonus there made a strapped M16 load 40 rounds into a 20-round
+     mag instead of carrying 40 more rounds to reload with. */
   function applyToWeapon(weapon, perk) {
     if (!weapon) return weapon;
     // takes one id or three; `mod` does the folding either way
@@ -442,7 +447,7 @@ const Perks = (() => {
     const extra = shellFed ? (m.shellsPlus || 0) : weapon.mag * (m.magsPlus || 0);
     return {
       ...weapon,
-      mag: weapon.mag + extra,
+      reserveBonus: (weapon.reserveBonus || 0) + extra,
       // Quick Hands also lightens the gun in the hands. Handling is the
       // aim-down-sights time; it is currently a displayed stat rather than a
       // simulated one, so this shows up in the gunsmith and is ready for the

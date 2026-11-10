@@ -597,17 +597,27 @@ const Screens = (() => {
     if (tip) tip.textContent = '💡 ' + tips[Math.floor(Math.random() * tips.length)];
   }
 
+  // one glyph per mission metric, so the full-page list reads at a glance
+  // rather than as a column of identical rows
+  const MISSION_ICON = {
+    kills: '🎯', matches: '🎮', wins: '🏆', captures: '🚩',
+    domMatches: '⚔️', elimMatches: '💀',
+  };
   function missionItem(m, mini = false) {
     const li = document.createElement('li');
-    li.className = 'mini-mission' + (m.done ? ' is-done' : '');
+    li.className = 'mini-mission' + (m.done ? ' is-done' : '') + (mini ? '' : ' mini-mission--full');
     const pct = Math.round((m.progress / m.goal) * 100);
+    const icon = mini ? '' : `<span class="mini-mission__icon">${MISSION_ICON[m.metric] || '📋'}</span>`;
     li.innerHTML = `
-      <div class="mini-mission__top">
-        <span>${m.text}</span>
-        <span class="mini-mission__reward">${m.done ? '✓' : '+' + m.reward + ' 🪙'}</span>
+      ${icon}
+      <div class="mini-mission__body">
+        <div class="mini-mission__top">
+          <span>${m.text}</span>
+          <span class="mini-mission__reward">${m.done ? '✓' : '+' + m.reward + ' 🪙'}</span>
+        </div>
+        <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
+        ${mini ? '' : `<div style="font-size:12px;color:var(--muted);margin-top:6px">${m.progress} / ${m.goal}</div>`}
       </div>
-      <div class="bar"><div class="bar__fill" style="width:${pct}%"></div></div>
-      ${mini ? '' : `<div style="font-size:12px;color:var(--muted);margin-top:6px">${m.progress} / ${m.goal}</div>`}
     `;
     return li;
   }
@@ -626,6 +636,33 @@ const Screens = (() => {
     daily.innerHTML = ''; weekly.innerHTML = '';
     p.missions.daily.forEach(m => daily.appendChild(missionItem(m)));
     p.weekly.forEach(m => weekly.appendChild(missionItem(m)));
+    renderMissionRewards(p);
+  }
+
+  /* Real numbers off the same two lists the columns above just drew from --
+     nothing here is invented, it is the same reward figures added up three
+     different ways: what is done, what is banked, what is still on the
+     table today. */
+  function renderMissionRewards(p) {
+    const wrap = document.getElementById('mission-rewards');
+    if (!wrap) return;
+    const all = [...p.missions.daily, ...p.weekly];
+    const done = all.filter(m => m.done);
+    const banked = done.reduce((n, m) => n + m.reward, 0);
+    const available = all.reduce((n, m) => n + m.reward, 0) - banked;
+    wrap.innerHTML = `
+      <div class="stat">
+        <b>${done.length} / ${all.length}</b>
+        <span>Completed today</span>
+      </div>
+      <div class="stat">
+        <b>🪙 ${banked}</b>
+        <span>Credits banked</span>
+      </div>
+      <div class="stat">
+        <b>🪙 ${available}</b>
+        <span>Still on the table</span>
+      </div>`;
   }
 
   function renderBattlePass() {
@@ -634,13 +671,31 @@ const Screens = (() => {
     document.getElementById('bp-xp').textContent = p.bpXp;
     document.getElementById('bp-xpmax').textContent = Progression.BP_XP_PER_TIER;
     document.getElementById('bp-bar').style.width = (p.bpXp / Progression.BP_XP_PER_TIER * 100) + '%';
+    const maxed = p.bpTier >= Progression.BP_TIERS.length;
+    const next = maxed ? null : Progression.BP_TIERS[p.bpTier];
+    const stats = document.getElementById('bp-stats');
+    if (stats) {
+      stats.innerHTML = `
+        <div class="stat">
+          <b>${p.bpTier} / ${Progression.BP_TIERS.length}</b>
+          <span>Tiers unlocked</span>
+        </div>
+        <div class="stat">
+          <b>${maxed ? 'Maxed' : (Progression.BP_XP_PER_TIER - p.bpXp) + ' XP'}</b>
+          <span>${maxed ? 'Every tier claimed' : 'To next tier'}</span>
+        </div>
+        <div class="stat">
+          <b>${next ? `${next.icon} ${next.name}` : '—'}</b>
+          <span>Next reward</span>
+        </div>`;
+    }
     const track = document.getElementById('bp-track');
     track.innerHTML = '';
     Progression.BP_TIERS.forEach((t, i) => {
       const tier = i + 1;
       const unlocked = tier <= p.bpTier;
       const div = document.createElement('div');
-      div.className = 'bp-tier ' + (unlocked ? 'is-unlocked' : 'is-locked');
+      div.className = 'bp-tier ' + (unlocked ? 'is-unlocked' : tier === p.bpTier + 1 ? 'is-locked is-next' : 'is-locked');
       div.innerHTML = `
         <div class="bp-tier__num">TIER ${tier}</div>
         <div class="bp-tier__reward">
@@ -817,7 +872,7 @@ const Screens = (() => {
         const b = document.createElement('button');
         b.className = 'gs-mod gs-perk' + (on ? ' is-on' : '');
         b.innerHTML = `
-          <span class="gs-mod-head">${perk.icon} ${perk.name}${perk.extra ? '<i class="gs-perk-x">EXTRA</i>' : ''}</span>
+          <span class="gs-mod-head">${perk.icon} ${perk.name}</span>
           <span class="gs-mod-buff">${perk.effects.map(x => '▲ ' + x).join('<br>') || '—'}</span>
           <span class="gs-perk-blurb">${perk.blurb}</span>`;
         b.addEventListener('click', () => {
@@ -962,6 +1017,19 @@ const Screens = (() => {
     }));
   }
 
+  /* The gunsmith panel (stats, perks, skins, attachments) sits above the
+     weapon grid it describes -- fine on a short page, but the grid runs to
+     several screens of class sections and equipping a weapon from down
+     there left you looking at the same spot while everything you'd actually
+     come to check (the numbers, the perks, the skin) changed off-screen
+     above you. Scrolling the panel back into view after an equip means the
+     result of the click is the next thing you see, not something you have
+     to go find. */
+  function scrollToGunsmith() {
+    const el = document.getElementById('loadout-smith');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   function renderLoadout() {
     renderPresets();
     renderGunsmith();
@@ -1024,7 +1092,8 @@ const Screens = (() => {
           card.querySelectorAll('.wslot').forEach((btn) => {
             btn.addEventListener('click', (ev) => {
               ev.stopPropagation();
-              if (btn.dataset.slot === '1') {
+              const primary = btn.dataset.slot === '1';
+              if (primary) {
                 if (p.secondary === w.id) p.secondary = null;
                 p.weapon = w.id;
               } else {
@@ -1032,11 +1101,16 @@ const Screens = (() => {
                 p.secondary = p.secondary === w.id ? null : w.id;
               }
               DB.saveProfile(p); SFX.click(); renderLoadout();
+              // the secondary doesn't touch the gunsmith panel above, which
+              // still describes the primary -- only follow it up there for
+              // the choice that actually changed what it's showing
+              if (primary) scrollToGunsmith();
             });
           });
           card.addEventListener('click', () => {
             if (p.secondary === w.id) p.secondary = null;
             p.weapon = w.id; DB.saveProfile(p); SFX.click(); renderLoadout();
+            scrollToGunsmith();
           });
         }
         row.appendChild(card);

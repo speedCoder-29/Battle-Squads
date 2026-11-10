@@ -248,6 +248,7 @@
   const ROOM_MAX = 48;
   const MATCH_SECONDS = 8 * 60;
   const SCORE_CAP = 1000;              // domination win score, as offline
+  const FULL_CONTROL_MULT = 1.75;      // score rate on every point while one side owns all of them, as offline
   /* Elimination ends when the zone is done closing, plus a short tail for the
      last circle to settle whatever is left in it. Eight minutes was the same
      clock Domination uses, and it left three minutes of two squads staring at
@@ -1290,7 +1291,7 @@
       const built = (info.attachments || info.ammo)
         ? W.configure(base, { attachments: info.attachments, ammo: info.ammo })
         : base;
-      // Bullet Strap rewrites the magazine, so it has to be applied here as
+      // Bullet Strap adds reserve rounds, so it has to be applied here as
       // well as on the client or the two disagree about how many rounds you have
       /* The class passive, granted here as well. The room computes speed,
          health and magazine size for itself; if it does not know a Scout is
@@ -1914,7 +1915,19 @@
           obj.progress = Math.max(0, obj.progress - 20 * dt);
           if (obj.progress === 0) obj.capTeam = -1;
         }
-        if (obj.owner >= 0) this.scores[obj.owner] += 4 * dt;
+      }
+      /* Full map control, matching the offline rule exactly (see
+         updateObjectives in game.js): every point owned by the same side
+         pays faster than the same points split up would. The client works
+         this state out for itself from the synced objective owners rather
+         than being told, same as it already does for captures -- only the
+         score itself has to agree with what gets authoritatively added
+         here. */
+      const owned = this.objectives.map(o => o.owner);
+      const sweep = this.objectives.length > 1 && owned[0] >= 0 && owned.every(o => o === owned[0]) ? owned[0] : -1;
+      for (const obj of this.objectives) {
+        if (obj.owner < 0) continue;
+        this.scores[obj.owner] += (obj.owner === sweep ? FULL_CONTROL_MULT : 1) * 4 * dt;
       }
       for (let t = 0; t < this.scores.length; t++) if (this.scores[t] >= SCORE_CAP) return this.finish();
     }

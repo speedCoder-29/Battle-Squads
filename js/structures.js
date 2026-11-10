@@ -3593,21 +3593,24 @@ const Structures = (() => {
                   metal    corrugated sheeting
                   dirt     no ruling at all, just speckle
      ============================================================ */
-  const S_RESIDENTIAL = { pattern: 'planks' };
-  const S_INDUSTRIAL = { pattern: 'metal' };
-  const S_INSTITUTIONAL = { pattern: 'tile' };
-  const S_MILITARY = { pattern: 'concrete' };
+  const S_RESIDENTIAL = { pattern: 'planks', wallSkin: 'clapboard' };
+  const S_INDUSTRIAL = { pattern: 'metal', wallSkin: 'panel' };
+  const S_INSTITUTIONAL = { pattern: 'tile', wallSkin: 'brick' };
+  const S_MILITARY = { pattern: 'concrete', wallSkin: 'block' };
 
   const STYLE = {
-    /* ---- residential: warm timber, terracotta and slate ---- */
+    /* ---- residential: warm timber, terracotta and slate ----
+       wallSkin overrides split the category in two: a mansion or resort is
+       rendered smooth, the clean plaster money pays for; a shanty, farm,
+       camp or outpost is rough board, the siding nobody's finishing. */
     house:       { ...S_RESIDENTIAL, floor: '#7d6349', roof: ['#a4553c', '#7c3d2b'], trim: '#5a3526' },
-    mansion:     { ...S_RESIDENTIAL, floor: '#8a6f4e', roof: ['#6b6480', '#463f57'], trim: '#c9a54e' },
-    resort:      { ...S_RESIDENTIAL, floor: '#94795a', roof: ['#4f938c', '#316662'], trim: '#e0d2ad' },
-    shanty:      { ...S_RESIDENTIAL, floor: '#6b5a45', roof: ['#8a7f6a', '#5f5747'], trim: '#48412f' },
+    mansion:     { ...S_RESIDENTIAL, floor: '#8a6f4e', roof: ['#6b6480', '#463f57'], trim: '#c9a54e', wallSkin: 'stucco' },
+    resort:      { ...S_RESIDENTIAL, floor: '#94795a', roof: ['#4f938c', '#316662'], trim: '#e0d2ad', wallSkin: 'stucco' },
+    shanty:      { ...S_RESIDENTIAL, floor: '#6b5a45', roof: ['#8a7f6a', '#5f5747'], trim: '#48412f', wallSkin: 'board' },
     apartments:  { ...S_RESIDENTIAL, floor: '#75655a', roof: ['#9a6a52', '#6d4838'], trim: '#4d3327' },
-    camp:        { ...S_RESIDENTIAL, floor: '#5f6a46', roof: ['#6f8a4e', '#4c6236'], trim: '#3a4d29', pattern: 'dirt' },
-    campground:  { ...S_RESIDENTIAL, floor: '#5c6a45', roof: ['#78955a', '#51703c'], trim: '#3d5630', pattern: 'dirt' },
-    farm:        { ...S_RESIDENTIAL, floor: '#7a6440', roof: ['#b4503f', '#82342a'], trim: '#5c261e' },
+    camp:        { ...S_RESIDENTIAL, floor: '#5f6a46', roof: ['#6f8a4e', '#4c6236'], trim: '#3a4d29', pattern: 'dirt', wallSkin: 'board' },
+    campground:  { ...S_RESIDENTIAL, floor: '#5c6a45', roof: ['#78955a', '#51703c'], trim: '#3d5630', pattern: 'dirt', wallSkin: 'board' },
+    farm:        { ...S_RESIDENTIAL, floor: '#7a6440', roof: ['#b4503f', '#82342a'], trim: '#5c261e', wallSkin: 'board' },
 
     /* ---- industrial: steel, rust and corrugate ---- */
     warehouse:   { ...S_INDUSTRIAL, floor: '#5a6270', roof: ['#6e7a8c', '#4c5567'], trim: '#39404e' },
@@ -3620,27 +3623,27 @@ const Structures = (() => {
     depot:       { ...S_INDUSTRIAL, floor: '#5a5b52', roof: ['#6f7358', '#4d503c'], trim: '#383a2b' },
     hangar:      { ...S_INDUSTRIAL, floor: '#4f5866', roof: ['#8592a4', '#5c667a'], trim: '#414b5c' },
     airfield:    { ...S_INDUSTRIAL, floor: '#4f5560', roof: ['#7d8794', '#565f6c'], trim: '#3c434e' },
-    mine:        { ...S_INDUSTRIAL, floor: '#5d5852', roof: ['#5a4c40', '#3d332b'], trim: '#2c251f', pattern: 'dirt' },
+    mine:        { ...S_INDUSTRIAL, floor: '#5d5852', roof: ['#5a4c40', '#3d332b'], trim: '#2c251f', pattern: 'dirt', wallSkin: 'stone' },
 
     /* ---- institutional: pale stone, and an accent you can name ---- */
     hospital:    { ...S_INSTITUTIONAL, floor: '#c8d4d2', roof: ['#e8f0ee', '#b9c9c6'], trim: '#d1443f' },
     school:      { ...S_INSTITUTIONAL, floor: '#9d8f74', roof: ['#b06a3e', '#7f4629'], trim: '#5f3320' },
-    church:      { ...S_INSTITUTIONAL, floor: '#a2937c', roof: ['#556391', '#3a4462'], trim: '#caa04a' },
+    church:      { ...S_INSTITUTIONAL, floor: '#a2937c', roof: ['#556391', '#3a4462'], trim: '#caa04a', wallSkin: 'stone' },
     museum:      { ...S_INSTITUTIONAL, floor: '#b3ada0', roof: ['#a8a29a', '#7c766d'], trim: '#c9a54e' },
-    prison:      { ...S_INSTITUTIONAL, floor: '#767c84', roof: ['#5f666f', '#42474e'], trim: '#2f3339' },
-    bank:        { ...S_INSTITUTIONAL, floor: '#a89b7e', roof: ['#4f6656', '#33463a'], trim: '#c9b25a' },
-    vault:       { ...S_INSTITUTIONAL, floor: '#6e737f', roof: ['#575d6a', '#3b4049'], trim: '#c9b25a' },
-    'command-center': { ...S_INSTITUTIONAL, floor: '#4c5164', roof: ['#4a5570', '#333c52'], trim: '#4a8fd0' },
+    prison:      { ...S_INSTITUTIONAL, floor: '#767c84', roof: ['#5f666f', '#42474e'], trim: '#2f3339', wallSkin: 'block' },
+    bank:        { ...S_INSTITUTIONAL, floor: '#a89b7e', roof: ['#4f6656', '#33463a'], trim: '#c9b25a', wallSkin: 'stone' },
+    vault:       { ...S_INSTITUTIONAL, floor: '#6e737f', roof: ['#575d6a', '#3b4049'], trim: '#c9b25a', wallSkin: 'block' },
+    'command-center': { ...S_INSTITUTIONAL, floor: '#4c5164', roof: ['#4a5570', '#333c52'], trim: '#4a8fd0', wallSkin: 'block' },
     'train-station': { ...S_INSTITUTIONAL, floor: '#6e6a5e', roof: ['#7d6a4e', '#564733'], trim: '#3e3323' },
-    subway:      { ...S_INSTITUTIONAL, floor: '#484f5c', roof: ['#3d4450', '#2a2f38'], trim: '#4a8fd0' },
+    subway:      { ...S_INSTITUTIONAL, floor: '#484f5c', roof: ['#3d4450', '#2a2f38'], trim: '#4a8fd0', wallSkin: 'block' },
 
     /* ---- military: olive, khaki and sandbag ---- */
     base:        { ...S_MILITARY, floor: '#575e4a', roof: ['#6b7350', '#4a5138'], trim: '#363b26' },
     fortress:    { ...S_MILITARY, floor: '#545d66', roof: ['#5d6656', '#3f473b'], trim: '#2c3228' },
     barracks:    { ...S_MILITARY, floor: '#5a5f4c', roof: ['#727a56', '#50573b'], trim: '#3a3f28' },
-    armory:      { ...S_MILITARY, floor: '#4f5348', roof: ['#5c5f45', '#3e412e'], trim: '#c07a2a' },
+    armory:      { ...S_MILITARY, floor: '#4f5348', roof: ['#5c5f45', '#3e412e'], trim: '#c07a2a', wallSkin: 'panel' },
     bunker:      { ...S_MILITARY, floor: '#4f5450', roof: ['#4a4f4a', '#333733'], trim: '#252825' },
-    keep:        { ...S_MILITARY, floor: '#565b6b', roof: ['#6a6f7e', '#494e5b'], trim: '#333741' },
+    keep:        { ...S_MILITARY, floor: '#565b6b', roof: ['#6a6f7e', '#494e5b'], trim: '#333741', wallSkin: 'stone' },
     checkpoint:  { ...S_MILITARY, floor: '#5c5c4c', roof: ['#6e6e52', '#4c4c38'], trim: '#c07a2a' },
     tower:       { ...S_MILITARY, floor: '#5a5a52', roof: ['#66665a', '#46463e'], trim: '#30302a' },
     'bridge-fort': { ...S_MILITARY, floor: '#5f5a52', roof: ['#6a6255', '#48423a'], trim: '#332f29' },
@@ -3650,19 +3653,19 @@ const Structures = (() => {
     garage:      { ...S_INDUSTRIAL, floor: '#4f545c', roof: ['#6a7078', '#474c53'], trim: '#c07a2a' },
     'obj-relay':    { ...S_INDUSTRIAL, floor: '#4a5260', roof: ['#5f6b7d', '#3d4652'], trim: '#4bb7d8' },
     'obj-refinery': { ...S_INDUSTRIAL, floor: '#544e46', roof: ['#7a6a55', '#4e4438'], trim: '#e0913a' },
-    'obj-citadel':  { ...S_INDUSTRIAL, floor: '#4c4a52', roof: ['#63616b', '#403f47'], trim: '#c4536b' },
+    'obj-citadel':  { ...S_INDUSTRIAL, floor: '#4c4a52', roof: ['#63616b', '#403f47'], trim: '#c4536b', wallSkin: 'block' },
     'obj-bastion':  { ...S_MILITARY, floor: '#50544a', roof: ['#5f664f', '#3f4435'], trim: '#8fae4a' },
-    'obj-outpost':  { ...S_RESIDENTIAL, floor: '#6b5f45', roof: ['#8a7550', '#5e4e34'], trim: '#b8873a' },
-    'bunker-complex': { ...S_INDUSTRIAL, floor: '#3e4147', roof: ['#575e63', '#3b4145'], trim: '#7d8a72' },
-    watermill:   { ...S_RESIDENTIAL, floor: '#6f6350', roof: ['#5a7a6a', '#3c5548'], trim: '#2e4238' },
+    'obj-outpost':  { ...S_RESIDENTIAL, floor: '#6b5f45', roof: ['#8a7550', '#5e4e34'], trim: '#b8873a', wallSkin: 'board' },
+    'bunker-complex': { ...S_INDUSTRIAL, floor: '#3e4147', roof: ['#575e63', '#3b4145'], trim: '#7d8a72', wallSkin: 'block' },
+    watermill:   { ...S_RESIDENTIAL, floor: '#6f6350', roof: ['#5a7a6a', '#3c5548'], trim: '#2e4238', wallSkin: 'board' },
 
     /* ---- commercial and one-offs ---- */
-    market:      { floor: '#8a7a5c', roof: ['#d06a4a', '#9c4630'], trim: '#7a3122', pattern: 'tile' },
-    'gas-station': { floor: '#5a5646', roof: ['#d8412f', '#9c2b1e'], trim: '#f0d24a', pattern: 'concrete' },
-    'radio-tower': { floor: '#4c5058', roof: ['#7a4a4a', '#553232'], trim: '#e8483c', pattern: 'metal' },
-    arena:       { floor: '#5a5f6b', roof: ['#8a5a8a', '#5c3a5c'], trim: '#d0a04a', pattern: 'concrete' },
+    market:      { floor: '#8a7a5c', roof: ['#d06a4a', '#9c4630'], trim: '#7a3122', pattern: 'tile', wallSkin: 'board' },
+    'gas-station': { floor: '#5a5646', roof: ['#d8412f', '#9c2b1e'], trim: '#f0d24a', pattern: 'concrete', wallSkin: 'panel' },
+    'radio-tower': { floor: '#4c5058', roof: ['#7a4a4a', '#553232'], trim: '#e8483c', pattern: 'metal', wallSkin: 'panel' },
+    arena:       { floor: '#5a5f6b', roof: ['#8a5a8a', '#5c3a5c'], trim: '#d0a04a', pattern: 'concrete', wallSkin: 'block' },
   };
-  const DEFAULT_STYLE = { floor: '#5f5f5f', roof: ['#6a5442', '#54402f'], trim: '#1e140c', pattern: 'planks' };
+  const DEFAULT_STYLE = { floor: '#5f5f5f', roof: ['#6a5442', '#54402f'], trim: '#1e140c', pattern: 'planks', wallSkin: 'clapboard' };
   const styleOf = (name) => STYLE[name] || DEFAULT_STYLE;
 
   /* ---------- one house is not every house ----------

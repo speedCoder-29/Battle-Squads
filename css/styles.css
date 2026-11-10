@@ -466,13 +466,27 @@ p  { text-wrap: pretty; }
    positive tracking to stay even. */
 .play-hub__title { font-size: clamp(30px, 3vw, 42px); font-weight: 800; letter-spacing: 0.01em; line-height: 1.02; }
 .play-hub__sub { color: var(--muted); margin-top: 6px; }
-/* Three modes, three columns. Two columns left the third card alone on a row
-   of its own, which reads as an afterthought rather than as a choice. */
+/* Three columns, four modes: Arms Race is the one that doesn't divide evenly
+   and lands alone on its own row, which is exactly the "afterthought" layout
+   a three-card grid was first built to avoid (see below) -- it just moved
+   from the third card to the fourth when Arms Race joined the roster. The
+   orphan rule covers it generally, by position rather than by name: a last
+   card that would start a fresh row (3n+1) spans the width instead of
+   sitting alone at a third of it, whatever the mode count ends up being. */
 .mode-grid {
   display: grid; grid-template-columns: repeat(3, 1fr);
   gap: 14px; width: 100%; max-width: 860px;
 }
-@media (max-width: 1180px) { .mode-grid { grid-template-columns: 1fr 1fr; max-width: 640px; } }
+.mode-grid > .mode-card:last-child:nth-child(3n + 1) {
+  grid-column: 1 / -1;
+  flex-direction: row; align-items: center; gap: 18px;
+}
+.mode-grid > .mode-card:last-child:nth-child(3n + 1) .mode-card__meta { margin-top: 0; }
+@media (max-width: 1180px) {
+  .mode-grid { grid-template-columns: 1fr 1fr; max-width: 640px; }
+  .mode-grid > .mode-card:last-child:nth-child(3n + 1) { grid-column: auto; flex-direction: column; }
+  .mode-grid > .mode-card:last-child:nth-child(3n + 1) .mode-card__meta { margin-top: auto; }
+}
 .mode-card {
   position: relative; text-align: left;
   background: var(--panel); border: 1px solid var(--line);
@@ -511,6 +525,12 @@ p  { text-wrap: pretty; }
 /* mini missions */
 .mini-mission-list, .mission-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
 .mini-mission { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.mini-mission--full { display: flex; align-items: flex-start; gap: 12px; }
+.mini-mission__icon {
+  flex: none; width: 36px; height: 36px; border-radius: 10px; font-size: 17px;
+  display: grid; place-items: center; background: rgba(0,0,0,0.25); border: 1px solid var(--line);
+}
+.mini-mission__body { flex: 1; min-width: 0; }
 .mini-mission__top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
 .mini-mission__reward { color: var(--gold); font-weight: 700; }
 .bar { height: 8px; background: rgba(0,0,0,0.35); border-radius: 6px; overflow: hidden; }
@@ -526,24 +546,57 @@ p  { text-wrap: pretty; }
 .col-title { margin-bottom: 12px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
 .mission-list .mini-mission { padding: 16px; }
 
+/* The two columns above are a fixed five rows -- three dailies, two weeklies
+   -- which left the bottom half of a full viewport simply blank. These two
+   panels are built from the same mission data (rewards) and from copy
+   already established elsewhere on the site (how it works), rather than
+   padding the page with anything invented. */
+.mission-extra { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 26px; }
+.panel--rewards, .panel--howto { overflow: visible; }
+.stat-row--rewards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.howto-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.howto-list li { display: flex; gap: 12px; align-items: flex-start; }
+.howto-list__icon {
+  flex: none; width: 32px; height: 32px; border-radius: 9px; font-size: 15px;
+  display: grid; place-items: center; background: rgba(0,0,0,0.25); border: 1px solid var(--line);
+}
+.howto-list b { font-size: 13px; }
+.howto-list div { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+@media (max-width: 860px) { .mission-extra { grid-template-columns: 1fr; } }
+
 /* battle pass */
 .bp-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
 .bp-progress { min-width: 260px; }
 .bp-progress__label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .bp-progress__xp { font-size: 12px; color: var(--muted); margin-top: 6px; text-align: right; }
-.bp-track { display: flex; gap: 12px; overflow-x: auto; padding: 10px 4px 20px; }
-.bp-tier {
-  min-width: 130px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
-  background: var(--panel); flex-shrink: 0;
+.stat-row--bp { grid-template-columns: repeat(3, 1fr); margin: 22px 0; }
+/* A single scrolling row hid most of a twelve-tier season off to the right
+   and left the rest of the page blank -- every tier is short enough to earn
+   that a grid that wraps shows the whole season at once instead of asking
+   for a scrollbar to find out what is in tier 9. */
+.bp-track {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px; padding: 4px 2px 20px;
 }
-.bp-tier__num { padding: 8px; text-align: center; font-weight: 800; font-size: 13px; background: rgba(0,0,0,0.3); }
-.bp-tier__reward { padding: 20px 10px; text-align: center; }
-.bp-tier__icon { font-size: 34px; }
-.bp-tier__name { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.bp-tier {
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  background: var(--panel); transition: transform 0.18s, border-color 0.18s;
+}
+.bp-tier:hover { transform: translateY(-3px); }
+.bp-tier__num { padding: 9px; text-align: center; font-weight: 800; font-size: 13px; background: rgba(0,0,0,0.3); }
+.bp-tier__reward { padding: 22px 10px; text-align: center; }
+.bp-tier__icon { font-size: 36px; }
+.bp-tier__name { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
 .bp-tier.is-unlocked { border-color: var(--accent); }
 .bp-tier.is-unlocked .bp-tier__num { background: linear-gradient(135deg, var(--accent), #ff9d3b); color: #1a0e04; }
 .bp-tier.is-locked .bp-tier__reward { filter: grayscale(1) brightness(0.6); }
 .bp-tier__lock { font-size: 11px; color: var(--dim); margin-top: 4px; }
+/* The tier you are actually working toward, picked out from the eleven
+   other locked ones so "what do I get next" doesn't mean counting columns. */
+.bp-tier.is-next { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.bp-tier.is-next .bp-tier__num { background: linear-gradient(135deg, var(--blue), #6fa3f5); color: #0b1430; }
+.bp-tier.is-next .bp-tier__reward { filter: none; }
+.bp-tier.is-next .bp-tier__lock { color: var(--blue); font-weight: 700; }
 
 /* multiplayer status chip */
 .net-chip {
@@ -845,9 +898,6 @@ p  { text-wrap: pretty; }
 .gs-perk-blurb { display: block; margin-top: 5px; font-size: 11px; font-style: italic;
   color: var(--muted); line-height: 1.35; }
 .gs-perk.is-on .gs-perk-blurb { color: var(--text); }
-/* not from the design table — kept, but labelled as such */
-.gs-perk-x { margin-left: 6px; font-size: 8px; font-style: normal; letter-spacing: 1px;
-  padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,0.12); color: var(--muted); }
 
 /* ---- keybinds panel ----
    A dense two-column list: the action on the left, its one or two keys on the
@@ -1005,7 +1055,7 @@ p  { text-wrap: pretty; }
 .lb tbody tr.is-you td:first-child { border-left: 2px solid var(--accent); }
 .lb__rank { font-weight: 900; color: var(--muted); width: 42px; }
 .lb__rank--1 { color: var(--gold); }
-.lb__rank--2 { color: #cfd8ee; }
+.lb__rank--2 { color: #e9eefb; }
 .lb__rank--3 { color: #c98b52; }
 .lb__who { display: flex; align-items: center; gap: 9px; }
 .lb__av {

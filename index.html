@@ -443,7 +443,7 @@
       <div class="subpage" data-panelgroup="missions">
         <div class="subpage__head">
           <h1>Daily and weekly missions</h1>
-          <p>Complete missions to earn Credits and Battle Pass XP.</p>
+          <p>Complete missions to earn Credits — matches themselves are what levels up the Battle Pass.</p>
         </div>
         <div class="mission-columns">
           <div>
@@ -455,6 +455,20 @@
             <ul class="mission-list" id="mission-list-weekly"></ul>
           </div>
         </div>
+        <div class="mission-extra">
+          <div class="panel panel--rewards">
+            <h2 class="panel__title">Today's rewards</h2>
+            <div class="stat-row stat-row--rewards" id="mission-rewards"></div>
+          </div>
+          <div class="panel panel--howto">
+            <h2 class="panel__title">How missions work</h2>
+            <ul class="howto-list">
+              <li><span class="howto-list__icon">📅</span><div><b>Three dailies, two weeklies.</b> A fresh set of three dailies every day, and a pair of weeklies that carry over until the week turns.</div></li>
+              <li><span class="howto-list__icon">🏁</span><div><b>Counted at the final whistle.</b> Progress applies at the end of every match, including the ones you lose — you do not have to win to make progress.</div></li>
+              <li><span class="howto-list__icon">🪙</span><div><b>Credits only.</b> Mission rewards pay out in Credits, spendable in the shop. Battle Pass tiers climb from match XP instead, win or lose.</div></li>
+            </ul>
+          </div>
+        </div>
       </div>
 
       <!-- ===== BATTLE PASS FULL PANEL ===== -->
@@ -462,7 +476,7 @@
         <div class="subpage__head bp-head">
           <div>
             <h1>Season 1 battle pass <span class="tag">FREE + PREMIUM</span></h1>
-            <p>Earn XP from matches and missions to unlock rewards.</p>
+            <p>Earn XP from matches to unlock rewards — missions pay in Credits instead, see the Missions tab.</p>
           </div>
           <div class="bp-progress">
             <div class="bp-progress__label">Tier <b id="bp-tier">1</b></div>
@@ -470,6 +484,7 @@
             <div class="bp-progress__xp"><span id="bp-xp">0</span> / <span id="bp-xpmax">1000</span> XP</div>
           </div>
         </div>
+        <div class="stat-row stat-row--bp" id="bp-stats"></div>
         <div class="bp-track" id="bp-track"></div>
       </div>
 

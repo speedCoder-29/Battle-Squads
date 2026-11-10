@@ -614,7 +614,10 @@ const Weapons = (() => {
   function spareRounds(w, bagTier) {
     if (!w) return 0;
     // ...and a ceiling, or a 200-round belt is 1000 spare
-    const base = Math.min(SPARE_CAP, Math.max(w.mag * SPARE_MAGS, SPARE_FLOOR[w.type] || 0));
+    const floor = Math.min(SPARE_CAP, Math.max(w.mag * SPARE_MAGS, SPARE_FLOOR[w.type] || 0));
+    // Bullet Strap / Standard Issue: extra rounds behind the one already
+    // loaded, added on top of the floor-and-ceiling above rather than inside it
+    const base = floor + (w.reserveBonus || 0);
     // each bag tier still adds a third
     return Math.round(base * (3 + (bagTier || 0)) / 3);
   }

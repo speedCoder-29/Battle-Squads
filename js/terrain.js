@@ -440,9 +440,20 @@ const Terrain = (() => {
     t.obstacles.push({ type: 'thicket', x: w * 0.75, y: h * 0.25, r: 300, density: 0.8 });
     // Rocky outcrop (scattered boulders, medium cover)
     t.obstacles.push({ type: 'rocks', x: w * 0.5, y: h * 0.7, r: 320, density: 0.5 });
-    // Perimeter fortifications (sandbags + wire around edges)
-    t.obstacles.push({ type: 'fortified', x: BEACH_INSET + 100, y: BEACH_INSET + 100, r: 150, density: 0.9 });
-    t.obstacles.push({ type: 'fortified', x: w - BEACH_INSET - 100, y: h - BEACH_INSET - 100, r: 150, density: 0.9 });
+    /* Perimeter fortifications (sandbags + wire around edges), searched inland
+       from the literal map corner rather than placed at a fixed inset. The
+       coastline's corner is rounded off (CORNER_R, 1650px regardless of map
+       size) and bitten into further by the same noise that carves every bay,
+       so a flat "BEACH_INSET + 100" offset from the corner landed out at sea
+       on every map size -- harmlessly, while nothing read these zones, but
+       silently once something did. */
+    for (const [cx, cy, tx, ty] of [[0, 0, 1, 1], [w, h, -1, -1]]) {
+      let x = cx + tx * (BEACH_INSET + 100), y = cy + ty * (BEACH_INSET + 100);
+      for (let d = 0; d < 2600 && !isBuildable(t, x, y, 60); d += 60) {
+        x = cx + tx * (BEACH_INSET + 100 + d); y = cy + ty * (BEACH_INSET + 100 + d);
+      }
+      t.obstacles.push({ type: 'fortified', x, y, r: 150, density: 0.9 });
+    }
 
     /* --- bridges ---
        Put a bridge wherever a road crosses the river, which is where you'd

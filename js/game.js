@@ -254,7 +254,10 @@ const Game = (() => {
      both sides would charge the player twice for the same mistake. */
   function stepZone(dt) {
     if (!zone || online) return;
+    const wasHold = zone.state === 'hold';
     RoomSim.Zone.step(zone, dt);
+    // the moment a hold ends and the circle starts moving -- see spawnZoneCrate
+    if (wasHold && zone.state === 'close') spawnZoneCrate();
     /* Riders too: a hull is not a shelter from the weather, and bots ride a
        lot -- skipping them made a jeep a free pass through the endgame. The
        room has always billed riders, so this also brings offline into line. */
@@ -281,6 +284,8 @@ const Game = (() => {
   let zoom = BASE_ZOOM, zoomTarget = BASE_ZOOM;
   let debugZoom = 0;      // non-zero pins the camera scale; see Game.debug.wideView
   let teamScores = [];
+  // -1 when nobody holds every objective at once; see updateObjectives' full-control bonus
+  let domFullControlTeam = -1;
   let player = null;
   let matchStats = { kills: 0, deaths: 0, captures: 0, bestStreak: 0, revives: 0, resupplies: 0, shots: 0, hits: 0, heads: 0, assists: 0 };
   /* ---- what the last death is owed an explanation for ----
@@ -459,7 +464,7 @@ const Game = (() => {
     obstacles.push(...parts);
     invalidateRects();
     const lst = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-    tagWalls(parts, lst.trim);
+    tagWalls(parts, lst);
     /* bb is the bounding box of every part the blueprint returned, basement
        and upper floor included -- those are modelled as separate rects
        offset below the ground floor's own footprint, so a building with
@@ -1158,12 +1163,12 @@ const Game = (() => {
   const padOverlap = (a, b, pad) =>
     a.x - pad < b.x + b.w && a.x + a.w + pad > b.x &&
     a.y - pad < b.y + b.h && a.y + a.h + pad > b.y;
-  /* Every wall a building is made of carries its own trim colour, so the
-     renderer can paint a house, a mansion and a farm differently without a
-     per-frame lookup from wall back to building. Called right after a
+  /* Every wall a building is made of carries its own trim colour and skin, so
+     the renderer can paint a house, a mansion and a farm differently without
+     a per-frame lookup from wall back to building. Called right after a
      building's shaded style is rolled, never before it -- moving it earlier
      would shift every Math.random() draw that follows on a seeded map. */
-  const tagWalls = (parts, trim) => { for (const p of parts) if (!p.isProp) p.wallTint = trim; };
+  const tagWalls = (parts, st) => { for (const p of parts) if (!p.isProp) { p.wallTint = st.trim; p.wallSkin = st.wallSkin; } };
 
   /* ---------------- generation-time overlap index ----------------
      Placing ~1700 walls by testing each candidate against every wall already
@@ -2395,7 +2400,7 @@ const Game = (() => {
     obstacles.push(...parts);
     invalidateRects();
     const st = Structures.shadeStyle(Structures.styleOf('base'), Math.random);
-    tagWalls(parts, st.trim);
+    tagWalls(parts, st);
     const rec = { name: 'base', placement: pid, ...bb, style: st, floor: st.floor, teamBase: t, rooms: parts.rooms, shape: parts.shape };
     buildings.push(rec);
     requiredPlacements.push(bb);
@@ -2630,7 +2635,7 @@ const Game = (() => {
           invalidateRects();
           const conf = FURNISH[name];
           const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-          tagWalls(parts, st.trim);
+          tagWalls(parts, st);
       buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
           furnish(name, bb, parts.rooms);
           placedOne = true;
@@ -2682,7 +2687,7 @@ const Game = (() => {
     obstacles.push(...parts);
     invalidateRects();
     const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-    tagWalls(parts, st.trim);
+    tagWalls(parts, st);
     buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
     furnish(name, bb, parts.rooms);
     return true;
@@ -2886,7 +2891,7 @@ const Game = (() => {
       invalidateRects();
       const conf = FURNISH[name];
       const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-      tagWalls(parts, st.trim);
+      tagWalls(parts, st);
       buildings.push({ name, placement: pid, ...bb, style: st, floor: st.floor, rooms: parts.rooms, shape: parts.shape });
       furnish(name, bb, parts.rooms);
     }
@@ -3158,6 +3163,19 @@ const Game = (() => {
         break;
       }
     }
+
+    /* Terrain's own fortified corners (see terrain.js): a dug-in sandbag
+       cross and a wire apron further out, planted directly rather than left
+       to the lattice's luck -- a zone that says "fortified" and sometimes
+       doesn't get one isn't fortified. */
+    for (const z of (terrain.obstacles || [])) {
+      if (z.type !== 'fortified') continue;
+      const cx = z.x + rand(-40, 40), cy = z.y + rand(-40, 40);
+      commit(coverRun('sandbag', cx, cy, 'h', 3, 3, 0.5));
+      commit(coverRun('sandbag', cx, cy, 'v', 3, 3, 0.5));
+      commit(coverRun('wire', cx - 90, cy - 90, 'h', 5, 4, 0.4));
+      commit(coverRun('wire', cx - 90, cy - 90, 'v', 5, 4, 0.4));
+    }
   }
 
   /* grass the ghillie suit hides in */
@@ -3180,6 +3198,34 @@ const Game = (() => {
      A grove is a loose cluster with a fringe of scrub around it, which is also
      how a real treeline looks from above — dense in the middle, ragged where
      it meets the grass. */
+  /* ---------------- terrain's own named places ----------------
+     Terrain.generate declares a handful of zones on every island — a forest
+     clearing, a dense thicket, a rocky outcrop, two fortified corners (see
+     terrain.js) — so a map has a few places that are deliberately not like
+     their surroundings, the same way a landmark is a building the generator
+     insisted on rather than one that happened to roll there. They used
+     to be pure data: declared, carried on `terrain.obstacles`, and never read
+     by anything that scatters a tree or a rock.
+
+     zoneBias folds a point's distance into every zone it falls inside into
+     one multiplier (and a lean toward rock, inside an outcrop), which the
+     scatter below uses to thin a clearing or pack a thicket without touching
+     how many trees the island gets in total — a zone moves the budget
+     around, it does not spend more of it. */
+  function zoneBias(x, y) {
+    let mult = 1, rock = 0;
+    for (const z of (terrain.obstacles || [])) {
+      if (z.type === 'fortified') continue;           // placeCover plants these directly
+      const d = Math.hypot(x - z.x, y - z.y);
+      if (d >= z.r) continue;
+      const fall = 1 - d / z.r;                        // 1 at the centre, 0 at the rim
+      if (z.type === 'clearing') mult *= 1 - fall * 0.92;
+      else if (z.type === 'thicket') mult *= 1 + fall * 1.4;
+      else if (z.type === 'rocks') { mult *= 1 + fall * 0.7; rock = Math.max(rock, fall); }
+    }
+    return { mult, rock };
+  }
+
   function placeGroves(count) {
     /* Keep trying for a spot. A grove wants clear ground, and asking for a
        point 200px from any building on a map with thirty-odd of them rejects
@@ -3192,6 +3238,8 @@ const Game = (() => {
       const cy = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
       if (!Terrain.isSpawnable(terrain, cx, cy)) continue;
       if (insideAnyBuilding(cx, cy, 90)) continue;    // not in somebody's yard
+      // a clearing keeps its open sightlines; a thicket pulls stands toward it
+      if (Math.random() > zoneBias(cx, cy).mult) continue;
       made++;
       const spread = 190 + Math.random() * 220;
       const trunks = 6 + Math.floor(Math.random() * 7);
@@ -3254,12 +3302,16 @@ const Game = (() => {
 
     const liveCount = Math.round(count * 0.45);
     for (let i = 0; i < liveCount; i++) {
-      const type = live[Math.floor(Math.random() * live.length)];
+      let type = live[Math.floor(Math.random() * live.length)];
       const x = rand(Terrain.BEACH_INSET, MAP_W - Terrain.BEACH_INSET);
       const y = rand(Terrain.BEACH_INSET, MAP_H - Terrain.BEACH_INSET);
       if (!Terrain.isSpawnable(terrain, x, y)) continue;
       if (Terrain.onRoad(terrain, x, y)) continue;
       if (insideAnyBuilding(x, y, 10)) continue;      // not in somebody's hallway
+      // a clearing thins out, a thicket packs in, an outcrop leans the roll toward rock
+      const zb = zoneBias(x, y);
+      if (Math.random() > zb.mult) continue;
+      if (zb.rock > 0.3 && Math.random() < zb.rock) type = 'rock';
       /* Sized from the sprite table, not from four numbers written here. This
          line was quietly overriding it: whatever a tree was declared to be, it
          was built at 64px — 1.6m — so raising the canopy in Sprites.META did
@@ -4664,6 +4716,7 @@ const Game = (() => {
     objTurrets = {};
     deathRecap = null; deployAnchor = null; streakBank = []; streakEarned = 0;
     supplyDrop = null; supplyCount = 0; supplyTimer = SUPPLY_FIRST;
+    domFullControlTeam = -1;
     rideStat = { look: 0, noHull: 0, inCombat: 0, notOnWay: 0, want: 0, walk: 0, noPath: 0, board: 0, dropStuck: 0, dropGone: 0, unreachable: 0, dropForMate: 0 };
     zoom = zoomTarget = baseZoom();
     hudMessage = ''; hudMessageT = 0;
@@ -5228,6 +5281,12 @@ const Game = (() => {
   const KILL_FEED_MAX = 5;          // rows kept on screen
   const KILL_FEED_LIFE = 6;         // seconds before a row fades out
   let killFeed = [];
+  // milestones for the enemy-rampage callout, below — 5 lines up with Resupply,
+  // 10 with the Armor Drop, so the number means the same thing wherever it's read
+  const RAMPAGE_TIERS = [
+    { at: 5, word: 'is on a rampage' },
+    { at: 10, word: 'is unstoppable' },
+  ];
   /* A separate, louder callout for the player's own kills and deaths, centred
      over the action rather than tucked in the corner. */
   let killBanner = null;
@@ -5250,8 +5309,21 @@ const Game = (() => {
     });
     if (killFeed.length > KILL_FEED_MAX) killFeed.length = KILL_FEED_MAX;
 
+    if (killer) killer.streak = (killer.streak || 0) + 1;
+    /* A hot bot used to run up a kill streak as invisibly as a cold one —
+       nothing on screen told you the name climbing the feed is the one
+       actually worth worrying about. Same tiers the player's own scorestreak
+       ladder uses, so "5 in a row" means the same thing on either side of
+       the gun. Range and the tutorial are against dummies, not a fight, so
+       they stay quiet. */
+    if (killer && !killer.isPlayer && mode !== 'range' && mode !== 'tutorial') {
+      const tier = RAMPAGE_TIERS.find(r => r.at === killer.streak);
+      if (tier) {
+        const ally = !!(player && killer.team === player.team);
+        Toast.show(`${nameOf(killer, 'Someone')} ${tier.word} (${killer.streak})`, ally ? 'good' : 'warn');
+      }
+    }
     if (mine) {
-      killer.streak = (killer.streak || 0) + 1;
       noteKill();                    // ...and was that two in four seconds?
       killBanner = {
         text: 'ELIMINATED ' + nameOf(victim, '').toUpperCase(),
@@ -5774,6 +5846,32 @@ const Game = (() => {
     crates.push({ x: d.x, y: d.y, tier: 'airdrop', opened: false, supply: true });
     hudMsg('🪂  Supply drop has landed');
     Toast.show('Supply drop landed');
+  }
+
+  /* A loot nudge timed to the zone itself, called from stepZone the instant
+     a hold ends and a circle starts closing. The crate lands somewhere in
+     the circle this phase is closing *to* -- the one patch of ground
+     guaranteed to still be safe once the shrink finishes -- so pushing in
+     early to grab it is a real reason to leave the current edge rather than
+     camp it until the dps makes the decision for you. That is the thing the
+     zone is for (see ZONE_PHASES in roomsim.js), so it is the thing this
+     rewards.
+
+     Offline only, same reasoning as a supply drop: online the room owns the
+     loot, and a client inventing a crate the host never placed is exactly
+     what that boundary exists to prevent. */
+  function spawnZoneCrate() {
+    if (!zone || online) return;
+    let x = 0, y = 0, found = false;
+    for (let i = 0; i < 40 && !found; i++) {
+      const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * Math.max(0, zone.tr - 80);
+      x = zone.tx + Math.cos(a) * d; y = zone.ty + Math.sin(a) * d;
+      found = Terrain.isBuildable(terrain, x, y, 60) && !pointInObstacle(x, y);
+    }
+    if (!found) return;      // no harm done -- the next phase gets another go
+    crates.push({ x, y, tier: 'gold', opened: false });
+    hudMsg('📦  A crate landed in the ground the zone is closing to');
+    Toast.show('Loot waiting in the next safe ground');
   }
 
   /* Where the crate is, for the compass, the minimap and the edge arrows. A
@@ -9345,7 +9443,7 @@ const Game = (() => {
       obstacles.push(...parts);
       invalidateRects();
       const st = Structures.shadeStyle(Structures.styleOf(name), Math.random);
-      tagWalls(parts, st.trim);
+      tagWalls(parts, st);
       const b = { name, ...bb, style: st, floor: st.floor, rooms: parts.rooms,
         shape: parts.shape };
       if (tag) b[tag] = true;
@@ -10895,6 +10993,12 @@ const Game = (() => {
     { at: 3, id: 'recon', name: 'Recon Sweep', icon: '📡', blurb: 'every enemy near you, marked for the squad' },
     { at: 5, id: 'resupply', name: 'Resupply', icon: '📦', blurb: 'full magazine, grenades and heals' },
     { at: 7, id: 'strike', name: 'Airstrike', icon: '✈️', blurb: 'a bombing run on your cursor' },
+    // The ladder used to top out at 7, so a 15-kill run bought nothing a
+    // 7-kill run hadn't already bought. A tank is the one reward big enough
+    // that banking it instead of the airstrike below it is a real choice —
+    // and it rides in through the same call-in token every crate already
+    // grants, so there is no second system to keep in sync online.
+    { at: 10, id: 'armor', name: 'Armor Drop', icon: '🛡️', blurb: 'a tank token, ready to call in' },
   ];
   const RECON_RANGE = 1900;
 
@@ -10952,6 +11056,10 @@ const Game = (() => {
       airstrikes.push({ x: p.x, y: p.y, team: player.team, owner: player, delay: 3.5, hits: 6 });
       hudMsg('✈️  Strike called — get clear');
       SFX.win();
+    } else if (id === 'armor') {
+      player.inv.tokens.push('tank');
+      hudMsg(`🛡️  Tank token banked — press ${Controls.labelFor('token')} to call it in`);
+      SFX.reward();
     }
     if (def) Toast.show(`${def.icon} ${def.name} used`);
   }
@@ -11023,6 +11131,7 @@ const Game = (() => {
     SFX.click();
   }
 
+  const FULL_CONTROL_MULT = 1.75;      // score rate on every point while one side owns all of them
   function updateObjectives(dt) {
     for (const obj of objectives) {
       // who is contesting?
@@ -11092,8 +11201,28 @@ const Game = (() => {
         obj.progress = Math.max(0, obj.progress - 20 * dt);
         if (obj.progress === 0) obj.capTeam = -1;
       }
-      // owned objectives generate score
-      if (obj.owner >= 0) teamScores[obj.owner] += 4 * dt;
+    }
+    /* Full map control: every point owned by the same side pays faster than
+       the same three points split up would. Holding B alongside your own
+       two home points used to score exactly the same, objective by
+       objective, as holding B alone -- there was no moment where owning
+       the whole board actually felt different from owning two thirds of
+       it, which is a strange thing for a mode about contesting ground to
+       be quiet about. Needs at least two objectives in play, so the
+       tutorial's single-point capture lesson is untouched by it. */
+    const owned = objectives.map(o => o.owner);
+    const sweep = objectives.length > 1 && owned[0] >= 0 && owned.every(o => o === owned[0]) ? owned[0] : -1;
+    if (sweep !== domFullControlTeam) {
+      domFullControlTeam = sweep;
+      if (sweep >= 0) {
+        Toast.show(`${TEAM_NAMES[sweep]} holds every objective — score rate up`, sweep === 0 ? 'good' : 'warn');
+        if (sweep === 0) hudMsg('🚩 Full map control — score rate up');
+        else hudMsg('⚠️  ' + TEAM_NAMES[sweep] + ' holds every objective');
+      }
+    }
+    for (const obj of objectives) {
+      if (obj.owner < 0) continue;
+      teamScores[obj.owner] += (obj.owner === sweep ? FULL_CONTROL_MULT : 1) * 4 * dt;
     }
   }
 
@@ -11312,8 +11441,16 @@ const Game = (() => {
     const score = mode === 'domination' ? Math.round(teamScores[0])
       : mode === 'armsrace' ? ((player && player.rung || 0) + 1) * 25
       : matchStats.kills * 10;
-    const xp = 100 + matchStats.kills * 25 + (won ? 150 : 0);
-    const credits = 50 + matchStats.kills * 10 + (won ? 100 : 0);
+    /* Mission grades the run on how quiet it was (missionGrade, and the
+       debrief above) -- but until now that grade only showed up as a
+       paragraph on the results screen, while the actual payout ignored it
+       completely. A Compromised run with ten kills paid strictly more than
+       a textbook-silent Undetected one with none, which is the opposite of
+       what the mode's own debrief copy claims ("that is the run"). This is
+       what makes the grade worth chasing rather than just describing. */
+    const stealthBonus = inMission() ? STEALTH_BONUS[missionGrade()] : { xp: 0, credits: 0 };
+    const xp = 100 + matchStats.kills * 25 + (won ? 150 : 0) + stealthBonus.xp;
+    const credits = 50 + matchStats.kills * 10 + (won ? 100 : 0) + stealthBonus.credits;
 
     // update lifetime stats
     profile.matches++;
@@ -11370,17 +11507,33 @@ const Game = (() => {
      Written as findings rather than as a stat block. "Peak alert: 2" is a
      number out of the engine; "the compound went to full alert" is what
      happened, and the point of a debrief is to tell you what happened. */
+  /* Undetected / Detected / Compromised, off the alert level the run ever
+     reached. One function rather than one classification written out twice
+     -- the debrief and the reward both grade the run, and the day they
+     grade it differently is the day one of them is lying. */
+  function missionGrade() {
+    const peak = (missionStat && missionStat.peakAlert) || 0;
+    return peak >= Mission.ALERT.HUNTING ? 'Compromised'
+      : peak >= Mission.ALERT.SUSPICIOUS ? 'Detected' : 'Undetected';
+  }
+  /* What the grade above is actually worth. Shared by the debrief, which
+     shows it, and endMatch, which pays it -- the one table both read keeps
+     the number on screen honest about the number in the profile. */
+  const STEALTH_BONUS = {
+    Undetected: { xp: 200, credits: 150 },
+    Detected: { xp: 75, credits: 50 },
+    Compromised: { xp: 0, credits: 0 },
+  };
+
   function renderMissionDebrief(box, won) {
     const m = mission || {};
     const st = missionStat || {};
-    const peak = st.peakAlert || 0;
     const rows = [];
 
     /* Grading on the one axis the mode is actually about. Undetected is the
        thing to chase; it is reachable and it is hard, which is what a top
        grade should be. */
-    const grade = peak >= Mission.ALERT.HUNTING ? 'Compromised'
-      : peak >= Mission.ALERT.SUSPICIOUS ? 'Detected' : 'Undetected';
+    const grade = missionGrade();
     const tone = grade === 'Undetected' ? 'good' : grade === 'Detected' ? 'warn' : 'bad';
     rows.push({ tone, head: grade, body:
       grade === 'Undetected'
@@ -11388,6 +11541,13 @@ const Game = (() => {
         : grade === 'Detected'
           ? 'Somebody got suspicious and went looking, but the compound never confirmed you.'
           : 'The garrison confirmed you and called it in. Everything after that was a fight.' });
+    // the grade above used to be the whole story and nothing else -- it is
+    // worth something now, and the debrief is where that gets said
+    const bonus = STEALTH_BONUS[grade];
+    if (bonus.xp || bonus.credits) {
+      rows.push({ tone: 'good', head: `+${bonus.xp} XP · +${bonus.credits} 🪙`,
+        body: `Paid out for staying ${grade.toLowerCase()}, on top of the usual match reward.` });
+    }
 
     rows.push({ tone: 'info',
       head: m.type === 'retrieve' ? 'Asset' : 'Target',
@@ -12185,6 +12345,21 @@ const Game = (() => {
     poly(T.shallowLine); ctx.fillStyle = hexA(C.riverEdge, 0.34); ctx.fill();
     poly(coast); ctx.fillStyle = hexA(C.beachEdge, 0.92); ctx.fill();   // wet sand
     poly(T.wetLine); ctx.fillStyle = C.beach; ctx.fill();               // dry sand
+    /* Speckle over the dry sand -- grit and the odd shell, the same tiled-
+       pattern trick as the grass and water got. Clipped to T.wetLine, which
+       reaches past where the grass fill below covers it, exactly like the
+       flat colour it sits on already does; the overdraw costs nothing extra
+       since it is the same clip the beach fill just used. */
+    const st = texOff ? null : sandTexture(C);
+    if (st) {
+      ctx.save();
+      poly(T.wetLine); ctx.clip();
+      ctx.globalAlpha = 0.82;
+      ctx.fillStyle = st;
+      ctx.fillRect(vx, vy, vw, vh);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
     poly(shore); ctx.fillStyle = C.grass; ctx.fill();
 
     /* Foam. A thin dashed line is cheap, and it is what stops the water's edge
@@ -12239,6 +12414,16 @@ const Game = (() => {
       ctx.beginPath();
       rd.pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.strokeStyle = C.road; ctx.lineWidth = rd.width; ctx.stroke();
+      // grit, worn patches and hairline cracks over the flat fill -- restroking
+      // the same path the base colour just used, same trick as the dashed
+      // centre line two lines down
+      const rt = texOff ? null : roadTexture(C);
+      if (rt) {
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = rt; ctx.lineWidth = rd.width;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
       // centre line
       ctx.setLineDash([26, 26]);
       ctx.strokeStyle = C.roadLine; ctx.lineWidth = 3; ctx.stroke();
@@ -12276,37 +12461,70 @@ const Game = (() => {
      screen — it is a single fill either way — and the speckle stays put in
      world space as the camera moves, which is what makes it read as ground
      rather than as film grain over the lens. */
+  /* Canvas never mipmaps a pattern tile, so one built from small, hard-edged
+     dots at its native size rasterises a little differently every frame as
+     the camera's sub-pixel position drifts under it -- grain that looks
+     fine standing still visibly crawls and sparkles the moment you move.
+     Every ground tile below is built several times larger than it is
+     actually used at and then downsampled, which bakes proper
+     anti-aliasing into each dot once, at creation time -- each tile is
+     cached per colour (see the `xTile`/`xTileFor` pairs below), so this
+     costs nothing per frame -- instead of leaving the rasterizer to
+     re-decide every dot's edge fresh every frame under motion. `draw`
+     receives the supersampled context, its side in px, and the scale
+     factor, so radii and line widths it draws with scale correctly;
+     position formulas like `rnd() * S` already come out right since S is
+     the supersampled side. */
+  function buildTile(size, factor, draw) {
+    const S = size * factor;
+    const big = document.createElement('canvas');
+    big.width = big.height = S;
+    draw(big.getContext('2d'), S, factor);
+    const out = document.createElement('canvas');
+    out.width = out.height = size;
+    const o = out.getContext('2d');
+    o.imageSmoothingEnabled = true;
+    o.imageSmoothingQuality = 'high';
+    o.drawImage(big, 0, 0, size, size);
+    return out;
+  }
+
+  /* ---- ground texture ----
+     One 128px tile of speckle in the biome's own greens, built once and
+     repeated across the land. Doing it as a pattern rather than as thousands
+     of live paths means the cost does not scale with how much ground is on
+     screen — it is a single fill either way — and the speckle stays put in
+     world space as the camera moves, which is what makes it read as ground
+     rather than as film grain over the lens. */
   let grassTile = null, grassTileFor = null;
   let texOff = false;       // debug toggle, to price the ground texture
   function grassTexture(C) {
     if (grassTile && grassTileFor === C.grass) return grassTile;
-    const S = 128;
-    const off = document.createElement('canvas');
-    off.width = off.height = S;
-    const g = off.getContext('2d');
-    // deterministic, so the tile is the same on every client and every reload
-    let seed = 0x9e3779b9;
-    const rnd = () => {
-      seed ^= seed << 13; seed >>>= 0;
-      seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
-      return seed / 4294967296;
-    };
-    for (let i = 0; i < 430; i++) {
-      const x = rnd() * S, y = rnd() * S, r = 0.7 + rnd() * 2.3;
-      const light = rnd() < 0.45;
-      g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
-      g.fillStyle = light ? hexA(C.grassLight, 0.46) : hexA(C.grassAlt, 0.50);
-      g.fill();
-    }
-    // a few longer strokes, so it reads as blades rather than dots
-    for (let i = 0; i < 70; i++) {
-      const x = rnd() * S, y = rnd() * S, a = rnd() * Math.PI;
-      const len = 3 + rnd() * 7;
-      g.strokeStyle = hexA(C.grassAlt, 0.38); g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
-      g.stroke();
-    }
+    const off = buildTile(128, 4, (g, S, k) => {
+      // deterministic, so the tile is the same on every client and every reload
+      let seed = 0x9e3779b9;
+      const rnd = () => {
+        seed ^= seed << 13; seed >>>= 0;
+        seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
+        return seed / 4294967296;
+      };
+      for (let i = 0; i < 430; i++) {
+        const x = rnd() * S, y = rnd() * S, r = (0.7 + rnd() * 2.3) * k;
+        const light = rnd() < 0.45;
+        g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+        g.fillStyle = light ? hexA(C.grassLight, 0.46) : hexA(C.grassAlt, 0.50);
+        g.fill();
+      }
+      // a few longer strokes, so it reads as blades rather than dots
+      for (let i = 0; i < 70; i++) {
+        const x = rnd() * S, y = rnd() * S, a = rnd() * Math.PI;
+        const len = (3 + rnd() * 7) * k;
+        g.strokeStyle = hexA(C.grassAlt, 0.38); g.lineWidth = k;
+        g.beginPath();
+        g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        g.stroke();
+      }
+    });
     grassTile = ctx.createPattern(off, 'repeat');
     grassTileFor = C.grass;
     return grassTile;
@@ -12325,40 +12543,117 @@ const Game = (() => {
   let waterTile = null, waterTileFor = null;
   function waterTexture(C) {
     if (waterTile && waterTileFor === C.ocean) return waterTile;
-    const S = 160;
-    const off = document.createElement('canvas');
-    off.width = off.height = S;
-    const g = off.getContext('2d');
-    let seed = 0x5bd1e995;
-    const rnd = () => {
-      seed ^= seed << 13; seed >>>= 0;
-      seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
-      return seed / 4294967296;
-    };
-    // short, gently bowed streaks -- a ripple caught from directly above,
-    // not a wave seen from the side
-    for (let i = 0; i < 60; i++) {
-      const x = rnd() * S, y = rnd() * S, len = 10 + rnd() * 20, bow = (rnd() - 0.5) * 8;
-      g.strokeStyle = `rgba(255,255,255,${(0.07 + rnd() * 0.09).toFixed(2)})`;
-      g.lineWidth = 1 + rnd() * 1.1;
-      g.beginPath();
-      g.moveTo(x, y);
-      g.quadraticCurveTo(x + len * 0.5, y + bow, x + len, y);
-      g.stroke();
-    }
-    // a few darker ones too, so it isn't glitter on a flat colour but real
-    // peaks and troughs
-    for (let i = 0; i < 24; i++) {
-      const x = rnd() * S, y = rnd() * S, len = 8 + rnd() * 16;
-      g.strokeStyle = hexA(C.oceanDeep, 0.16 + rnd() * 0.1);
-      g.lineWidth = 1 + rnd();
-      g.beginPath();
-      g.moveTo(x, y); g.lineTo(x + len, y + (rnd() - 0.5) * 4);
-      g.stroke();
-    }
+    const off = buildTile(160, 4, (g, S, k) => {
+      let seed = 0x5bd1e995;
+      const rnd = () => {
+        seed ^= seed << 13; seed >>>= 0;
+        seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
+        return seed / 4294967296;
+      };
+      // short, gently bowed streaks -- a ripple caught from directly above,
+      // not a wave seen from the side
+      for (let i = 0; i < 60; i++) {
+        const x = rnd() * S, y = rnd() * S, len = (10 + rnd() * 20) * k, bow = (rnd() - 0.5) * 8 * k;
+        g.strokeStyle = `rgba(255,255,255,${(0.07 + rnd() * 0.09).toFixed(2)})`;
+        g.lineWidth = (1 + rnd() * 1.1) * k;
+        g.beginPath();
+        g.moveTo(x, y);
+        g.quadraticCurveTo(x + len * 0.5, y + bow, x + len, y);
+        g.stroke();
+      }
+      // a few darker ones too, so it isn't glitter on a flat colour but real
+      // peaks and troughs
+      for (let i = 0; i < 24; i++) {
+        const x = rnd() * S, y = rnd() * S, len = (8 + rnd() * 16) * k;
+        g.strokeStyle = hexA(C.oceanDeep, 0.16 + rnd() * 0.1);
+        g.lineWidth = (1 + rnd()) * k;
+        g.beginPath();
+        g.moveTo(x, y); g.lineTo(x + len, y + (rnd() - 0.5) * 4 * k);
+        g.stroke();
+      }
+    });
     waterTile = ctx.createPattern(off, 'repeat');
     waterTileFor = C.ocean;
     return waterTile;
+  }
+
+  /* The sand got the same flat-colour treatment the water used to: one
+     fillRect from the wet line to the shore, no grain. A beach is the one
+     surface on the island you'd expect to actually look granular standing on
+     it, so this is grit plus the odd shell or pebble, tiled the same way. */
+  let sandTile = null, sandTileFor = null;
+  function sandTexture(C) {
+    if (sandTile && sandTileFor === C.beach) return sandTile;
+    const off = buildTile(120, 4, (g, S, k) => {
+      let seed = 0x7f4a7c15;
+      const rnd = () => {
+        seed ^= seed << 13; seed >>>= 0;
+        seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
+        return seed / 4294967296;
+      };
+      // grit: the sand's own texture, darker and lighter grains both. Beach and
+      // beachEdge sit close together in the palette -- sand is sand -- so this
+      // needs more contrast than the grain alone gives it to read at all,
+      // which is why these run stronger than the grass tile's.
+      for (let i = 0; i < 360; i++) {
+        const x = rnd() * S, y = rnd() * S, r = (0.6 + rnd() * 1.5) * k;
+        g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+        g.fillStyle = rnd() < 0.5 ? hexA(C.beachEdge, 0.55) : 'rgba(255,255,255,0.32)';
+        g.fill();
+      }
+      // the odd shell or flat pebble, bigger and a touch darker
+      for (let i = 0; i < 11; i++) {
+        const x = rnd() * S, y = rnd() * S, r = (1.6 + rnd() * 2.0) * k;
+        g.beginPath(); g.ellipse(x, y, r, r * 0.68, rnd() * Math.PI, 0, Math.PI * 2);
+        g.fillStyle = hexA(C.beachEdge, 0.7); g.fill();
+      }
+    });
+    sandTile = ctx.createPattern(off, 'repeat');
+    sandTileFor = C.beach;
+    return sandTile;
+  }
+
+  /* Roads were a flat fill and a dashed centre line -- tidy, but every road
+     on the island was the same stretch of paint. This is the wear: grit in
+     the asphalt, a few paler patches where traffic has worn it smooth, and
+     hairline cracks, tiled and re-stroked along the same path the flat
+     colour just used. */
+  let roadTile = null, roadTileFor = null;
+  function roadTexture(C) {
+    if (roadTile && roadTileFor === C.road) return roadTile;
+    const off = buildTile(140, 4, (g, S, k) => {
+      let seed = 0xc2b2ae35;
+      const rnd = () => {
+        seed ^= seed << 13; seed >>>= 0;
+        seed ^= seed >> 17; seed ^= seed << 5; seed >>>= 0;
+        return seed / 4294967296;
+      };
+      // the grit in the asphalt itself
+      for (let i = 0; i < 260; i++) {
+        const x = rnd() * S, y = rnd() * S, r = (0.6 + rnd() * 1.6) * k;
+        g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+        g.fillStyle = rnd() < 0.5 ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.08)';
+        g.fill();
+      }
+      // worn patches, broad and faint, where the surface has gone paler with use
+      for (let i = 0; i < 5; i++) {
+        const x = rnd() * S, y = rnd() * S, r = (10 + rnd() * 18) * k;
+        g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+        g.fillStyle = 'rgba(255,255,255,0.05)'; g.fill();
+      }
+      // hairline cracks: short jointed runs, not one clean line
+      for (let i = 0; i < 6; i++) {
+        let x = rnd() * S, y = rnd() * S;
+        g.strokeStyle = 'rgba(0,0,0,0.16)'; g.lineWidth = k;
+        g.beginPath(); g.moveTo(x, y);
+        const n = 2 + Math.floor(rnd() * 3);
+        for (let j = 0; j < n; j++) { x += (rnd() - 0.5) * 14 * k; y += (rnd() - 0.5) * 14 * k; g.lineTo(x, y); }
+        g.stroke();
+      }
+    });
+    roadTile = ctx.createPattern(off, 'repeat');
+    roadTileFor = C.road;
+    return roadTile;
   }
 
   /* ---------------- terrain & structures ---------------- */
@@ -12448,6 +12743,17 @@ const Game = (() => {
     ctx.scale(1, SHADOW_FLATTEN);
     ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+
+  /* The same near/far penumbra drawStructureShadows and drawBuildingShadows
+     use, for the round ground shadow: a wider, fainter sweep underneath a
+     tighter, darker one. Decor and units used to get a single flat ellipse
+     here -- the one shadow on the map that never softened at the edge, and
+     the one cast by far the most things on it, since decor alone outnumbers
+     every wall and building put together. */
+  function groundShadow2(x, y, r, throwPx) {
+    groundShadow(x, y, r * 1.18, throwPx * 1.5, SHADOW_SOFT);
+    groundShadow(x, y, r, throwPx, SHADOW);
   }
 
   /* ---------------- cast shadows ----------------
@@ -12826,7 +13132,7 @@ const Game = (() => {
       const m = Sprites.META[d.kind]; if (!m) continue;
       const r = m.r * d.scale;
       if (!onScreen(d.x, d.y, r + m.shadow)) continue;
-      groundShadow(d.x, d.y, r * 0.85, m.shadow);
+      groundShadow2(d.x, d.y, r * 0.85, m.shadow);
     }
     // the props themselves, drawn as vector sprites
     for (const d of decor) {
@@ -12838,7 +13144,7 @@ const Game = (() => {
 
   /* soft ground shadow under a unit */
   function drawUnitShadow(x, y, r) {
-    groundShadow(x, y, r * 1.02, 7);
+    groundShadow2(x, y, r * 1.02, 7);
   }
 
   /* ---------------- floors & roofs ----------------
@@ -14085,6 +14391,7 @@ const Game = (() => {
       ctx.strokeRect(s.x + 3, s.y + 3, Math.max(0, s.w - 6), Math.max(0, s.h - 6));
     }
     drawWallDetail(s, k, along);
+    drawWallSkin(s, along, s.wallSkin);
     if (dmg > 0.02) {   // damage bleeds along the length of the piece
       ctx.fillStyle = `rgba(255,75,92,${0.12 + dmg * 0.3})`;
       if (along) ctx.fillRect(s.x + 1, s.y + 1, (s.w - 2) * dmg, Math.max(2, s.h - 2));
@@ -14153,6 +14460,164 @@ const Game = (() => {
         const rx = along ? s.x + i : s.x + s.w / 2;
         const ry = along ? s.y + s.h / 2 : s.y + i;
         ctx.beginPath(); ctx.arc(rx, ry, 1.2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  /* ---- what the building is dressed in ----
+     WALL_GRAIN above tells timber from steel from stone — but every wood
+     wall in the game carried the exact same plank spacing, whether it was a
+     garden shed or a mansion. This is the layer on top of the material: the
+     cladding a building was actually finished in, keyed off its own style
+     rather than what the wall underneath happens to be built of, so a house,
+     a bank and a warehouse read as different buildings even on the stretches
+     where they share a material. Drawn after WALL_GRAIN and in the opposite
+     grain where it matters (courses running the wall's length rather than
+     seams across it), so the two layer rather than fight each other. */
+  const WALL_SKIN = {
+    clapboard: true, stucco: true, board: true, brick: true, panel: true, stone: true, block: true,
+  };
+  function drawWallSkin(s, along, skin) {
+    if (!skin || !WALL_SKIN[skin]) return;
+    const len = along ? s.w : s.h, thick = along ? s.h : s.w;
+    if (len < 18 || thick < 4) return;
+    const gh = (i) => grainHash(s.x, s.y, i);
+    ctx.save();
+    roundRect(s.x, s.y, s.w, s.h, 3);
+    ctx.clip();
+    if (skin === 'clapboard') {
+      // lapped siding: a course every few px, each a hair darker than the
+      // last with a bright lip underneath where the next board overlaps it
+      const course = 7;
+      let row = 0;
+      for (let t = course; t < thick; t += course, row++) {
+        const at = along ? s.y + t : s.x + t;
+        ctx.strokeStyle = row % 2 ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.07)';
+        ctx.beginPath();
+        if (along) { ctx.moveTo(s.x + 1, at); ctx.lineTo(s.x + s.w - 1, at); }
+        else { ctx.moveTo(at, s.y + 1); ctx.lineTo(at, s.y + s.h - 1); }
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.beginPath();
+        if (along) { ctx.moveTo(s.x + 1, at + 1); ctx.lineTo(s.x + s.w - 1, at + 1); }
+        else { ctx.moveTo(at + 1, s.y + 1); ctx.lineTo(at + 1, s.y + s.h - 1); }
+        ctx.stroke();
+      }
+    } else if (skin === 'stucco') {
+      // smooth render: a soft mottled wash and the odd hairline settling
+      // crack, the opposite texture from clapboard's ridges
+      for (let i = 0; i < 3; i++) {
+        const u = gh(i * 2), v = gh(i * 2 + 1);
+        const px = along ? s.x + u * s.w : s.x + v * s.w;
+        const py = along ? s.y + v * s.h : s.y + u * s.h;
+        const r = 9 + gh(i + 10) * 12;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, r);
+        g.addColorStop(0, 'rgba(255,255,255,0.05)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = g; ctx.fillRect(px - r, py - r, r * 2, r * 2);
+      }
+      if (len > 50 && gh(99) > 0.4) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.14)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        let cx = s.x + gh(50) * s.w, cy = s.y + gh(51) * s.h;
+        ctx.moveTo(cx, cy);
+        for (let i = 0; i < 3; i++) { cx += (gh(i + 60) - 0.5) * 16; cy += (gh(i + 70) - 0.3) * 10; ctx.lineTo(cx, cy); }
+        ctx.stroke();
+      }
+    } else if (skin === 'board') {
+      // rough-sawn boards: wider, unevenly spaced, a dark gap rather than a
+      // lapped overlap — the patchwork look of a shed, a barn, a stall
+      const course = 11;
+      let row = 0;
+      for (let t = course * 0.5 + gh(row) * 3; t < thick; t += course, row++) {
+        const at = along ? s.y + t : s.x + t;
+        ctx.fillStyle = 'rgba(0,0,0,0.17)';
+        if (along) ctx.fillRect(s.x + 1, at, s.w - 2, 1.4);
+        else ctx.fillRect(at, s.y + 1, 1.4, s.h - 2);
+      }
+    } else if (skin === 'brick') {
+      // running bond: horizontal courses across the thickness, every other
+      // one's headers offset half a brick, the standard masonry stagger
+      const course = 8, brickLen = 18;
+      let row = 0;
+      for (let t = course; t < thick; t += course, row++) {
+        const at = along ? s.y + t : s.x + t;
+        ctx.strokeStyle = 'rgba(0,0,0,0.17)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (along) { ctx.moveTo(s.x + 1, at); ctx.lineTo(s.x + s.w - 1, at); }
+        else { ctx.moveTo(at, s.y + 1); ctx.lineTo(at, s.y + s.h - 1); }
+        ctx.stroke();
+        const off = (row % 2) ? brickLen * 0.5 : 0;
+        ctx.strokeStyle = 'rgba(0,0,0,0.13)';
+        ctx.beginPath();
+        for (let p = off; p < len; p += brickLen) {
+          if (along) { ctx.moveTo(s.x + p, Math.max(s.y, at - course)); ctx.lineTo(s.x + p, at); }
+          else { ctx.moveTo(Math.max(s.x, at - course), s.y + p); ctx.lineTo(at, s.y + p); }
+        }
+        ctx.stroke();
+      }
+    } else if (skin === 'stone') {
+      // quarried stone: coursing like brick's, but irregular — each block a
+      // different length and the joint line itself waved, not ruled straight
+      const course = 10;
+      let row = 0;
+      for (let t = course; t < thick; t += course, row++) {
+        const at = along ? s.y + t : s.x + t;
+        ctx.strokeStyle = 'rgba(0,0,0,0.20)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (along) { ctx.moveTo(s.x + 1, at); ctx.lineTo(s.x + s.w - 1, at); }
+        else { ctx.moveTo(at, s.y + 1); ctx.lineTo(at, s.y + s.h - 1); }
+        ctx.stroke();
+        let p = gh(row) * 14 + 10;
+        while (p < len) {
+          const jog = (gh(row + p) - 0.5) * 3;
+          if (along) { ctx.beginPath(); ctx.moveTo(s.x + p, Math.max(s.y, at - course + jog)); ctx.lineTo(s.x + p, at); ctx.stroke(); }
+          else { ctx.beginPath(); ctx.moveTo(Math.max(s.x, at - course + jog), s.y + p); ctx.lineTo(at, s.y + p); ctx.stroke(); }
+          p += 13 + gh(row + p + 1) * 11;
+        }
+      }
+    } else if (skin === 'panel') {
+      // sheet cladding: fine corrugation ribs the length of the wall, with a
+      // bolt at every other rib — a frame under the steel, not just a tint
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (let p = 6; p < len; p += 9) {
+        if (along) { ctx.moveTo(s.x + p, s.y + 1); ctx.lineTo(s.x + p, s.y + s.h - 1); }
+        else { ctx.moveTo(s.x + 1, s.y + p); ctx.lineTo(s.x + s.w - 1, s.y + p); }
+      }
+      ctx.stroke();
+      if (thick > 9) {
+        ctx.fillStyle = 'rgba(0,0,0,0.26)';
+        for (let p = 9; p < len; p += 18) {
+          const bx = along ? s.x + p : s.x + thick / 2;
+          const by = along ? s.y + thick / 2 : s.y + p;
+          ctx.beginPath(); ctx.arc(bx, by, 1.1, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    } else if (skin === 'block') {
+      // cinderblock: a coarse grid in both directions, closer to poured
+      // concrete than fine masonry, plus the painted waist-height stripe a
+      // motor pool or a guardroom actually gets marked with
+      const bw = 22, bh = 11;
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      let row = 0;
+      for (let t = bh; t < thick; t += bh, row++) {
+        const at = along ? s.y + t : s.x + t;
+        if (along) { ctx.moveTo(s.x + 1, at); ctx.lineTo(s.x + s.w - 1, at); }
+        else { ctx.moveTo(at, s.y + 1); ctx.lineTo(at, s.y + s.h - 1); }
+        const off = (row % 2) ? bw * 0.5 : 0;
+        for (let p = off; p < len; p += bw) {
+          if (along) { ctx.moveTo(s.x + p, Math.max(s.y, at - bh)); ctx.lineTo(s.x + p, at); }
+          else { ctx.moveTo(Math.max(s.x, at - bh), s.y + p); ctx.lineTo(at, s.y + p); }
+        }
+      }
+      ctx.stroke();
+      if (thick > 9 && len > 36) {
+        const stripeAt = thick * 0.42;
+        ctx.fillStyle = 'rgba(255,205,60,0.14)';
+        if (along) ctx.fillRect(s.x + 1, s.y + stripeAt, s.w - 2, 2.5);
+        else ctx.fillRect(s.x + stripeAt, s.y + 1, 2.5, s.h - 2);
       }
     }
     ctx.restore();
@@ -17134,6 +17599,16 @@ const Game = (() => {
           if (o.owner !== s.o && s.o >= 0) Toast.show(`${TEAM_NAMES[s.o]} captured objective ${o.name}`);
           o.owner = s.o; o.progress = s.p; o.capTeam = s.c;
         });
+        /* The full-control moment (see updateObjectives offline) worked out
+           from the owners the host just sent, the same way a capture above
+           is noticed rather than announced separately -- the score itself
+           already carries the bonus, this is only the toast. */
+        const owned = objectives.map(o => o.owner);
+        const sweep = objectives.length > 1 && owned[0] >= 0 && owned.every(o => o === owned[0]) ? owned[0] : -1;
+        if (sweep !== domFullControlTeam) {
+          domFullControlTeam = sweep;
+          if (sweep >= 0) Toast.show(`${TEAM_NAMES[sweep]} holds every objective — score rate up`, sweep === 0 ? 'good' : 'warn');
+        }
       }
       if (msg.scores) for (let t = 0; t < teamScores.length; t++) teamScores[t] = msg.scores[t] || 0;
       for (const e of msg.events || []) {
@@ -18395,6 +18870,18 @@ const Game = (() => {
       mark: supplyMark(),
     }),
     forceSupplyDrop() { supplyTimer = 0; supplyCount = 0; updateSupplyDrop(0.016); return !!supplyDrop; },
+    // set how far the alert ever climbed this run, to probe missionGrade()
+    // and the stealth-reward bonus it drives without actually getting spotted
+    setPeakAlert(level) { if (missionStat) missionStat.peakAlert = level; return missionGrade(); },
+    missionReward: () => STEALTH_BONUS[missionGrade()],
+    // skip straight to the end of the current hold, so a zone-phase transition
+    // (and the crate it spawns, see spawnZoneCrate) can be probed on demand
+    forceZoneClose() {
+      if (!zone) return null;
+      zone.t = 0;
+      stepZone(0.016);
+      return { phase: zone.phase, state: zone.state };
+    },
     // force the clock to zero and run the real win-condition check, so a
     // mode's timeout resolution can be tested without waiting out a match
     forceTimeout() {
@@ -18649,6 +19136,21 @@ const Game = (() => {
       return streakBank.slice();
     },
     fireStreak() { useStreak(); return streakBank.slice(); },
+    tokens: () => player ? player.inv.tokens.slice() : [],
+    /* Run a bot's kill streak up to n against a reusable punching bag, to
+       check the rampage callout fires at the right tiers without needing a
+       whole arena of agents to actually die. */
+    botStreak(n, enemyOnly) {
+      const bot = agents.find(a => a.alive && !a.isPlayer && !a.isVehicle
+        && (!enemyOnly || a.team !== player.team));
+      const victim = agents.find(a => a.alive && !a.isVehicle && a !== bot);
+      if (!bot || !victim) return null;
+      for (let i = 0; i < n; i++) {
+        victim.alive = true; victim.downed = false; victim.hp = victim.maxHp;
+        killAgent(victim, bot, null);
+      }
+      return { streak: bot.streak, team: bot.team, name: bot.name };
+    },
     /* Die to an actual opponent, so the recap has someone to name. */
     dieToEnemy() {
       // on foot: a rider is pinned to its hull every frame and would snap back
@@ -19524,6 +20026,7 @@ const Game = (() => {
     },
     objectives: () => objectives.map(o =>
       ({ name: o.name, owner: o.owner, progress: Math.round(o.progress), capTeam: o.capTeam })),
+    teamScores: () => teamScores.slice(),
     // where the minimap ended up, so a click can be aimed at it
     miniBox: () => miniBox && { ...miniBox },
     // put someone of another team on the first point, and nobody else
@@ -19560,6 +20063,14 @@ const Game = (() => {
       }
       return { name: o.name, owner: o.owner, progress: Math.round(o.progress),
         moved: bots.length, team: use };
+    },
+    // set an objective's owner directly, for probing scoring rules (e.g. the
+    // full-map-control bonus) without waiting out a real capture
+    forceObjectiveOwner(i, team) {
+      const o = objectives[i];
+      if (!o) return null;
+      o.owner = team; o.progress = 0; o.capTeam = -1;
+      return { name: o.name, owner: o.owner };
     },
     // the kill feed, including the weapon each row now carries
     feed: () => killFeed.map(k => ({ killer: k.killer, victim: k.victim, weapon: k.weapon })),
