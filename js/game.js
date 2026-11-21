@@ -283,6 +283,7 @@ const Game = (() => {
   const baseZoom = () => BASE_ZOOM * (100 / clamp(view.fov, 70, 130));
   let zoom = BASE_ZOOM, zoomTarget = BASE_ZOOM;
   let debugZoom = 0;      // non-zero pins the camera scale; see Game.debug.wideView
+  let debugRoofsSolid = false;  // skips the occupied-fade; see Game.debug.forceRoofsSolid
   let teamScores = [];
   // -1 when nobody holds every objective at once; see updateObjectives' full-control bonus
   let domFullControlTeam = -1;
@@ -7572,10 +7573,12 @@ const Game = (() => {
        pays out once and quietly. */
     const pay = Items.payoutFor(c.tier);
     for (let i = 0; i < pay.rolls; i++) grantLoot(Items.rollLoot(c.tier));
-    // a Scavenger finds the thing at the bottom of the box
-    if (Perks.has(player, 'scavenger')) grantLoot(Items.rollLoot(c.tier));
+    // a Scavenger finds the thing at the bottom of the box - grantLoot's own
+    // hudMsg says what it was, but the perk itself was invisible, so it gets
+    // a toast (a separate UI slot from hudMsg, so the two don't clobber)
+    if (Perks.has(player, 'scavenger')) { Toast.show('Scavenger finds something extra', 'good'); grantLoot(Items.rollLoot(c.tier)); }
     // ...and a Lockpick finds the false bottom in the furniture
-    if (c.tier === 'furniture' && Perks.has(player, 'lockpick')) grantLoot(Items.rollLoot(c.tier));
+    if (c.tier === 'furniture' && Perks.has(player, 'lockpick')) { Toast.show('Lockpick finds a false bottom', 'good'); grantLoot(Items.rollLoot(c.tier)); }
     if (c.tier === 'chest') hudMsg('Chest opened');
     SFX.reward();
   }
@@ -8435,7 +8438,18 @@ const Game = (() => {
              point; now that progress means only "a capture is in flight" it
              says what it always meant to.) */
           if (obj.owner === a.team && !(obj.progress > 0 && obj.capTeam >= 0)) continue;
-          const dd = dist2(a.x, a.y, obj.x, obj.y);
+          let dd = dist2(a.x, a.y, obj.x, obj.y);
+          /* Objective Discipline (botai.js): will they push a point together
+             rather than solo it. Computed per difficulty tier since the trait
+             was added, but nothing ever read it, so every bot picked the
+             nearest point regardless of where its own squad was already
+             headed. A teammate already converging on this one makes it read
+             as closer, scaled by how disciplined this bot is. */
+          const disc = a.diff.teamwork.objectiveDiscipline;
+          if (disc > 0 && agents.some(m => m !== a && m.team === a.team && !m.isVehicle
+            && m.aiTargetPt && dist2(m.aiTargetPt.x, m.aiTargetPt.y, obj.x, obj.y) < 120 * 120)) {
+            dd *= (1 - 0.5 * disc);
+          }
           if (dd < bo) { bo = dd; bestObj = obj; }
         }
         a.aiTargetPt = bestObj ? { x: obj_jitter(bestObj), y: obj_jitterY(bestObj) } : null;
@@ -10154,9 +10168,18 @@ const Game = (() => {
           base = RoomSim.moveSpeedFor(player, input.ads) * (player.wireSlow || 1);
         } else {
           const adr = Combat.adrenaline(player.adrenaline);
-          base = player.weapon.moveSpeed * player.cls.speed;   // class base speed
+          /* Weight Lifter and Jogger were computed here and then silently
+             dropped — roomsim.js's moveSpeedFor (the function this whole
+             branch exists to avoid calling, see the comment above) applies
+             both, and online does too, so a perk that sped you up in a
+             hosted match was a placebo offline and against bots. */
+          let wBase = player.weapon.moveSpeed;
+          const relief = Perks.mod(player, 'weightRelief', 0);   // Weight Lifter
+          if (relief > 0) wBase = Math.min(Weapons.WEIGHT_FREE, wBase + (Weapons.WEIGHT_FREE - wBase) * relief);
+          base = wBase * player.cls.speed;   // class base speed
           base *= Combat.armorSpeed(player);           // vest + helmet weigh you down
           base *= adr.speed;                           // Adren%/2 movement speedup
+          base *= Perks.mod(player, 'speedMult', 1);   // Jogger, flat and always on
           if (input.ads) base *= RoomSim.ADS_SLOW;     // aiming slows you
           if (input.ads && player.weapon.scopeMoveMult !== undefined) base *= player.weapon.scopeMoveMult;  // bipod
           if (player.channel) base *= RoomSim.CHANNEL_SLOW;  // channeling a heal
@@ -10212,12 +10235,19 @@ const Game = (() => {
     // things that can hurt you are further away
     const bz = baseZoom();
     // a debug override, for looking at the whole island at once
+    let zoomRate = 9;
     if (debugZoom) { zoomTarget = debugZoom; zoom = debugZoom; }
     else if (player.alive && player.riding) zoomTarget = bz * 0.85;
     else if (player.alive && player.toolActive && player.tool.zoom) zoomTarget = bz / player.tool.zoom;
-    else if (player.alive && input.ads) zoomTarget = bz * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
+    else if (player.alive && input.ads) {
+      zoomTarget = bz * clamp(0.45 + player.weapon.scope * 0.30, 0.45, 1);
+      // handling is the gun's ADS time in seconds, already spent by Quick
+      // Hands/Bipod and shown in the gunsmith - scope in at a rate the stat
+      // actually drives instead of one fixed speed for every weapon.
+      zoomRate = clamp(3 / Math.max(0.05, player.weapon.handling), 2.5, 30);
+    }
     else zoomTarget = bz;
-    zoom += (zoomTarget - zoom) * Math.min(1, 9 * dt);
+    zoom += (zoomTarget - zoom) * Math.min(1, zoomRate * dt);
 
     // agents timers + AI
     for (const a of agents) {
@@ -11319,7 +11349,7 @@ const Game = (() => {
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     box.innerHTML = rows.map((r, i) => {
       const kd = r.deaths ? (r.kills / r.deaths).toFixed(2) : r.kills.toFixed(2);
-      const colour = TEAM_COLORS[r.team] || '#8ea0c9';
+      const colour = TEAM_COLORS[r.team] || NEUTRAL_INK;
       const squad = TEAM_NAMES[r.team] || '—';
       return `<div class="board__row${r.isPlayer ? ' is-you' : ''}">
         <span class="board__rank">${i + 1}</span>
@@ -11948,7 +11978,7 @@ const Game = (() => {
 
     // objectives
     for (const obj of objectives) {
-      const col = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#8ea0c9';
+      const col = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : NEUTRAL_INK;
       ctx.beginPath(); ctx.arc(obj.x, obj.y, obj.r, 0, Math.PI * 2);
       ctx.fillStyle = hexA(col, 0.10); ctx.fill();
       ctx.lineWidth = 3; ctx.strokeStyle = hexA(col, 0.5); ctx.stroke();
@@ -12868,6 +12898,20 @@ const Game = (() => {
     'Metal': 1.06, 'Reinforced Wall': 1.12, 'Rock': 1.08,
     'Container': 1.45, 'Tree': 1.7, 'Palm': 1.8,
     'Support Post': 1.5, 'Timber Pillar': 1.3,
+    /* The original ten covered doors, windows and a handful of props — every
+       other solid thing on the map (which is most of it: Wood alone is the
+       exterior shell of more than half the buildings) fell through to the
+       `|| 1` default below, so a crate, a bench, a pipe stack and a pallet
+       all threw the exact same shadow length as each other and as a wall,
+       because they all share the 'low' height tier and nothing told them
+       apart past that. Filled out the rest of the `height:'low'` roster so
+       a prop's shadow actually tracks what the prop is, the same way the
+       original ten already did for doors and windows. */
+    'Sand Bags': 0.5, 'Barricade': 0.45, 'Crate': 0.55, 'Barrel': 0.65,
+    'Wheelie Bin': 0.5, 'Hay Bale': 0.6, 'Pipe Stack': 0.7, 'Generator': 0.55,
+    'Bench': 0.35, 'Desk': 0.4, 'Locker': 0.75, 'Ammo Box': 0.4,
+    'Pallet': 0.3, 'Tyre': 0.35, 'Rubble': 0.3, 'Tree Stump': 0.4,
+    'Sand Pile': 0.45, 'Antenna Mast': 0.8,
   };
   /* Anything you can walk through has no body to draw — a bush, a tent flap, a
      traffic cone. Extruding those turned them into large solid-looking slabs
@@ -13247,7 +13291,13 @@ const Game = (() => {
     const gh = (i) => grainHash(b.x, b.y, i);
     if (p === 'dirt') {
       ctx.save();
-      for (let i = 0; i < 3; i++) {
+      /* Fixed at 3 patches and 26 flecks whatever the room was -- fine in a
+         tent, empty in a barn. Concrete scales its stain count off the
+         floor's own area; dirt never did, so the one pattern meant to read
+         as bare ground was also the one that went blank the moment a room
+         was bigger than a bedroom. Same scaling concrete uses. */
+      const patches = Math.min(11, Math.max(3, Math.round((b.w * b.h) / 9000)));
+      for (let i = 0; i < patches; i++) {
         const r = 26 + gh(i * 3 + 2) * 38;
         const px = b.x + gh(i * 3) * b.w, py = b.y + gh(i * 3 + 1) * b.h;
         const patch = ctx.createRadialGradient(px, py, 0, px, py, r);
@@ -13258,8 +13308,9 @@ const Game = (() => {
       }
       // scattered stones, seeded off the position so they don't crawl about
       ctx.fillStyle = 'rgba(0,0,0,0.10)';
+      const flecks = Math.min(140, Math.max(26, Math.round((b.w * b.h) / 650)));
       let n = (b.x * 73856093) ^ (b.y * 19349663);
-      for (let i = 0; i < 26; i++) {
+      for (let i = 0; i < flecks; i++) {
         n = (n * 1103515245 + 12345) & 0x7fffffff;
         const px = b.x + (n % b.w), py = b.y + ((n >> 8) % b.h);
         ctx.fillRect(px, py, 3, 2);
@@ -13507,8 +13558,8 @@ const Game = (() => {
     for (const b of buildings) {
       if (!rectOnScreen(b)) continue;
       // lift the roof for whoever is inside — you and anyone on your team
-      const occupied = insideBuilding(b, player) ||
-        agents.some(a => a.team === player.team && !a.isVehicle && insideBuilding(b, a));
+      const occupied = !debugRoofsSolid && (insideBuilding(b, player) ||
+        agents.some(a => a.team === player.team && !a.isVehicle && insideBuilding(b, a)));
       b.roofAlpha = b.roofAlpha === undefined ? 1 : b.roofAlpha;
       const target = occupied ? 0 : 1;
       b.roofAlpha += (target - b.roofAlpha) * 0.18;      // fade rather than snap
@@ -13626,6 +13677,72 @@ const Game = (() => {
       ctx.moveTo(vx - 8, vy + 8); ctx.lineTo(vx + 10, vy + 8);
       ctx.lineTo(vx + 14, vy + 46); ctx.lineTo(vx - 4, vy + 46);
       ctx.closePath(); ctx.fill();
+    }
+    /* A chimney, residential roofs only. Every style already gets the same
+       vent cluster above; nothing about that reads as "someone lives here"
+       the way a capped flue with its own soot streak does, and it's the one
+       piece of silhouette a warehouse or a school has no business owning. */
+    if (st.pattern === 'planks' && b.w > 120 && b.h > 100) {
+      const ct = 0.78 + rr * 0.1;
+      const cx = wide ? b.x + b.w * ct : b.x + b.w / 2 + 26;
+      const cy = wide ? b.y + b.h / 2 - 26 : b.y + b.h * ct;
+      ctx.fillStyle = hexA(st.trim, 0.75);
+      roundRect(cx - 11, cy - 14, 22, 28, 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(18, 15, 22, 0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+      // the cap, wider than the stack, and the shadow it drops onto the roof
+      ctx.fillStyle = 'rgba(18, 15, 22, 0.45)';
+      roundRect(cx - 14, cy - 17, 28, 7, 2); ctx.fill();
+      ctx.fillStyle = 'rgba(18, 15, 22, 0.22)';
+      roundRect(cx - 9, cy + 12, 20, 5, 2); ctx.fill();
+      // soot, the same downwind-streak trick the vents use above
+      const soot = ctx.createLinearGradient(cx, cy + 14, cx + 7, cy + 50);
+      soot.addColorStop(0, 'rgba(24, 20, 18, 0.26)');
+      soot.addColorStop(1, 'rgba(24, 20, 18, 0)');
+      ctx.fillStyle = soot;
+      ctx.beginPath();
+      ctx.moveTo(cx - 10, cy + 15); ctx.lineTo(cx + 12, cy + 15);
+      ctx.lineTo(cx + 16, cy + 50); ctx.lineTo(cx - 6, cy + 50);
+      ctx.closePath(); ctx.fill();
+    }
+    /* A rooftop water tank, industrial roofs only -- a warehouse or a depot
+       reads as industrial by colour already, but nothing on the roof itself
+       said so the way a tank standing on its own cross-braced cap does. */
+    if (st.pattern === 'metal' && b.w > 150 && b.h > 130) {
+      const tt = 0.24 + rr * 0.12;
+      const tx = wide ? b.x + b.w * tt : b.x + b.w / 2 - 28;
+      const ty = wide ? b.y + b.h / 2 + 28 : b.y + b.h * tt;
+      const rad = 15;
+      ctx.fillStyle = 'rgba(18, 15, 22, 0.18)';
+      ctx.beginPath(); ctx.arc(tx + 4, ty + 4, rad, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = hexA(st.trim, 0.7);
+      ctx.beginPath(); ctx.arc(tx, ty, rad, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(18, 15, 22, 0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+      // the cross-brace that tells you it's a tank and not another vent
+      ctx.strokeStyle = 'rgba(255, 246, 228, 0.22)'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(tx - rad * 0.6, ty - rad * 0.6); ctx.lineTo(tx + rad * 0.6, ty + rad * 0.6);
+      ctx.moveTo(tx + rad * 0.6, ty - rad * 0.6); ctx.lineTo(tx - rad * 0.6, ty + rad * 0.6);
+      ctx.stroke();
+    }
+    /* A paired rooftop AC unit, institutional roofs only -- a hospital or a
+       school runs enough climate control that the units themselves belong
+       on the roof, distinct from the generic vent cluster by their grille. */
+    if (st.pattern === 'tile' && b.w > 150 && b.h > 130) {
+      const at = 0.25 + rr * 0.1;
+      const ax = wide ? b.x + b.w * at : b.x + b.w / 2 - 30;
+      const ay = wide ? b.y + b.h / 2 + 24 : b.y + b.h * at;
+      for (let i = 0; i < 2; i++) {
+        const ux = ax + i * 20, uy = ay;
+        ctx.fillStyle = 'rgba(18, 15, 22, 0.16)';
+        roundRect(ux - 7, uy + 7, 16, 5, 2); ctx.fill();
+        ctx.fillStyle = hexA(st.trim, 0.6);
+        roundRect(ux - 8, uy - 7, 16, 14, 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(18, 15, 22, 0.35)'; ctx.lineWidth = 1.2; ctx.stroke();
+        ctx.strokeStyle = 'rgba(255, 246, 228, 0.18)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let g = -4; g <= 4; g += 4) { ctx.moveTo(ux - 6, uy + g); ctx.lineTo(ux + 6, uy + g); }
+        ctx.stroke();
+      }
     }
     if (b.w > 340 && b.h > 260) {
       const sw = Math.min(120, b.w * 0.22), sh = Math.min(90, b.h * 0.2);
@@ -14381,7 +14498,28 @@ const Game = (() => {
       const grew = 1 + hgt / 400;
       ctx.translate(s.x, s.y); ctx.scale(grew, grew); ctx.translate(-s.x, -s.y);
     }
-    roundRect(s.x, s.y, s.w, s.h, k.height === 'low' ? 3 : 5);
+    /* A wall end flush against a neighbour (a true building corner, or a
+       partition meeting the wall it runs between) draws square there —
+       rounding it independently of the wall it's flush with pulled the
+       rendered edge away from the actual corner point and left a visible
+       notch even though the underlying rects already meet exactly.
+       structures.js's seg() marks which ends those are; a free end (next
+       to a door/window gap, or a fixture never meant to join anything)
+       keeps the ordinary soft radius. */
+    const baseR = k.height === 'low' ? 3 : 5;
+    let wallR = baseR;
+    if (s.capStart === 'square' || s.capEnd === 'square') {
+      let tl = baseR, tr = baseR, br = baseR, bl = baseR;
+      if (s.axis === 'h') {
+        if (s.capStart === 'square') { tl = 0; bl = 0; }
+        if (s.capEnd === 'square') { tr = 0; br = 0; }
+      } else {
+        if (s.capStart === 'square') { tl = 0; tr = 0; }
+        if (s.capEnd === 'square') { bl = 0; br = 0; }
+      }
+      wallR = [tl, tr, br, bl];
+    }
+    roundRect(s.x, s.y, s.w, s.h, wallR);
     if (!hgt) { ctx.fillStyle = k.fill; ctx.fill(); }
     ctx.lineWidth = k.height === 'low' ? 1.5 : 2;
     ctx.strokeStyle = k.stroke; ctx.stroke();
@@ -14719,6 +14857,17 @@ const Game = (() => {
       const dd = dist2(player.x, player.y, c.x, c.y);
       if (dd < pd) { pd = dd; promptFor = c; }
     }
+    /* A crate never cast a shadow — every other thing standing on the
+       ground (a tree, a rock, a dropped pouch, a player) does, so a box
+       sitting in open sun read as pasted onto the field rather than resting
+       on it. Same sprite, same radius, same groundShadow2 the decor props
+       use, drawn first so the crate itself goes down on top of its shadow. */
+    for (const c of crates) {
+      if (!onScreen(c.x, c.y, 40)) continue;
+      const spriteKind = c.look || CRATE_SPRITE[c.tier] || 'crate';
+      const m = Sprites.META[spriteKind] || { r: 20, shadow: 6 };
+      groundShadow2(c.x, c.y, m.r * 0.85, m.shadow || 6);
+    }
     // crates
     for (const c of crates) {
       if (!onScreen(c.x, c.y, 40)) continue;
@@ -14772,9 +14921,19 @@ const Game = (() => {
         // at anything to be warned about
         const manned = dp.team >= 0;
         const col = manned ? TEAM_COLORS[dp.team] : '#5a6272';
+        groundShadow2(dp.x, dp.y, 15, 6);
+        // a tripod: three short legs splayed under the body, so it reads as
+        // mounted on something rather than resting flat on the ground
+        ctx.strokeStyle = 'rgba(20,24,32,0.55)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (const la of [Math.PI * 0.2, Math.PI * 0.75, -Math.PI * 0.6]) {
+          ctx.moveTo(dp.x, dp.y); ctx.lineTo(dp.x + Math.cos(la) * 15, dp.y + Math.sin(la) * 15 * 0.6);
+        }
+        ctx.stroke();
         ctx.save();
         ctx.translate(dp.x, dp.y); ctx.rotate(dp.angle);
         ctx.fillStyle = manned ? '#e9f0ff' : '#8e97a8'; ctx.fillRect(0, -3, 26, 6);          // barrel
+        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(26, 0, 2.6, 0, Math.PI * 2); ctx.fill();  // muzzle tip, team-lit
         ctx.restore();
         ctx.beginPath(); ctx.arc(dp.x, dp.y, 13, 0, Math.PI * 2);
         ctx.fillStyle = '#243044'; ctx.fill();
@@ -14787,17 +14946,64 @@ const Game = (() => {
         ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw, 4);
         ctx.fillStyle = manned ? '#35e0ff' : '#5a6272'; ctx.fillRect(dp.x - hw / 2, dp.y - 24, hw * clamp(dp.hp / dp.maxHp, 0, 1), 4);
       } else if (dp.type === 'mine') {
-        ctx.beginPath(); ctx.arc(dp.x, dp.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = dp.arm > 0 ? '#7a8699' : '#ff4b5c'; ctx.fill();
-        if (dp.arm <= 0) { ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.trigger, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,75,92,0.15)'; ctx.lineWidth = 1; ctx.stroke(); }
+        /* A pressure plate, not a dot: a hex rim catches the light the way
+           every other prop on the map does, hazard chevrons read as "device"
+           rather than "pebble", and the centre light tells armed (red) from
+           still-settling (amber) at a glance rather than by the ring alone. */
+        groundShadow2(dp.x, dp.y, 9, 3);
+        const armed = dp.arm <= 0;
+        ctx.save(); ctx.translate(dp.x, dp.y);
+        const hex = (rad) => {
+          ctx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const a2 = i / 6 * Math.PI * 2, px = Math.cos(a2) * rad, py = Math.sin(a2) * rad;
+            if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+          }
+          ctx.closePath();
+        };
+        hex(9);
+        ctx.fillStyle = '#3a3f49'; ctx.fill();
+        ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+        ctx.save(); hex(6.4); ctx.clip();
+        ctx.strokeStyle = armed ? 'rgba(255,75,92,0.75)' : 'rgba(122,134,153,0.65)'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = -8; i <= 8; i += 4) { ctx.moveTo(i - 6, -6); ctx.lineTo(i + 6, 6); }
+        ctx.stroke();
+        ctx.restore();
+        ctx.beginPath(); ctx.arc(0, 0, 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = armed ? '#ff4b5c' : '#e0a93b'; ctx.fill();
+        ctx.restore();
+        if (armed) { ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.trigger, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,75,92,0.15)'; ctx.lineWidth = 1; ctx.stroke(); }
       } else if (dp.type === 'ammo') {
-        ctx.font = '22px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('📦', dp.x, dp.y);
-        if (near2(player, dp, 95)) { ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif'; ctx.fillText('[E] Ammo', dp.x, dp.y - 22); }
+        // the same ammo box the sprite system already draws for furniture,
+        // instead of an emoji floating over nothing
+        groundShadow2(dp.x, dp.y, 18.7, 4);
+        Sprites.draw(ctx, 'ammoBox', dp.x, dp.y, 1, 0);
+        if (near2(player, dp, 95)) {
+          ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Outfit, Segoe UI, sans-serif';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('[E] Ammo', dp.x, dp.y - 26);
+        }
       } else if (dp.type === 'flag') {
+        const col = TEAM_COLORS[dp.team];
         ctx.beginPath(); ctx.arc(dp.x, dp.y, dp.item.radius, 0, Math.PI * 2);
-        ctx.fillStyle = hexA(TEAM_COLORS[dp.team], 0.06); ctx.fill();
-        ctx.strokeStyle = hexA(TEAM_COLORS[dp.team], 0.4); ctx.lineWidth = 2; ctx.stroke();
-        ctx.font = '26px Outfit, Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🚩', dp.x, dp.y);
+        ctx.fillStyle = hexA(col, 0.06); ctx.fill();
+        ctx.strokeStyle = hexA(col, 0.4); ctx.lineWidth = 2; ctx.stroke();
+        /* A planted mast and a rippling banner — the same cloth a captured
+           objective flies — instead of a glyph standing in for a flag. */
+        groundShadow2(dp.x, dp.y, 5, 10);
+        const fy = dp.y - 30;
+        ctx.strokeStyle = '#6d6a63'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(dp.x, dp.y + 4); ctx.lineTo(dp.x, fy - 22); ctx.stroke();
+        const wave = Math.sin(performance.now() / 300 + dp.x) * 3.5;
+        ctx.beginPath();
+        ctx.moveTo(dp.x + 2, fy - 22);
+        ctx.quadraticCurveTo(dp.x + 22, fy - 19 + wave, dp.x + 38, fy - 14);
+        ctx.lineTo(dp.x + 38, fy - 2);
+        ctx.quadraticCurveTo(dp.x + 22, fy - 7 + wave, dp.x + 2, fy - 4);
+        ctx.closePath();
+        ctx.fillStyle = hexA(col, 0.95); ctx.fill();
+        ctx.lineWidth = 1.3; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.stroke();
       }
     }
   }
@@ -15503,6 +15709,7 @@ const Game = (() => {
   let streakBanner = null;
 
   let heartbeatCd = 0;
+  let musicCd = 0;
   function updateFeel(dt) {
     for (let i = hitMarkers.length - 1; i >= 0; i--) {
       hitMarkers[i].t += dt;
@@ -15533,6 +15740,30 @@ const Game = (() => {
       }
     } else {
       heartbeatCd = 0;
+    }
+
+    /* 6. MUSIC TENSION — the ambient pulse (audio.js's Music.setIntensity)
+       reacts to the same two things the heartbeat above does, so the
+       music and the vignette agree: how close the nearest living enemy
+       is, and how hurt you are. Recomputed a few times a second rather
+       than every frame — a pulse rate doesn't need frame-perfect input. */
+    musicCd -= dt;
+    if (musicCd <= 0) {
+      musicCd = 0.2;
+      if (player && player.alive) {
+        let nearest = Infinity;
+        for (const a of agents) {
+          if (a.team === player.team || !a.alive || a.isVehicle) continue;
+          const dd = dist2(player.x, player.y, a.x, a.y);
+          if (dd < nearest) nearest = dd;
+        }
+        const nearTension = nearest === Infinity ? 0 : clamp(1 - Math.sqrt(nearest) / 1300, 0, 1);
+        const hpFrac = player.hp / player.maxHp;
+        const hpTension = hpFrac < 0.45 ? 1 - hpFrac / 0.45 : 0;
+        SFX.music.setIntensity(Math.max(nearTension, hpTension));
+      } else {
+        SFX.music.setIntensity(0);
+      }
     }
   }
 
@@ -15847,7 +16078,9 @@ const Game = (() => {
 
       // your own name goes white: a team colour on the tinted row it sits in
       // is the one thing in the feed that has to stay readable
-      const teamInk = (t) => (t >= 0 ? TEAM_COLORS[t] : '#8ea0c9');
+      // (teamInk is the outer, friend/foe-aware one - a local redefinition
+      // here used to always show the raw team palette, breaking colorblind
+      // friend/foe mode in the one place "friend or foe" matters most)
       let x = x0 + 10;
       ctx.textAlign = 'left';
       ctx.fillStyle = k.mine ? '#fff' : teamInk(k.killerTeam);
@@ -15957,7 +16190,7 @@ const Game = (() => {
     for (const o of objectives) {
       const px = at(Math.atan2(o.y - sub.y, o.x - sub.x));
       if (px === null) continue;
-      ctx.fillStyle = o.owner >= 0 ? teamInk(o.owner) : '#8ea0c9';
+      ctx.fillStyle = o.owner >= 0 ? teamInk(o.owner) : NEUTRAL_INK;
       ctx.beginPath();
       ctx.moveTo(px, y + h - 2); ctx.lineTo(px - 5, y + h - 9); ctx.lineTo(px + 5, y + h - 9);
       ctx.closePath(); ctx.fill();
@@ -16032,7 +16265,7 @@ const Game = (() => {
     }
     for (const o of objectives) {
       items.push({
-        x: o.x, y: o.y, color: o.owner >= 0 ? teamInk(o.owner) : '#8ea0c9',
+        x: o.x, y: o.y, color: o.owner >= 0 ? teamInk(o.owner) : NEUTRAL_INK,
         label: o.name, urgent: false, ring: true,
       });
     }
@@ -16350,7 +16583,7 @@ const Game = (() => {
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(x, y, w, h, 4); ctx.fill();
       const frac = clamp(here.progress / 100, 0, 1);
       ctx.fillStyle = contested ? '#ff9f43'
-        : here.capTeam >= 0 ? TEAM_COLORS[here.capTeam] : '#8ea0c9';
+        : here.capTeam >= 0 ? TEAM_COLORS[here.capTeam] : NEUTRAL_INK;
       roundRect(x, y, Math.max(2, w * frac), h, 4); ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
       roundRect(x, y, w, h, 4); ctx.stroke();
@@ -16490,7 +16723,7 @@ const Game = (() => {
     // objectives, in the modes that have them
     for (const o of objectives) {
       ctx.beginPath(); ctx.arc(ox + o.x * sx, oy + o.y * sy, 7, 0, Math.PI * 2);
-      ctx.fillStyle = o.owner >= 0 ? TEAM_COLORS[o.owner] : '#8ea0c9'; ctx.fill();
+      ctx.fillStyle = o.owner >= 0 ? TEAM_COLORS[o.owner] : NEUTRAL_INK; ctx.fill();
       ctx.fillStyle = '#08101f';
       ctx.font = 'bold 10px Azeret Mono, ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -16851,7 +17084,7 @@ const Game = (() => {
     const NEUTRAL = big ? 'rgba(226,236,250,0.88)' : 'rgba(218,230,250,0.72)';
     const LANDMARK_TINT = big ? 'rgba(255,207,74,0.55)' : 'rgba(255,207,74,0.46)';
     for (const b of buildings) {
-      ctx.fillStyle = b.teamBase !== undefined ? hexA(TEAM_COLORS[b.teamBase] || '#8ea0c9', big ? 0.6 : 0.52)
+      ctx.fillStyle = b.teamBase !== undefined ? hexA(TEAM_COLORS[b.teamBase] || NEUTRAL_INK, big ? 0.6 : 0.52)
         : b.landmark ? LANDMARK_TINT
         : NEUTRAL;
       ctx.fillRect(ox + b.x * sx, oy + b.y * sy,
@@ -17059,7 +17292,7 @@ const Game = (() => {
     ctx.font = 'bold 9px Azeret Mono, ui-monospace, monospace';
     for (const obj of objectives) {
       const px = ox + obj.x * sx, py = oy + obj.y * sy;
-      const ink = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : '#8ea0c9';
+      const ink = obj.owner >= 0 ? TEAM_COLORS[obj.owner] : NEUTRAL_INK;
       // being taken right now: a ring that fills as the bar does
       if (obj.progress > 0 && obj.capTeam >= 0) {
         ctx.beginPath();
@@ -17262,13 +17495,18 @@ const Game = (() => {
   }
 
   /* ---------------- canvas helpers ---------------- */
+  // `r` is a single radius (every call site but the one below) or
+  // [topLeft, topRight, bottomRight, bottomLeft] for independent corners —
+  // same order the native roundRect() spec uses, so it reads the same way.
   function roundRect(x, y, w, h, r) {
+    let tl, tr, br, bl;
+    if (Array.isArray(r)) { [tl, tr, br, bl] = r; } else { tl = tr = br = bl = r; }
     ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
+    ctx.moveTo(x + tl, y);
+    ctx.arcTo(x + w, y, x + w, y + h, tr);
+    ctx.arcTo(x + w, y + h, x, y + h, br);
+    ctx.arcTo(x, y + h, x, y, bl);
+    ctx.arcTo(x, y, x + w, y, tl);
     ctx.closePath();
   }
   function hexA(hex, a) {
@@ -18399,7 +18637,10 @@ const Game = (() => {
     },
     set(patch) {
       if (!player) return;
-      for (const k of ['hp', 'adrenaline', 'vest', 'helmet', 'bag', 'perk', 'x', 'y', 'angle']) {
+      // 'perk' (singular) predates the move to three loadout slots; Perks.has
+      // reads the 'perks' array first when it's present, so a test that wants
+      // a specific perk live now has to set that instead.
+      for (const k of ['hp', 'adrenaline', 'vest', 'helmet', 'bag', 'perk', 'perks', 'x', 'y', 'angle']) {
         if (patch[k] !== undefined) player[k] = patch[k];
       }
       if (patch.bag !== undefined) refillFromBag();
@@ -18425,6 +18666,8 @@ const Game = (() => {
       const base = Weapons.byId[player.baseWeapon.id] || player.baseWeapon;
       equipWeapon(player, Weapons.configure(base, { ammo: name || null }));
     },
+    // override the equipped weapon's handling in place, for timing the ADS ease rate
+    setHandling(v) { if (player) player.weapon.handling = v; },
     respawn() { if (player) { player.alive = true; respawnAgent(player); } },
     fire(n) {
       let fired = 0;
@@ -18453,7 +18696,7 @@ const Game = (() => {
       player.ammo = player.weapon.mag;
     },
     buildings: () => buildings.map(b => ({ name: b.name, x: b.x, y: b.y, w: b.w, h: b.h,
-      teamBase: b.teamBase, landmark: !!b.landmark })),
+      teamBase: b.teamBase, landmark: !!b.landmark, shape: b.shape || null })),
     // every agent's actual position and side, for anything measuring spawn
     // fairness or spacing that the curated per-mode summaries don't cover
     agentsList: () => agents.map(a => ({ team: a.team, x: a.x, y: a.y, alive: a.alive, isPlayer: !!a.isPlayer, isVehicle: !!a.isVehicle })),
@@ -18693,6 +18936,10 @@ const Game = (() => {
       debugZoom = on ? Math.min(W / MAP_W, H / MAP_H) * 0.96 : 0;
       return debugZoom;
     },
+    // pin every roof fully visible, bypassing the occupied-fade -- for
+    // screenshotting roof furniture (vents, chimneys, skylights) without
+    // having to first clear every agent out of the building
+    forceRoofsSolid(on) { debugRoofsSolid = !!on; return debugRoofsSolid; },
     /* Stand the player outside a named building, to look at its shape. */
     gotoBuilding(name, zoomOut) {
       const b = buildings.find(q => q.name === name);
@@ -19493,6 +19740,8 @@ const Game = (() => {
         return { crate, chest };
       } finally { grantLoot = real; }
     },
+    // open a synthetic crate of the given tier at the player's own perk/loadout
+    openTestCrate(tier) { openCrate({ tier: tier || 'regular', opened: false, x: player.x, y: player.y }); },
     /* Walk to the nearest searchable piece of furniture and search it. */
     searchNearestFurniture() {
       let best = null, bd = Infinity;
@@ -20157,7 +20406,48 @@ const Game = (() => {
       camX = player.x - (W / z) / 2; camY = player.y - (H / z) / 2;
       return { name: b.name, w: Math.round(b.w), h: Math.round(b.h), rooms: (b.rooms || []).length };
     },
+    // same camera plant as poseAtBuilding, but at an arbitrary point -- for
+    // lining a specific room up in frame rather than whatever a building's
+    // centre happens to land on
+    lookAt(x, y, z = 1) {
+      player.x = x; player.y = y; player.angle = -Math.PI / 4;
+      debugZoom = z; zoom = z; zoomTarget = z;
+      camX = x - (W / z) / 2; camY = y - (H / z) / 2;
+      return { x, y, z };
+    },
+    // every room in a building with its centre point, for picking one out by
+    // kind and looking straight at it instead of guessing where a building's
+    // centre happens to land (roomsOf() above answers a different question --
+    // kind and size by building name, with no position)
+    roomCentres(i = 0) {
+      const b = buildings.slice().sort((p, q) => (q.w * q.h) - (p.w * p.h))[i];
+      if (!b) return null;
+      return (b.rooms || []).filter(r => !r.basement).map(r => ({
+        kind: r.kind, x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2),
+        w: Math.round(r.w), h: Math.round(r.h),
+      }));
+    },
     weather: () => { const w = weatherNow(); return w ? w.id : 'clear'; },
+    // which room the player is standing in right now, and what it's
+    // actually floored in -- for checking a texture against its real style
+    // rather than guessing from a screenshot's colour
+    roomHere() {
+      if (!player) return null;
+      for (const b of buildings) {
+        if (!inRect(player.x, player.y, b)) continue;
+        for (const r of (b.rooms || [])) {
+          if (r.basement || !inRect(player.x, player.y, r)) continue;
+          const rs = Structures.roomStyleOf(r.kind);
+          return { building: b.name, room: r.kind, pattern: rs && rs.pattern,
+            floor: rs && rs.floor, w: Math.round(r.w), h: Math.round(r.h) };
+        }
+        // not inside a specific room -- the building's own base slab
+        const st = b.style || Structures.styleOf(b.name);
+        return { building: b.name, room: '(corridor/base slab)', pattern: st.pattern,
+          floor: st.floor, wallSkin: st.wallSkin, w: Math.round(b.w), h: Math.round(b.h) };
+      }
+      return null;
+    },
     shadowMask(m) { dbgShadows = m; return dbgShadows; },
     /* What the interiors actually contain, per room: whether the room kind has
        a furniture table at all, how much it got, and how much of the floor it

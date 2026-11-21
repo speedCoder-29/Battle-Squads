@@ -208,7 +208,12 @@ const Terrain = (() => {
     arid: {
       name: 'Arid Basin', tree: 'palm', scatter: ['rubble', 'sandpile', 'stump'],
       colors: {
-        grass: '#b9a05e', grassAlt: '#a8904f', grassLight: '#cbb573',
+        /* grassAlt/grassLight widened well past what temperate needs -- the
+           grass speckle's contrast comes off these two against grass itself,
+           and the same absolute gap that reads as clear mottling on a
+           saturated green reads as almost nothing on a pale, desaturated
+           tan. Checked against a screenshot, not just the numbers. */
+        grass: '#b9a05e', grassAlt: '#968046', grassLight: '#dcc37c',
         beach: '#e8d3a0', beachEdge: '#d8c08a',
         /* This read `'#b0a храм'.replace(' храм', '18c')` — a hex colour with a
            Cyrillic word spliced into it and patched back out at runtime. It
@@ -220,7 +225,9 @@ const Terrain = (() => {
     tundra: {
       name: 'Frozen Flats', tree: 'tree', scatter: ['rock', 'stump', 'rubble'],
       colors: {
-        grass: '#cdd8dc', grassAlt: '#bcc9ce', grassLight: '#e2ebee',
+        // same widened gap as arid, for the same reason -- a near-white
+        // palette has even less room for a subtle shift to read at all
+        grass: '#cdd8dc', grassAlt: '#96a6af', grassLight: '#e6eceb',
         beach: '#dfe6ea', beachEdge: '#c8d2d8',
         ocean: '#2a5f80', oceanDeep: '#17415c',
         river: '#6fb6d8', riverEdge: '#9ed6ee', road: '#98a4ab',
@@ -238,7 +245,9 @@ const Terrain = (() => {
     volcanic: {
       name: 'Ashfields', tree: 'stump', scatter: ['rock', 'rubble', 'sandpile'],
       colors: {
-        grass: '#5c5750', grassAlt: '#4c483f', grassLight: '#6e6860',
+        // same widened gap as arid/tundra -- a muted grey-brown needs a
+        // bigger push than a saturated green for the speckle to read at all
+        grass: '#5c5750', grassAlt: '#3e3b37', grassLight: '#7c756c',
         beach: '#7a7068', beachEdge: '#655d55',
         ocean: '#1b4358', oceanDeep: '#102c3c',
         river: '#8a5a3a', riverEdge: '#b07a4a', road: '#3f3a35',

@@ -139,7 +139,7 @@ const DB = (() => {
        device that has ever saved settings would otherwise read `undefined` for
        every option added afterwards. */
     getSettings: () => Object.assign({
-      volume: 70, sfx: true, sensitivity: 100, quality: 'medium', dmgNumbers: true,
+      volume: 70, sfx: true, music: true, sensitivity: 100, quality: 'medium', dmgNumbers: true,
       /* Deliberately absent: `botLevel`.
 
          It used to be listed here as 5, which was harmless while these were a

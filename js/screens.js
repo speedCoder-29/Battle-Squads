@@ -40,6 +40,14 @@ const Screens = (() => {
         home.classList.remove('is-live');
       }
     }
+    // the menu pad plays on 'home', the match mood on 'game', and nothing
+    // plays on 'auth' — centralised here rather than at every call site
+    // that might show one of these screens
+    if (typeof SFX !== 'undefined' && SFX.music) {
+      if (name === 'home') SFX.music.start('menu');
+      else if (name === 'game') SFX.music.start('match');
+      else SFX.music.stop();
+    }
   }
 
   function enterHome() {
@@ -1145,6 +1153,7 @@ const Screens = (() => {
     document.getElementById('set-volume').value = s.volume;
     document.getElementById('val-volume').textContent = s.volume + '%';
     document.getElementById('set-sfx').checked = s.sfx;
+    document.getElementById('set-music').checked = s.music;
     document.getElementById('set-sens').value = s.sensitivity;
     document.getElementById('val-sens').textContent = (s.sensitivity / 100).toFixed(1) + '×';
     document.getElementById('set-quality').value = s.quality;
@@ -1332,6 +1341,7 @@ const Screens = (() => {
     s.botLevel = +document.getElementById('set-botlevel').value;
     s.volume = +document.getElementById('set-volume').value;
     s.sfx = document.getElementById('set-sfx').checked;
+    s.music = document.getElementById('set-music').checked;
     s.sensitivity = +document.getElementById('set-sens').value;
     s.quality = document.getElementById('set-quality').value;
     s.dmgNumbers = document.getElementById('set-dmgnum').checked;
@@ -1349,6 +1359,9 @@ const Screens = (() => {
        them. Without this, changing your crosshair mid-match does nothing until
        the next one. */
     if (typeof Game !== 'undefined' && Game.refreshView) Game.refreshView();
+    // same deal for the volume slider and the Music switch — the pad is
+    // already playing, it just needs to hear the new numbers
+    if (typeof SFX !== 'undefined' && SFX.music) SFX.music.refresh();
   }
 
   /* ============================================================
@@ -1647,7 +1660,7 @@ const Screens = (() => {
     document.getElementById('set-chsize').addEventListener('input', e => {
       document.getElementById('val-chsize').textContent = e.target.value; persistSettings();
     });
-    ['set-sfx', 'set-quality', 'set-dmgnum',
+    ['set-sfx', 'set-music', 'set-quality', 'set-dmgnum',
       'set-teamcolors', 'set-foecolor', 'set-crosshair', 'set-chcolor'].forEach(id =>
       document.getElementById(id).addEventListener('change', persistSettings));
     // the firing range starts immediately — there is nothing to queue for

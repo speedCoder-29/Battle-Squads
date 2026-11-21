@@ -391,7 +391,7 @@ const Structures = (() => {
   /* ---------- build one wall segment ----------
      axis 'h' = runs along x, 'v' = runs along y. (x, y) is the
      centre-line start; length and thickness are in design metres. */
-  function seg(type, x, y, length, axis, thickness) {
+  function seg(type, x, y, length, axis, thickness, caps) {
     const d = def(type);
     const th = thickness || d.defThickness || 0.3;
     const t = Math.max(6, m(th));
@@ -403,6 +403,18 @@ const Structures = (() => {
     s.maxHp = maxHp(type, th); s.hp = s.maxHp;
     s.toughness = toughness(type, th);
     if (d.door) s.open = false;
+    /* Which ends are a true corner -- flush against a neighbour wall, so
+       rounding it independently would pull it away from the corner point
+       and leave a visible notch where two walls that are actually flush
+       render as if they were not -- versus a free end next to a door
+       gap or a dead stop, which still wants the usual soft radius.
+       `start` is the lower-x end for a horizontal run, the lower-y end
+       for a vertical one; `end` is the other. Round by default, since
+       most calls (fixtures, raw seg() calls outside shell()/partition())
+       never had a neighbour to match up with in the first place -- only
+       shell()'s and partition()'s own corner math asks for square. */
+    s.capStart = (caps && caps.start) || 'round';
+    s.capEnd = (caps && caps.end) || 'round';
     return s;
   }
 
@@ -499,7 +511,11 @@ const Structures = (() => {
       for (const g of gaps) {
         if (g.at - cursor > 4) {
           const lead = cursor === 0 ? corner(sd.corner, g.at - cursor) : 0;
-          out.push(runSeg(type, sd, cursor - lead, (g.at - cursor + lead) * M, thickness));
+          // the run's own start is a true corner only the first time through
+          // (cursor still 0, same test `lead` already uses); its end always
+          // butts a door/window gap, never a corner, so it stays round
+          out.push(runSeg(type, sd, cursor - lead, (g.at - cursor + lead) * M, thickness,
+            { start: cursor === 0 ? 'square' : 'round', end: 'round' }));
         }
         /* `open` leaves the run empty rather than filling it with a door or a
            window. It is what lets two rectangular shells be joined into one
@@ -514,7 +530,10 @@ const Structures = (() => {
         const avail = sd.len - cursor;
         const lead = cursor === 0 ? corner(sd.corner, avail) : 0;
         const trail = corner(sd.corner, avail - lead);
-        out.push(runSeg(type, sd, cursor - lead, (sd.len - cursor + lead + trail) * M, thickness));
+        // the closing run's end is always the side's far corner; its start
+        // is too, but only if no gap ran before it (cursor is still 0)
+        out.push(runSeg(type, sd, cursor - lead, (sd.len - cursor + lead + trail) * M, thickness,
+          { start: cursor === 0 ? 'square' : 'round', end: 'square' }));
       }
     }
     return out;
@@ -564,10 +583,10 @@ const Structures = (() => {
     return { wing, parts, openMain };
   }
 
-  function runSeg(type, sd, offsetPx, lengthM, thickness) {
+  function runSeg(type, sd, offsetPx, lengthM, thickness, caps) {
     return sd.axis === 'h'
-      ? seg(type, sd.x + offsetPx, sd.y, lengthM, 'h', thickness)
-      : seg(type, sd.x, sd.y + offsetPx, lengthM, 'v', thickness);
+      ? seg(type, sd.x + offsetPx, sd.y, lengthM, 'h', thickness, caps)
+      : seg(type, sd.x, sd.y + offsetPx, lengthM, 'v', thickness, caps);
   }
 
   /* ============================================================
@@ -704,10 +723,10 @@ const Structures = (() => {
     fortified: 0.5,       // concrete: bunkers, vaults, cell blocks
   };
 
-  function runAt(type, x, y, axis, offsetPx, lenPx, thickness) {
+  function runAt(type, x, y, axis, offsetPx, lenPx, thickness, caps) {
     return axis === 'h'
-      ? seg(type, x + offsetPx, y, lenPx / PX_PER_M, 'h', thickness)
-      : seg(type, x, y + offsetPx, lenPx / PX_PER_M, 'v', thickness);
+      ? seg(type, x + offsetPx, y, lenPx / PX_PER_M, 'h', thickness, caps)
+      : seg(type, x, y + offsetPx, lenPx / PX_PER_M, 'v', thickness, caps);
   }
 
   /* `doors` are offsets in px along the run where a gap goes. `doorType` fills
@@ -725,11 +744,16 @@ const Structures = (() => {
     let cursor = 0;
     for (const d of stops) {
       const start = Math.max(0, Math.min(lengthPx - DOORWAY, d.at - DOORWAY / 2));
-      if (start - cursor > 6) out.push(runAt(type, x, y, axis, cursor, start - cursor, thickness));
+      // same corner rule as shell(): a partition's own two ends are where it
+      // meets the walls it runs between, so they get the square cap --
+      // everything a door gap cuts is a free end and stays round
+      if (start - cursor > 6) out.push(runAt(type, x, y, axis, cursor, start - cursor, thickness,
+        { start: cursor === 0 ? 'square' : 'round', end: 'round' }));
       if (d.type) out.push(runAt(d.type, x, y, axis, start, DOORWAY, 0.3));
       cursor = start + DOORWAY;
     }
-    if (lengthPx - cursor > 6) out.push(runAt(type, x, y, axis, cursor, lengthPx - cursor, thickness));
+    if (lengthPx - cursor > 6) out.push(runAt(type, x, y, axis, cursor, lengthPx - cursor, thickness,
+      { start: cursor === 0 ? 'square' : 'round', end: 'square' }));
     return out;
   }
 
@@ -1903,18 +1927,33 @@ const Structures = (() => {
         passage: 'b',       // service corridor behind the public rooms
         cross: 0.5,         // a lobby corridor out to both long faces
       });
+      // a reception annex on the north face, between two of the windows —
+      // the one thing missing from "the biggest residential building on
+      // the map" was anything that said so from the air
+      const reception = annex('wood', 0.35, { x: ox, y: oy, w, h },
+        { side: 'n', at: 510, len: 140, depth: 90 });
       const out = shell(ox, oy, w, h, 'wood', 0.4, [
         { side: 'w', at: h * 0.44 - 30, type: 'door', len: 2 },
         { side: 'e', at: h * 0.44 - 30, type: 'door', len: 2 },
         { side: 's', at: 420, type: 'door', len: 2 },
+        reception.openMain,
       ]);
-      out.push(...plan.parts);
+      out.push(...plan.parts, ...reception.parts);
       for (const dx of [120, 400, 700, 980, 1240]) out.push(seg('window', ox + dx, oy, 1.6, 'h', 0.15));
+      /* The pool and dock were bare rooms with nothing around them — not even
+         mansion's own low wall, see mansion's pool for the same cover: a C of
+         barricades, open on the far side, so it reads as a poolside rather
+         than open ground someone forgot to fence. */
+      out.push(seg('barricade', ox + w + 60, oy + 100, 7.5, 'h', 0.3));
+      out.push(seg('barricade', ox + w + 60, oy + 520, 7.5, 'h', 0.3));
+      out.push(seg('barricade', ox + w + 60, oy + 100, 10.5, 'v', 0.3));
       out.rooms = [
         ...plan.rooms,
         room('pool', ox + w + 60, oy + 120, 260, 200),
         room('dock', ox + w + 60, oy + 360, 300, 150),
+        { kind: 'lounge', x: reception.wing.x + 10, y: reception.wing.y + 10, w: reception.wing.w - 20, h: reception.wing.h - 20 },
       ];
+      out.shape = [{ x: ox, y: oy, w, h }, reception.wing];
       return out;
     },
 
@@ -3182,9 +3221,15 @@ const Structures = (() => {
         passage: 'b',       // behind the counter, past the vault
         cross: 0.52,
       });
+      // a portico over the steps up to the door, clear of both the door and
+      // the window beside it — the one thing that told you this was a bank
+      // from across the street
+      const portico = annex('wood', 0.3, { x: ox, y: oy, w, h },
+        { side: 'n', at: 172, len: 92, depth: 70 });
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
         { side: 'n', at: 280, type: 'door', len: 2.5 },
         { side: 'w', at: h * 0.46 - 28 },
+        portico.openMain,
       ]);
       /* The vault is reinforced all round, and there is a service passage
          behind it that the floor plan on the wall does not show. */
@@ -3214,7 +3259,10 @@ const Structures = (() => {
       const cellar = basement('strongroom', ox + 60, oy + h + 44, 320, 200,
         { wall: 'rwall', thickness: 0.45, hatchType: 'secret', hatchAt: 160 });
       out.push(...cellar.parts);
-      out.rooms = [...plan.rooms, cellar.room];
+      out.push(...portico.parts);
+      out.rooms = [...plan.rooms, cellar.room,
+        { kind: 'hall', x: portico.wing.x + 8, y: portico.wing.y + 8, w: portico.wing.w - 16, h: portico.wing.h - 16 }];
+      out.shape = [{ x: ox, y: oy, w, h }, portico.wing];
       return out;
     },
 
@@ -3273,9 +3321,15 @@ const Structures = (() => {
        side and the bell tower in the corner. Somewhere to get your breath. */
     church(ox, oy) {
       const w = 540, h = 660;
+      // the bell tower the comment above already promised: a square stub
+      // behind the existing tower room, bumped out past the south wall so
+      // the building finally has the silhouette its own name describes
+      const tower = annex('wood', 0.4, { x: ox, y: oy, w, h },
+        { side: 's', at: 20, len: 140, depth: 100 });
       const out = shell(ox, oy, w, h, 'wood', 0.45, [
         { side: 'n', at: 200, type: 'door', len: 2 },
         { side: 's', at: 240, type: 'door' }, { side: 'w', at: 480 },
+        tower.openMain,
       ]);
       // pews down the nave, staggered so the aisle is the only clean run
       for (let i = 0; i < 6; i++) {
@@ -3290,12 +3344,15 @@ const Structures = (() => {
       out.push(...partition('wood', ox + 360, oy + 560, h - 574, 'v', 0.35, [46], 'door'));
       out.push(seg('metal', ox + 40, oy + 560, 2.4, 'h', 0.4));
       out.push(seg('metal', ox + 40, oy + 560, 2.4, 'v', 0.4));
+      out.push(...tower.parts);
       out.rooms = [
         room('lobby',     ox + 30,  oy + 30,  w - 60, 130),
         room('gym',       ox + 40,  oy + 200, w - 80, 340),
         room('staffRoom', ox + 375, oy + 575, 145, 70),
         room('safe',      ox + 50,  oy + 575, 100, 70),
+        { kind: 'hall', x: tower.wing.x + 10, y: tower.wing.y + 10, w: tower.wing.w - 20, h: tower.wing.h - 20 },
       ];
+      out.shape = [{ x: ox, y: oy, w, h }, tower.wing];
       return out;
     },
 

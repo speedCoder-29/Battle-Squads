@@ -105,6 +105,165 @@ const SFX = (() => {
     'Launcher':      { freq: 110, slide: 60,  dur: 0.180, wave: 'sawtooth', noiseVol: 0.70 },
   };
 
+  /* ============================================================
+     music — a held pad plus a tension pulse, same no-asset-files rule as
+     the SFX above. Gated on its own `music` setting rather than `sfx`, so
+     muting gunshots doesn't also mute the menu, and vice versa; shares
+     this module's AudioContext (`ensure`, closed over above) rather than
+     opening a second one.
+
+     Two moods:
+       menu  — a slow chord with a sweeping filter, plus an occasional soft
+               bell, for the screens with nothing else making noise.
+       match — the same chord, quieter, plus a sub-bass pulse whose rate
+               and volume track `setIntensity()`: calm out of a fight,
+               roughly a heartbeat-and-a-half across at full tension. The
+               heartbeat SFX above is the close-up, diegetic version of the
+               same signal; this is its ambient extension, audible from the
+               moment a fight is near rather than only once HP is critical.
+     ============================================================ */
+  const Music = (() => {
+    let padNodes = null;             // { oscs, lfo, filter, gain }
+    let pulseTimer = null, pulseGen = 0;
+    let bellTimer = null, bellGen = 0;
+    let mood = null;                 // 'menu' | 'match' | null
+    let intensity = 0;
+
+    function mEnabled() {
+      const s = DB.getSettings();
+      return s.music !== false && s.volume > 0;
+    }
+    function mLevel() { return (DB.getSettings().volume / 100) * 0.16; }
+
+    // Open fifth plus a minor third on top — reads as tense-but-not-sad
+    // under either a calm menu or a firefight, so switching mood never
+    // means switching key.
+    const CHORD = [110, 164.81, 220, 261.63];
+
+    function buildPad(ac, baseGain) {
+      const filter = ac.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 900; filter.Q.value = 0.7;
+      const g = ac.createGain(); g.gain.value = 0;
+      filter.connect(g); g.connect(ac.destination);
+      const oscs = CHORD.map((f, i) => {
+        const o = ac.createOscillator();
+        o.type = 'triangle'; o.frequency.value = f;
+        o.detune.value = (i % 2 ? 1 : -1) * 4;   // a few cents, so a held chord breathes rather than sitting dead still
+        const og = ac.createGain(); og.gain.value = i === 0 ? 1 : 0.55 / i;
+        o.connect(og); og.connect(filter);
+        o.start();
+        return o;
+      });
+      // a slow filter sweep, the other half of what keeps a held chord from sounding static
+      const lfo = ac.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.05;
+      const lfoGain = ac.createGain(); lfoGain.gain.value = 260;
+      lfo.connect(lfoGain); lfoGain.connect(filter.frequency); lfo.start();
+      g.gain.linearRampToValueAtTime(baseGain, ac.currentTime + 3);
+      return { oscs, filter, gain: g, lfo };
+    }
+
+    function teardownPad(ac) {
+      if (!padNodes) return;
+      const { oscs, gain, lfo } = padNodes;
+      gain.gain.cancelScheduledValues(ac.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ac.currentTime + 1.2);
+      const dying = oscs.concat([lfo]);
+      setTimeout(() => dying.forEach(o => { try { o.stop(); } catch {} }), 1300);
+      padNodes = null;
+    }
+
+    // a one-off chime, independent of tone()/noise() above since it is
+    // gated on the music setting rather than sfx
+    function mtone(ac, freq, dur, vol) {
+      const osc = ac.createOscillator(); osc.type = 'sine'; osc.frequency.value = freq;
+      const g = ac.createGain(); g.gain.value = 0;
+      osc.connect(g); g.connect(ac.destination);
+      const t0 = ac.currentTime;
+      g.gain.linearRampToValueAtTime(vol, t0 + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.start(t0); osc.stop(t0 + dur + 0.05);
+    }
+
+    // an idle plink every few seconds, menu mood only
+    function scheduleBell() {
+      bellGen++;
+      const gen = bellGen;
+      const next = () => {
+        if (gen !== bellGen || mood !== 'menu') return;
+        if (mEnabled()) {
+          const notes = [220, 261.63, 329.63, 392, 440];
+          mtone(ensure(), notes[(Math.random() * notes.length) | 0], 1.4, mLevel() * 0.4);
+        }
+        bellTimer = setTimeout(next, 3000 + Math.random() * 3000);
+      };
+      bellTimer = setTimeout(next, 2500);
+    }
+
+    // the tension pulse: a single low thump, re-scheduled after itself at
+    // a rate `setIntensity` controls -- calm is close to two seconds
+    // apart, full tension is under half that
+    function schedulePulse() {
+      pulseGen++;
+      const gen = pulseGen;
+      const next = () => {
+        if (gen !== pulseGen || mood !== 'match') return;
+        if (mEnabled() && intensity > 0.04) {
+          const ac = ensure();
+          const osc = ac.createOscillator(); osc.type = 'sine'; osc.frequency.value = 55;
+          const g = ac.createGain();
+          g.gain.value = mLevel() * (0.3 + intensity * 0.7);
+          const t0 = ac.currentTime;
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.4);
+          osc.connect(g); g.connect(ac.destination);
+          osc.start(t0); osc.stop(t0 + 0.4);
+        }
+        const interval = 1850 - intensity * 1050;
+        pulseTimer = setTimeout(next, interval);
+      };
+      pulseTimer = setTimeout(next, 500);
+    }
+
+    return {
+      // m: 'menu' | 'match' | null. A no-op if that mood is already
+      // playing, so Screens.show() can call this on every screen switch
+      // without restarting the pad each time the player tabs between
+      // home views.
+      start(m) {
+        if (mood === m) return;
+        if (padNodes) teardownPad(ensure());
+        clearTimeout(bellTimer); clearTimeout(pulseTimer);
+        mood = m;
+        intensity = 0;
+        if (!m || !mEnabled()) return;
+        const ac = ensure();
+        padNodes = buildPad(ac, mLevel() * (m === 'menu' ? 0.9 : 0.5));
+        if (m === 'menu') scheduleBell();
+        else schedulePulse();
+      },
+      stop() {
+        mood = null;
+        intensity = 0;
+        clearTimeout(bellTimer); clearTimeout(pulseTimer);
+        bellGen++; pulseGen++;
+        if (padNodes) teardownPad(ensure());
+      },
+      // 0..1, how close this fight is -- see game.js's updateFeel
+      setIntensity(v) { intensity = Math.max(0, Math.min(1, v)); },
+      intensity: () => intensity,   // read-only, for debugging/verification
+      mood: () => mood,
+      // settings changed mid-session (volume dragged, Music toggled off)
+      // -- re-apply without waiting for the next screen switch
+      refresh() {
+        if (!mood) return;
+        if (!mEnabled()) { if (padNodes) teardownPad(ensure()); return; }
+        const ac = ensure();
+        if (!padNodes) { padNodes = buildPad(ac, mLevel() * (mood === 'menu' ? 0.9 : 0.5)); return; }
+        padNodes.gain.gain.cancelScheduledValues(ac.currentTime);
+        padNodes.gain.gain.linearRampToValueAtTime(mLevel() * (mood === 'menu' ? 0.9 : 0.5), ac.currentTime + 0.3);
+      },
+    };
+  })();
+
   return {
     resume: () => { try { ensure().resume(); } catch {} },
     /* `wtype` is the weapon's `type` string; `loud` is a 0..1 multiplier
@@ -165,5 +324,6 @@ const SFX = (() => {
        positional, like kill() — it only plays for the kill or death that
        actually involves the local player. */
     funny: () => { tone(300, 0.08, 'square', 900); setTimeout(() => tone(1200, 0.14, 'sine', 240), 60); },
+    music: Music,
   };
 })();
