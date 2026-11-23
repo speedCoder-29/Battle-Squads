@@ -4663,8 +4663,19 @@ const Game = (() => {
     /* Arms Race is deliberately absent from this table: the fallback is the
        5200 board, which is the one it wants. The mode needs contact -- every
        kill is a rung, so time spent walking is time spent losing -- and the
-       domination map is too big to keep bumping into people on. */
-    const size = MAP_SIZES[mode] || MAP_SIZES.elimination;
+       domination map is too big to keep bumping into people on.
+
+       Range is absent from MAP_SIZES too, which used to mean it fell through
+       to that same 5200 board -- too small for its own lane. The farthest
+       dummy sits at spawnX + 120m, and spawnX is already 10% of the board, so
+       a 5200 board put that target at x=5320 on a map only 5200 wide: every
+       long-range gun's test dummy stood past the edge of the world, and any
+       round that reached for it died on the map boundary a few pixels short,
+       every time, with no hit ever registering. Needs enough width for
+       0.1*w + 4800 (the 120m mark) + the 260 clearRangeLane pads onto the far
+       end; 7400 (the same board Mission already uses) clears that with
+       plenty to spare. */
+    const size = MAP_SIZES[mode] || (mode === 'range' ? { w: 7400, h: 7400 } : MAP_SIZES.elimination);
     const sizeMult = MAP_SIZE_MULT[opts && opts.mapSize] || 1;
     MAP_W = Math.round(size.w * sizeMult); MAP_H = Math.round(size.h * sizeMult);
     worldSeed = (seed >>> 0) || ((Math.random() * 0xffffffff) >>> 0);
@@ -4700,7 +4711,27 @@ const Game = (() => {
        weapons and in this mode the ladder decides what they are. */
     if (mode === 'armsrace') buildLadder();
     if (mode === 'mission') {
-      mission = Mission.roll(Math.random);
+      /* mission.js promises "a shared seed is a shared mission" -- rolling
+         against the bare Math.random broke that promise outright: the same
+         seed produced a different job type and a different asset/target name
+         every single run, same as every other un-seeded call this mode used
+         to make (see setUpMission below). Seeded the same way the rest of
+         generation is -- a salted withSeed, so this draw cannot shift which
+         random numbers buildMap already spent.
+
+         withSeed's xorshift32 barely mixes its *first* output when it has
+         just been reseeded -- a fresh state only differs from its neighbour
+         in the low bits it was seeded with, and one round of shift-xor is not
+         enough to spread that into the high bits the float conversion reads.
+         Measured over seeds 1-2000, `rand() < 0.5` on the first call landed
+         "assassinate" on all two thousand of them: not an unlucky skew but a
+         dead coin, because every mission seed is small and sequential in
+         practice. Two throwaway draws first is enough to warm the state up --
+         the same 2000 seeds come back within a point of an even split. */
+      mission = withSeed(worldSeed ^ 0x3c7a, () => {
+        Math.random(); Math.random();
+        return Mission.roll(Math.random);
+      });
       missionPhase = Mission.PHASE.INSERTION;
       missionHeld = false; exfil = null; missionBodies = [];
       missionStat = { spotted: 0, bodiesFound: 0, shotsHeard: 0, peakAlert: 0 };
@@ -4708,10 +4739,6 @@ const Game = (() => {
     }
     setupTeams();
     if (mode === 'armsrace') for (const a of agents) if (!a.isVehicle) setRung(a, 0);
-    /* After the squads exist, not during worldgen. `setUpMission` posts the
-       garrison, hides the objective and sites the boat -- all of which need
-       agents on the map, and buildMap runs before there are any. */
-    if (mode === 'mission') setUpMission();
     bullets = []; fx = []; dmgNums = []; funnyFx = [];
     grenades = []; deployables = []; smokes = []; drops = []; airstrikes = []; chainQueue = []; flashOverlay = 0;
     objTurrets = {};
@@ -4727,6 +4754,23 @@ const Game = (() => {
     marks = []; emotes = []; wheel = null; commsCd = 0;
     online = null;
     spawnCrates(Math.round(((MAP_W - Terrain.BEACH_INSET * 2) * (MAP_H - Terrain.BEACH_INSET * 2) / 1e6) * DENSITY.crates));
+    /* After the squads exist (not during worldgen, there are no agents yet)
+       and after spawnCrates (not before it: spawnCrates rebuilds `crates`
+       from scratch for the ordinary loot pass, so a missionAsset pushed in
+       ahead of it was being silently thrown away every single run. The
+       variable survived -- the brief, the minimap pin and the win check all
+       still worked off it -- but the crate itself was never in the array
+       `interact()` scans, so there was nothing on the floor for a real
+       player to walk up to and press E on. `setUpMission` posts the
+       garrison, hides the objective and sites the boat -- all off the bare
+       Math.random, same problem as the roll above: a salted withSeed makes
+       which building hosts the objective, where the garrison stands and
+       which side you land on all reproduce from the match seed too. Same
+       two-draw warm-up as the roll above, for the same reason: its very
+       first call is `Math.floor(Math.random() * cores.length)`, exactly the
+       kind of low-cardinality threshold a fresh xorshift state answers the
+       same way for every small seed. */
+    if (mode === 'mission') withSeed(worldSeed ^ 0x71df, () => { Math.random(); Math.random(); setUpMission(); });
     // Last of all, once every generator and spawner has run: clear the ground
     // under the capture points. Doing this earlier left a window for a later
     // pass to drop a wall back on top of one.
@@ -18633,6 +18677,7 @@ const Game = (() => {
         x: player.x, y: player.y, vx: player.vx, vy: player.vy, downed: !!player.downed, bleed: player.bleed,
         channel: player.channel ? { label: player.channel.label, t: player.channel.t } : null,
         crouched: !!player.crouched, sliding: (player.slideT || 0) > 0,
+        riding: !!player.riding,
       };
     },
     set(patch) {
@@ -18675,6 +18720,8 @@ const Game = (() => {
       return fired;
     },
     bullets: () => bullets.length,
+    bulletList: () => bullets.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), team: b.team, dmg: b.dmg, life: +b.life.toFixed(2) })),
+    playerAngle: () => player ? player.angle : null,
     crateList: () => crates.map(c => ({ x: Math.round(c.x), y: Math.round(c.y), tier: c.tier, rot: +((c.rot || 0).toFixed(2)), look: c.look || null, room: c.room || null, opened: !!c.opened })),
     grenadesThrown: () => grenades.filter(g => !g.owner || !g.owner.isPlayer).length,
     botStats: () => {
@@ -20092,6 +20139,24 @@ const Game = (() => {
       if (!missionAsset) return false;
       missionAsset.opened = true; return true;
     },
+    callInteract: () => { interact(); return true; },
+    spawnVehicleAt(vtype, x, y) {
+      const v = spawnVehicle(player.team, vtype, x, y);
+      return { x: Math.round(v.x), y: Math.round(v.y), r: v.r, hp: v.hp, weapon: v.weapon.name };
+    },
+    nearestCrateInfo: () => {
+      if (!player) return null;
+      return crates.filter(c => !c.opened)
+        .map(c => ({ x: Math.round(c.x), y: Math.round(c.y), d: Math.round(Math.hypot(c.x - player.x, c.y - player.y)), mission: !!c.mission }))
+        .sort((a, b) => a.d - b.d).slice(0, 5);
+    },
+    canActNow: () => canAct(),
+    missionAssetCheck: () => missionAsset
+      ? { x: Math.round(missionAsset.x), y: Math.round(missionAsset.y), inCratesArray: crates.includes(missionAsset), cratesTotal: crates.length }
+      : null,
+    missionTargetCheck: () => missionTarget
+      ? { x: Math.round(missionTarget.x), y: Math.round(missionTarget.y), alive: missionTarget.alive, inAgents: agents.includes(missionTarget), hp: Math.round(missionTarget.hp) }
+      : null,
     missionKillTarget() {
       if (!missionTarget) return false;
       killAgent(missionTarget, player, 'body'); return !missionTarget.alive;

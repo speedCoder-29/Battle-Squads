@@ -209,7 +209,17 @@ const Weapons = (() => {
     ['Vector','SMG','7.5',25,'33, 25      , 33','1.6s',3.97,0.1,'0.15s',2,8,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','Rc,S,H','Rd,A,W','F,M,D',44,12,'Absurd rate of fire, evaporates past a room',4.5],
     // 25 by default: twenty rounds of an 8.75-damage gun could not finish a
     // T3 set, the only SMG that had to reload mid-kill
-    ['Uzi','SMG','8.75',21,'32, 25','1.8s',15.9,0.2,'0.2s',4,6,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','F,Rd,W','M,H,D','Rc,A,S',40,11,'Sprays wildly, and worse at a run - a doorway weapon',11],
+    /* Accuracy was 15.9 -- 3.3-4x Vector's 3.97 and P90's 4.76, not "worst
+       accuracy in the SMG class" but a different animal. Measured on the
+       firing range (ADS, held on a stationary target at the Uzi's own listed
+       13.8m effective range): 21% of shots landed, against 62-70% for the
+       Vector and 45% for the P90 at their own effective ranges. A doorway gun
+       that misses four shots in five even when nothing is shooting back and
+       nothing is moving is not loose, it is broken. 7.5 keeps it the worst
+       hipfire in class -- still looser than the P90 it's meant to lose to --
+       while landing at a re-measured ~49%, a real "sprays wildly" rather than
+       a coin flip that loses most of the time. */
+    ['Uzi','SMG','8.75',21,'32, 25','1.8s',7.5,0.2,'0.2s',4,6,'Yellow','Automatic','20%','None','Suppressor','HP, Tracer','Assault','F,Rd,W','M,H,D','Rc,A,S',40,11,'Sprays wildly, and worse at a run - a doorway weapon',11],
     ['P90','SMG','12',14,'50','2s',4.76,0.15,'0.25s',3,10,'Yellow','Automatic','12%','None','Suppressor','HP, Tracer','Assault','M,A,D','Rc,F,S','Rd,H,W',48,17,'50-round mag and real accuracy; the SMG with range',4],
     ['M870','Shotgun','12.5',1.11,'5','0.75s/shell',10,2.1,'0.3s',5,8,'Red','Non-Automatic','10%','9 Pellets','Sawed-Off, Scope, Double Barrel','Slug, Birdshot','Breacher','D,H,W','Rd,S,Rc','F,M,A',40,13,'A full 9-pellet hit at contact range kills outright',2],
     /* The two semi-auto shotguns were not a choice: the BM4 fired faster
